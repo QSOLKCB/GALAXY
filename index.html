@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="An offline spinning galaxy instrument. Shape spiral arms, explore stellar rotation, and scale a deterministic star field with Rust and WebGL.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; media-src blob:; connect-src 'self'; object-src 'none'; base-uri 'none'">
+  <title>GALAXY · Stellar motion lab</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="galaxy-core.js"></script>
+  <script defer src="wasm/galaxy-wasm.js"></script>
+  <script defer src="renderer.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand-mark" aria-hidden="true">G<span>303</span></div>
+    <div class="brand-copy"><p class="eyebrow">QSOL-IMC / STELLAR MOTION LAB</p><h1>GALAXY</h1></div>
+    <div class="header-status"><span id="engineStatus" class="status-chip">Starting field…</span><a href="https://github.com/QSOLKCB/GALAXY">Source ↗</a></div>
+  </header>
+  <main class="app-shell">
+    <section class="observatory" aria-label="Galaxy simulation">
+      <div class="field-heading"><div><p class="eyebrow">LIVE OBSERVATION</p><h2 id="fieldTitle">Grand design spiral</h2></div><span id="motionBadge">Differential rotation</span></div>
+      <div id="canvasStage" class="canvas-stage">
+        <canvas id="fieldCanvas" tabindex="0" aria-label="Spinning spiral galaxy. Drag to change inclination and orientation; use the labelled controls for keyboard adjustments.">Your browser needs Canvas support to display the galaxy.</canvas>
+        <div class="field-overlay top"><span id="projectionBadge">INCLINATION 38°</span><span id="recordingBadge" hidden>REC</span></div>
+        <div class="field-overlay bottom"><span>DISC / BULGE / HALO</span><span id="fpsReadout">— FPS</span></div>
+      </div>
+      <div class="transport"><button id="playToggle" class="primary" type="button" aria-pressed="true">Pause</button><button id="resetField" type="button">Reset phase</button><span class="gesture-note">Drag to orbit · scroll to zoom · space to pause</span></div>
+      <div class="readout-grid" aria-label="Particle accounting">
+        <div><span>LOGICAL STARS</span><strong id="logicalReadout">16,777,216</strong><small id="topologyReadout">2²⁴ indexed field</small></div>
+        <div><span>RENDERED STARS</span><strong id="renderedReadout">—</strong><small>representative sample / frame</small></div>
+        <div><span>PARTICLE BUFFER</span><strong id="memoryReadout">—</strong><small>8 float32 values / sampled star</small></div>
+      </div>
+      <p id="status" class="status-note" role="status" aria-live="polite">Preparing the deterministic star field.</p>
+      <details class="model-note"><summary>About this galaxy</summary><p>A seeded spiral disc with a central bulge and sparse halo. Stars follow authored circular orbits; differential rotation gradually winds the arms. Set shear to zero for a lasting spiral pattern. This is a kinematic visualization, not a gravitational N-body solver. Logical stars identify a sampled population; only the rendered count is drawn.</p><p>Descended from VORTEX’s bounded particle architecture. Captures and settings stay on your device.</p></details>
+    </section>
+    <aside class="control-rack" aria-label="Galaxy controls">
+      <section class="rack-section"><h2 class="section-label"><span>01</span>Galaxy structure</h2>
+        <label for="profile">Morphology<select id="profile"><option value="grand">Grand design · 2 arms</option><option value="pinwheel">Pinwheel · 4 arms</option><option value="flocculent">Flocculent · 6 arms</option><option value="edge">Edge-on disc</option><option value="custom">Custom galaxy</option></select></label>
+        <label for="arms">Spiral arms<output id="armsValue" for="arms">2</output><input id="arms" type="range" min="1" max="8" step="1" value="2"></label>
+        <label for="pitch">Pitch angle<output id="pitchValue" for="pitch">22°</output><input id="pitch" type="range" min="10" max="40" step="1" value="22"></label>
+        <label for="scatter">Arm spread<output id="scatterValue" for="scatter">0.45</output><input id="scatter" type="range" min="0.05" max="2.5" step="0.05" value="0.45"></label>
+        <label for="bulge">Central bulge<output id="bulgeValue" for="bulge">18%</output><input id="bulge" type="range" min="0" max="0.5" step="0.01" value="0.18"></label>
+        <label for="thickness">Disc thickness<output id="thicknessValue" for="thickness">0.025</output><input id="thickness" type="range" min="0" max="0.12" step="0.005" value="0.025"></label>
+      </section>
+      <section class="rack-section"><h2 class="section-label"><span>02</span>Scale the field</h2>
+        <label for="logicalCount">Logical population<select id="logicalCount"><option value="65536">2¹⁶ · 65,536</option><option value="1048576">2²⁰ · 1,048,576</option><option value="16777216" selected>2²⁴ · 16,777,216</option><option value="268435456" disabled>2²⁸ · 268,435,456</option><option value="4294967296" disabled>2³² · 4,294,967,296</option></select></label>
+        <label for="renderedCount">Rendered stars<select id="renderedCount"><option value="256">256</option><option value="512">512</option><option value="1024">1,024 · VORTEX ceiling</option><option value="4096" disabled>4,096</option><option value="16384" disabled>16,384</option><option value="32768" disabled>32,768</option><option value="65536" disabled>65,536</option></select></label>
+        <button id="pushLimit" class="limit-button" type="button">PUSH IT TO THE LIMIT</button>
+        <p id="capacityNote" class="control-note">Larger fields become available when the accelerated engine is ready.</p>
+        <label for="seed">Galaxy seed<input id="seed" type="number" min="0" max="4294967295" step="1" value="303"></label>
+      </section>
+      <section class="rack-section"><h2 class="section-label"><span>03</span>Stellar motion</h2>
+        <label for="speed">Spin speed<output id="speedValue" for="speed">0.35×</output><input id="speed" type="range" min="0" max="2" step="0.01" value="0.35"></label>
+        <label for="shear">Differential shear<output id="shearValue" for="shear">35%</output><input id="shear" type="range" min="0" max="1" step="0.01" value="0.35"></label>
+        <div class="button-pair" role="group" aria-label="Spin direction"><button id="rotateCW" type="button" aria-pressed="true">↻ Forward</button><button id="rotateCCW" type="button" aria-pressed="false">↺ Reverse</button></div>
+        <label for="evolution">Evolution<select id="evolution"><option value="animated">Animated rotation</option><option value="phase">Timeless phase slice</option></select></label>
+        <label for="phase">Phase offset<output id="phaseValue" for="phase">0°</output><input id="phase" type="range" min="0" max="360" step="1" value="0"></label>
+      </section>
+      <section class="rack-section"><h2 class="section-label"><span>04</span>Observation</h2>
+        <label for="inclination">Inclination<output id="inclinationValue" for="inclination">38°</output><input id="inclination" type="range" min="0" max="90" step="1" value="38"></label>
+        <label for="rotation">Position angle<output id="rotationValue" for="rotation">−18°</output><input id="rotation" type="range" min="-180" max="180" step="1" value="-18"></label>
+        <label for="zoom">Zoom<output id="zoomValue" for="zoom">1.00×</output><input id="zoom" type="range" min="0.5" max="1.8" step="0.01" value="1"></label>
+        <label for="exposure">Exposure<output id="exposureValue" for="exposure">1.00×</output><input id="exposure" type="range" min="0.2" max="2.5" step="0.05" value="1"></label>
+        <label for="starSize">Star size<output id="starSizeValue" for="starSize">1.00×</output><input id="starSize" type="range" min="0.5" max="2" step="0.05" value="1"></label>
+        <label for="palette">Starlight<select id="palette"><option value="stellar">Stellar · ivory & ice</option><option value="ember">Ember · warm white</option><option value="silver">Silver · monochrome</option></select></label>
+      </section>
+      <section class="rack-section"><h2 class="section-label"><span>05</span>Local capture</h2>
+        <div class="button-pair"><button id="snapshot" type="button">Save PNG</button><button id="record" type="button">Record WebM</button></div>
+        <div class="button-pair"><button id="exportState" type="button">Save settings</button><label class="file-button" for="importState">Load settings<input id="importState" type="file" accept=".json,application/json"></label></div>
+        <p id="captureStatus" class="control-note" role="status">Record up to 30 seconds. Files stay local.</p>
+      </section>
+    </aside>
+  </main>
+  <noscript><p class="status-note">Enable JavaScript to run the galaxy simulation.</p></noscript>
+</body>
+</html>
