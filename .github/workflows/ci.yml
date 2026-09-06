@@ -1,0 +1,33 @@
+name: Galaxy checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: galaxy-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check Rust sampler
+        run: cargo test --manifest-path rust/Cargo.toml --locked --offline
+      - name: Rebuild the pinned Rust WebAssembly
+        run: bash scripts/build-wasm.sh
+      - name: Verify the shipped module matches its source
+        run: git diff --exit-code -- wasm/
+      - name: Check sampling, motion, settings and application integration
+        run: |
+          node tests/smoke.mjs
+          node tests/app.mjs
+      - name: Verify static distribution
+        run: node scripts/build-site.mjs

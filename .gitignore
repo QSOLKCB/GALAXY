@@ -1,0 +1,5 @@
+rust/target/
+_site/
+*.webm
+galaxy-*.png
+galaxy-*.json
