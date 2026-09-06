@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "task": {
+    "kind": "spin",
+    "physics": { "model": "nfw", "black_hole_million": 4.3 },
+    "integrator": "leapfrog",
+    "radial_kick_kms": 20,
+    "softening_kpc": 0.02,
+    "particles": 262144,
+    "steps": 1000,
+    "dt_myr": 0.05,
+    "snapshot_every": 100
+  }
+}

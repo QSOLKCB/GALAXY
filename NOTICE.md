@@ -37,3 +37,17 @@ hashes are in [`data/uff/provenance.json`](data/uff/provenance.json).
 reference-generation tools and their new physics tests also use Apache-2.0.
 Upstream paper citations identify the model literature; those papers are not
 redistributed or relicensed here.
+
+## Native GPU runtime
+
+The `runtime/` crate, compute kernels, headless renderer, job examples and local/
+SSH runners use Apache-2.0. `runtime/src/kernels.wgsl` and
+`runtime/src/reference.rs` adapt the pinned UFF rotation and compact-object
+equations above, copyright 2025–2026 Trent Slade / QSOL-IMC. GPU data tables are
+generated from the unchanged CSV. Native compact reference fixtures are generated
+by executing that UFF source, with its original source identity recorded.
+
+Third-party Rust dependencies retain their own licences and are pinned by
+`runtime/Cargo.lock`. The container build copies their distributed licence/notice
+files under `/usr/share/doc/galaxy-runtime/dependencies/`, together with this
+project's and UFF's notices. The runtime is separate from the MPL browser files.

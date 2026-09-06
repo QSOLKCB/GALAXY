@@ -1,4 +1,7 @@
 rust/target/
+runtime/target/
+runs/
+__pycache__/
 _site/
 *.webm
 galaxy-*.png

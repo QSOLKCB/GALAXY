@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "task": {
+    "kind": "spin",
+    "physics": { "model": "uff-empirical", "black_hole_million": 4.3 },
+    "integrator": "circular",
+    "particles": 1048576,
+    "steps": 1000,
+    "dt_myr": 0.25,
+    "snapshot_every": 100
+  }
+}
