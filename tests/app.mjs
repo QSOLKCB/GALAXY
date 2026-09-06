@@ -53,6 +53,7 @@ async function boot({ rust = true, gpu = true, brokenWasm = false, reducedMotion
   const makeRenderer = (canvas, forceCanvas) => {
     renderer = { gpu: gpu && !forceCanvas, name: gpu && !forceCanvas ? "WebGL" : "Canvas 2D", count: 0, uploads: 0, draws: [],
       setData(data) { this.data = data; this.count = data.length / 8; this.uploads++; },
+      setRates(rates) { this.rates = rates; },
       resize() {}, dispose() {},
       draw(settings, phase) { this.draws.push({ settings: { ...settings }, phase }); }
     };
@@ -63,8 +64,11 @@ async function boot({ rust = true, gpu = true, brokenWasm = false, reducedMotion
     requestAnimationFrame(fn) { scheduled = fn; return 1; }, devicePixelRatio: 1,
     matchMedia: () => ({ matches: reducedMotion }),
     URL: { createObjectURL(blob) { urls.push(blob); return "blob:test"; }, revokeObjectURL() {} },
-    GalaxyRenderer: { createRenderer: makeRenderer }
+    GalaxyRenderer: { createRenderer: makeRenderer },
+    GalaxyRotationCurve: class { draw() {} }
   });
+  vm.runInContext(read("data/uff-demo.js"), context);
+  vm.runInContext(read("uff-physics.js"), context);
   vm.runInContext(read("galaxy-core.js"), context);
   if (rust) vm.runInContext(read("wasm/galaxy-wasm.js"), context);
   if (brokenWasm) context.GALAXY_WASM_BASE64 = "AAAA";
@@ -83,13 +87,32 @@ async function boot({ rust = true, gpu = true, brokenWasm = false, reducedMotion
 const app = await boot();
 assert.equal(app.renderer().count, 16384);
 assert.equal(app.el("engineStatus").textContent, "Rust / Wasm + WebGL");
+assert.equal(app.el("dynamics").value, "uff-empirical");
+assert.equal(app.el("shearControl").hidden, true);
 await app.click("pushLimit");
 assert.equal(app.renderer().count, 65536);
 assert.equal(app.renderer().data.byteLength, 2097152);
+assert.equal(app.renderer().rates.byteLength, 262144);
+assert.equal(app.el("memoryReadout").textContent, "2.25 MiB");
 assert.equal(app.el("logicalCount").value, "4294967296");
 const maxExport = await app.exported();
 assert.equal(maxExport.settings.logicalCount, 2 ** 32);
 assert.equal(maxExport.settings.renderedCount, 65536);
+for (const model of ["baryons", "nfw", "burkert", "mond-rar", "uff-empirical", "legacy"]) {
+  await app.change("dynamics", model);
+  const recipe = await app.exported();
+  assert.equal(recipe.settings.dynamics, model);
+  assert.equal(recipe.clock, 0);
+  assert.equal(app.renderer().rates.length, app.renderer().count);
+}
+assert.equal(app.el("rotationPanel").hidden, true);
+await app.change("dynamics", "uff-empirical");
+const previousRates = Array.from(app.renderer().rates);
+await app.change("uffVInf", 240, "input");
+assert.ok(app.renderer().rates.every((rate, i) => rate > previousRates[i]));
+assert.equal(app.el("uffParameters").hidden, false);
+assert.equal(app.el("nfwParameters").hidden, true);
+await app.change("uffVInf", 120, "input");
 await app.change("speed", 1, "input");
 app.tick(1000); app.tick(1040);
 const beforePause = app.renderer().draws.at(-1).phase;

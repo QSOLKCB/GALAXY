@@ -1,5 +1,8 @@
 # Engine and reproducibility contract
 
+Version 0.2 adds the [UFF rotation-curve dynamics](UFF-DYNAMICS.md). The original
+visual rotation remains selectable; its formula below applies only in that mode.
+
 ## From VORTEX to GALAXY
 
 | VORTEX 2.1.0 mechanism | GALAXY adaptation |
@@ -44,9 +47,11 @@ fractions in small samples.
 The owned Rust vector is bounded by `S * 8 * 4` bytes. Rebuilds can temporarily
 hold both old and new vectors. JS reacquires `memory.buffer` and the exported
 pointer after every generation because Wasm memory growth invalidates old views.
-WebGL uploads the new sample with `STATIC_DRAW`; animation changes uniforms only.
+A separate float32 orbital-rate vector is recalculated when the model or sample
+changes. Both vectors are reacquired after Wasm configuration, uploaded with
+`STATIC_DRAW`, and total 2.25 MiB at maximum size. Animation changes uniforms only.
 
-## Motion and projection
+## Original visual motion and shared projection
 
 Disc radius is `r = 0.06 + 0.92 u^1.4` in display units. Its initial angle is:
 
@@ -71,9 +76,10 @@ tabs reset their timestamp. This is an animation clock, not wall-clock physical
 time. A phase slice uses only the phase slider and leaves the animation clock
 available when returning to animation.
 
-Differential rotation winds the initial spiral arms. That is intentional; no
-unimplemented density-wave dynamics are implied. Zero shear gives rigid pattern
-rotation for a persistent visual spiral.
+In both motion families, differential rotation can wind the initial spiral arms. That is intentional; no
+unimplemented density-wave dynamics are implied. In original visual mode, zero shear gives rigid pattern
+rotation for a persistent visual spiral. Physical modes use the selected UFF
+rotation curve directly and hide the manual shear control.
 
 ## Rendering and fallback
 
@@ -96,15 +102,19 @@ bounded JavaScript fallback and is reported in the interface.
 
 ## State and validation
 
-JSON carries `application`, `version`, `settings`, and `clock`. Supported fields
+JSON carries `application`, `version`, `physicsSource`, `settings`, and `clock`.
+The source field binds a v0.2 recipe to the bundled UFF commit/data hash. v0.1
+recipes restore legacy dynamics explicitly. Supported fields
 are allowlisted and numerically bounded. Imported populations/budgets are clamped
 to current engine capability and any reduction is reported. A bad file leaves
 the running state untouched. Exporting does not reduce the logical population to
 the rendered sample. A settings file is a recipe, not a dump of all logical stars.
 
-Native Rust tests cover indexing, rejection and buffer capacity. Node tests run
+Native Rust tests cover indexing, rejection, buffer capacity and model behavior.
+Independent UFF Python reference predictions check the physical equations in
+JavaScript and the compiled Wasm binary, including their units. Node tests run
 the shipped Wasm binary, check CPU orbital invariants and clock behavior, and
 exercise the actual application using event/DOM/render adapters. These tests do
 not substitute for a browser/device GPU benchmark or claim a performance result
-on the user's hardware. The benchmark script reports only sampler timing and
-memory, including its Node version.
+on the user's hardware. The benchmark script reports sample/orbital-rate
+generation timing and memory, including its Node version.

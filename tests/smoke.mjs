@@ -12,7 +12,7 @@ const read = file => fs.readFileSync(path.join(root, file), "utf8");
 const fullLimits = { logical: Core.MAX_LOGICAL_RUST, rendered: Core.MAX_GPU_PARTICLES };
 const near = (a, b, epsilon = 1e-10) => assert.ok(Math.abs(a - b) < epsilon, `${a} ≠ ${b}`);
 
-for (const file of ["galaxy-core.js", "renderer.js", "app.js", "wasm/galaxy-wasm.js"]) new vm.Script(read(file), { filename: file });
+for (const file of ["galaxy-core.js", "uff-physics.js", "rotation-curve.js", "data/uff-demo.js", "renderer.js", "app.js", "wasm/galaxy-wasm.js"]) new vm.Script(read(file), { filename: file });
 assert.equal(Core.formatPowerOfTwo(2 ** 24), "2²⁴");
 assert.equal(Core.formatPowerOfTwo(2 ** 32), "2³²");
 assert.equal(Core.logicalIndexForSample(511, 512, 2 ** 24), 16744448);
@@ -51,7 +51,7 @@ for (const preset of Object.values(Core.PRESETS)) {
     }
   }
 }
-const rigid = { ...Core.defaults(), shear: 0, inclination: 0, rotation: 0 };
+const rigid = { ...Core.defaults(), dynamics: "legacy", shear: 0, inclination: 0, rotation: 0 };
 for (let i = 0; i < 1024; i++) {
   const a = Core.starAt(data, i, rigid, 0), b = Core.starAt(data, i, rigid, 3);
   near(b.angle - a.angle, 0.96); near(Math.hypot(a.x, a.y), Math.hypot(b.x, b.y));
@@ -88,7 +88,7 @@ const bytes = Buffer.from(context.GALAXY_WASM_BASE64, "base64");
 assert.deepEqual(bytes, fs.readFileSync(path.join(root, "wasm/galaxy_sampler.wasm")), "Standalone Wasm must match the offline browser payload");
 const { instance } = await WebAssembly.instantiate(bytes, {});
 const wasm = instance.exports;
-assert.equal(wasm.abi_version(), 1); assert.equal(wasm.max_rendered(), 65536);
+assert.equal(wasm.abi_version(), 2); assert.equal(wasm.max_rendered(), 65536);
 for (const logical of [65536, 2 ** 24, 2 ** 28, 2 ** 32]) {
   for (const count of [256, 512, 1024, 65536]) {
     assert.equal(wasm.generate(logical, count, 303), count);

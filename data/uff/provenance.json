@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/QSOLKCB/UFF",
+  "commit": "596cd732df61587aa1a9801cad1ec13483b1347f",
+  "version": "5.3.0",
+  "dataset_status": "Repository demonstration input; no observational catalogue identity is claimed",
+  "files": {
+    "DEMO_GALAXY.csv": "1b8e988c16e9bfb04abc220f8d8990fca356ed71848da7994451c89d44486f80",
+    "uff/models.py": "13dc349622553cbac7e58bfa122f35c0bfa446569ca4d9453e2fa99f52005325",
+    "uff/constants.py": "85de9e1f9ef305d528ceac97a2dbcba8a7089faee55d1444cf60d026808d3f40",
+    "uff/data.py": "ec8a57228814d8fa1e0a802d3f900a388ea17fa45dbc67500e0d60fb2636944c",
+    "uff/compact.py": "56e3457394ee3bf041fe58f1b132686f5255cfaf678cf264844784ddbb49101f",
+    "docs/MODELS.md": "f4b2684947cb03224e3df75be3189524e6b9e4b96864d6f6656f7461c2a80936",
+    "NOTICE": "7b6d4173f0739742dbb61b4dd274e631491dedc4a8d4bc18acea2b875992a440",
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  }
+}

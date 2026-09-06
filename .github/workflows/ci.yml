@@ -24,10 +24,11 @@ jobs:
       - name: Rebuild the pinned Rust WebAssembly
         run: bash scripts/build-wasm.sh
       - name: Verify the shipped module matches its source
-        run: git diff --exit-code -- wasm/
+        run: git diff --exit-code -- wasm/ data/uff-demo.js rust/src/uff_data.rs
       - name: Check sampling, motion, settings and application integration
         run: |
           node tests/smoke.mjs
+          node tests/physics.mjs
           node tests/app.mjs
       - name: Verify static distribution
         run: node scripts/build-site.mjs

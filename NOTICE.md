@@ -21,3 +21,19 @@ The existing repository licence has not been used to relicense the MPL files.
 
 VORTEX's reference photographs, artwork and historical stress-test reports are
 not included. Historical VORTEX measurements are not GALAXY benchmarks.
+
+## QSOL UFF physics and demonstration data
+
+`uff-physics.js`, `rust/src/physics.rs`, and the bundled demonstration table
+adapt the Apache-2.0 implementation in QSOL UFF v5.3.0, pinned to commit
+`596cd732df61587aa1a9801cad1ec13483b1347f`.
+
+Copyright 2025–2026 Trent Slade / QSOL-IMC. The upstream notice is reproduced
+verbatim in [`data/uff/NOTICE`](data/uff/NOTICE). The source identities and
+hashes are in [`data/uff/provenance.json`](data/uff/provenance.json).
+
+`DEMO_GALAXY.csv` is copied without changes. `data/uff-demo.js` and
+`rust/src/uff_data.rs` are generated from it. Rotation-curve plotting,
+reference-generation tools and their new physics tests also use Apache-2.0.
+Upstream paper citations identify the model literature; those papers are not
+redistributed or relicensed here.
