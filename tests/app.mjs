@@ -147,6 +147,37 @@ await app.el("importState").emit("change");
 assert.match(app.el("captureStatus").textContent, /Could not load/);
 assert.deepEqual(await app.exported(), beforeBadImport);
 
+// Legacy shear edits retain an evolved clock and a nonzero phase offset while
+// updating the rates used by the renderer, in both Rust and JS sampling paths.
+for (const rust of [true, false]) {
+  const legacy = await boot({ rust });
+  for (const mode of ["animated", "paused", "phase"]) {
+    const recipe = await legacy.exported();
+    recipe.clock = 12.75;
+    Object.assign(recipe.settings, { dynamics: "legacy", shear: 0, phase: 90,
+      running: mode !== "paused", evolution: mode === "phase" ? "phase" : "animated" });
+    legacy.el("importState").files = [{ size: 2000, text: async () => JSON.stringify(recipe) }];
+    await legacy.el("importState").emit("change"); legacy.tick(2000);
+    const before = await legacy.exported();
+    const displayedPhase = legacy.renderer().draws.at(-1).phase;
+    const oldRates = Array.from(legacy.renderer().rates);
+    await legacy.change("shear", 0.8, "input");
+    const after = await legacy.exported();
+    assert.equal(after.clock, before.clock, `${mode} shear edit must preserve the clock`);
+    assert.equal(after.settings.phase, before.settings.phase, `${mode} shear edit must preserve the offset`);
+    assert.equal(after.settings.running, before.settings.running);
+    assert.equal(after.settings.evolution, before.settings.evolution);
+    assert.equal(after.settings.shear, 0.8);
+    assert.ok(legacy.renderer().rates.some((rate, i) => rate !== oldRates[i]), "Shear must rebuild the orbital rates");
+    legacy.tick(2000);
+    assert.equal(legacy.renderer().draws.at(-1).phase, displayedPhase, "The redraw must use the preserved phase");
+    legacy.tick(2040);
+    const next = await legacy.exported();
+    if (mode === "animated") assert.ok(next.clock > before.clock, "Animation must continue after the edit");
+    else assert.equal(next.clock, before.clock, "Paused and phase-slice clocks must stay frozen");
+  }
+}
+
 for (const args of [{ rust: false }, { brokenWasm: true }]) {
   const fallback = await boot(args);
   assert.equal(fallback.renderer().count, 1024);
@@ -172,4 +203,4 @@ assert.equal(canvasEvent.prevented, true); assert.equal(reduced.el("playToggle")
 await app.el("fieldCanvas").emit("webglcontextlost");
 assert.equal(app.renderer().count, 1024);
 assert.match(app.el("status").textContent, /context lost/);
-console.log("PASS: app startup, real Wasm buffers, max field, pause/reverse, phase slice, controls, capture, imports, reduced motion, missing/corrupt Wasm and context-loss fallback.");
+console.log("PASS: app startup, real Wasm buffers, max field, pause/reverse, phase slice, legacy shear continuity, controls, capture, imports, reduced motion, missing/corrupt Wasm and context-loss fallback.");

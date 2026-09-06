@@ -39,6 +39,12 @@ assert.deepEqual(Physics.componentsAt(0.1), [5, 20, 10]);
 assert.deepEqual(Physics.componentsAt(30), [15, 95, 5]);
 assert.deepEqual(Physics.componentsAt(0.75), [7.5, 30, 11]);
 
+// Legacy supplies only an authored angular rate, never a physical circular speed.
+const legacy = { ...Core.defaults(), dynamics: "legacy", blackHoleMillion: 100 };
+assert.throws(() => Physics.velocityComponents(8, legacy), RangeError);
+assert.throws(() => Physics.velocityKms(8, legacy), RangeError);
+assert.ok(Number.isNaN(wasm.circular_velocity(8, ...Physics.parameters(legacy))));
+
 // Physics reaches the full rendered sample, with correct orbital units and no
 // stale/detached views after Rust allocates its orbital-rate buffer.
 assert.equal(wasm.generate(2 ** 32, 65536, 303), 65536);
@@ -79,4 +85,4 @@ const current = Core.exportState(Core.defaults(), 2.5);
 assert.throws(() => Core.importState({ ...current, physicsSource: "wrong data" }));
 assert.throws(() => Core.importState({ ...current, settings: { ...current.settings, dynamics: "unknown" } }));
 assert.deepEqual(Core.importState(current, { logical: 2 ** 32, rendered: 65536 }).settings, Core.defaults());
-console.log("PASS: 195 pinned UFF Python predictions agree with JS and Wasm; five physical laws, orbital units, full-capacity rates, data provenance and v0.1 state migration.");
+console.log("PASS: 195 pinned UFF Python predictions agree with JS and Wasm; five physical laws, legacy diagnostic rejection, orbital units, full-capacity rates, data provenance and v0.1 state migration.");

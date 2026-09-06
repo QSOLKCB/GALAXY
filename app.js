@@ -269,7 +269,8 @@
     for (const key of rangeKeys) byId(key).addEventListener("input", event => {
       state.settings[key] = Number(event.target.value);
       if (shapeKeys.has(key)) state.settings.profile = "custom";
-      if (key === "bulge" || key === "shear") restartDynamics();
+      if (key === "bulge") restartDynamics();
+      else if (key === "shear") rebuild(false);
       else { state.dirty = true; syncControls(); }
     });
     byId("dynamics").addEventListener("change", event => {

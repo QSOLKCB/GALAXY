@@ -75,6 +75,7 @@
     return 0;
   }
   function velocityComponents(radius, settings) {
+    if (settings.dynamics === "legacy") throw new RangeError("Legacy rotation has no physical circular velocity");
     const [gas, disk, bulge] = componentsAt(radius);
     const baryons = baryonicV2(gas, disk, bulge, settings.diskML, settings.bulgeML);
     const central = G * settings.blackHoleMillion * 1e6 / radius;

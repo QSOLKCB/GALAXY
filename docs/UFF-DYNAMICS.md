@@ -110,6 +110,9 @@ from the initial spiral. Display orientation, pitch, spread and exposure do not
 alter the physical mass model. The authored bulge fraction changes which radii
 the sampled stars occupy, so changing it rebuilds rates and restarts the clock.
 The disc and bulge mass-to-light controls independently change the mass model.
+In original visual mode, changing shear rebuilds the orbital rates while
+preserving the accumulated clock and phase offset, including paused and
+timeless phase slices.
 
 The plot's selected total curve and the orbital-rate buffer use the same
 parameters and source data. Its baryon curve excludes the optional central mass;
@@ -139,6 +142,9 @@ Model IDs are 0 legacy, 1 baryons, 2 NFW, 3 Burkert, 4 MOND/RAR, 5 UFF empirical
 and return zero; invalid scalar velocity requests return NaN. Reseeding clears
 old rates. A client must reacquire both memory views after configuration because
 Wasm memory can grow. JavaScript uses the same formulas if Wasm is unavailable.
+Legacy mode has no physical circular velocity: JavaScript's `velocityComponents`
+and `velocityKms` throw `RangeError`, native Rust returns `None`, and Wasm's
+`circular_velocity` returns NaN. Legacy angular-rate calculations remain available.
 
 ```bash
 cargo test --manifest-path rust/Cargo.toml --locked --offline
