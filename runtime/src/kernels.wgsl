@@ -6,6 +6,7 @@ struct Global {
     motion: vec4<f32>,     // dt Myr, time Myr, direction, softening kpc
     shape: vec4<f32>,      // arms, pitch radians, scatter, visual bulge fraction
     extra: vec4<f32>,      // thickness kpc, radial kick km/s, integrator (0/1), unused
+    phase_time: vec4<f32>, // time/TAU in four chunks, each with 12 significant bits
 }
 struct Case { info: vec4<u32>, p0: vec4<f32>, p1: vec4<f32>, p2: vec4<f32> }
 struct Particle { orbit: vec4<f32>, state: vec4<f32> }
@@ -98,7 +99,17 @@ fn initialize(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(256)
 fn circular(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x; if i >= settings.info.x { return; }
-    let orbit = particles[i].orbit; let theta = orbit.y+settings.motion.y*orbit.w;
+    let orbit = particles[i].orbit;
+    // A 12-bit by 12-bit product fits f32 exactly. Wrap each contribution before
+    // adding, instead of forming a large phase and discarding its low bits.
+    let rate_high = bitcast<f32>(bitcast<u32>(orbit.w) & 0xfffff000u);
+    let rate_low = orbit.w-rate_high;
+    var turns = fract(orbit.y/TAU);
+    for (var j = 0u; j < 4u; j++) {
+        turns = fract(turns+fract(rate_high*settings.phase_time[j]));
+        turns = fract(turns+fract(rate_low*settings.phase_time[j]));
+    }
+    let theta = (turns-select(0.0,1.0,turns > 0.5))*TAU;
     particles[i].state = vec4<f32>(orbit.x*cos(theta),orbit.x*sin(theta),-orbit.w*orbit.x*sin(theta),orbit.w*orbit.x*cos(theta));
 }
 fn acceleration(point: vec2<f32>) -> vec2<f32> {

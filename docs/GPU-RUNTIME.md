@@ -20,6 +20,8 @@ Only a successful run has `status: complete`. Failed runs return a nonzero exit
 status and retain the receipt and any completed outputs. Output directories must
 be new; an earlier run is never overwritten. Process kills can leave a `running`
 receipt and should be treated as interrupted, not complete.
+Artifact enumeration and hashing are part of finalization: a detected failure
+records `status: failed`, the error and any completed simulation details.
 
 ## Local quick start
 
@@ -193,6 +195,10 @@ requested snapshot times: increasing `steps` changes model time, and does not
 pretend to perform intermediate numerical steps. `particle_updates` counts
 actual particle evaluations. The sampled frame count and synchronized compute
 wall time are reported separately from total execution/output time.
+The GPU evaluates circular phase in wrapped turns using split time/rate products,
+then supplies an angle in `[-pi, pi]` to the trigonometric functions. The time split
+retains 48 significant bits and avoids forming a large float32 phase, including
+at the maximum admitted 200,000 Myr duration. No extra particle state is needed.
 
 Leapfrog uses kick–drift–kick integration in the x/y plane:
 
@@ -222,6 +228,11 @@ term below `R/core = 0.001`, then uses a higher-order continuation below 0.5.
 CPU reference equations use float64 with float32 particle storage. GPU devices
 can differ in transcendental rounding: source/recipe/output hashes support
 reproduction and identification, not a claim of bit-identical cross-GPU results.
+Phase wrapping preserves the precision of each stored angular rate. Independently
+initialized CPU/GPU rates can still differ slightly, producing phase drift over
+many revolutions. Long circular verification therefore compares float64 propagation
+of the identical stored orbital parameters; the existing short-run checks also
+compare independent CPU/GPU initialization.
 
 Compact kernels implement UFF's Kerr radii, with signed spin relative to the
 equatorial orbit. `r_g = GM/c²`; the Schwarzschild horizon is `2 r_g`.

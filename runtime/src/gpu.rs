@@ -56,6 +56,19 @@ struct Global {
     motion: [f32; 4],
     shape: [f32; 4],
     extra: [f32; 4],
+    phase_time: [f32; 4],
+}
+fn phase_time_parts(time_myr: f64) -> [f32; 4] {
+    // Four 12-significand-bit chunks retain 48 bits of time/TAU. Pairing them
+    // with 12-bit rate chunks lets the shader wrap exact f32 products separately.
+    let mut remaining = time_myr / std::f64::consts::TAU;
+    let mut parts = [0.0; 4];
+    for part in &mut parts {
+        let high = f64::from_bits(remaining.to_bits() & !((1_u64 << 41) - 1));
+        *part = high as f32;
+        remaining -= high;
+    }
+    parts
 }
 impl Global {
     fn spin(s: &Spin, step: u32) -> Self {
@@ -83,6 +96,7 @@ impl Global {
                 },
                 0.0,
             ],
+            phase_time: phase_time_parts(step as f64 * s.dt_myr),
         }
     }
 }
@@ -429,6 +443,18 @@ impl Gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn circular_time_chunks_preserve_long_and_fractional_job_times() {
+        assert_eq!(std::mem::size_of::<Global>(), 80);
+        for time in [0.0, 0.0001, 123_456.123456789, 198_765.4321, 200_000.0] {
+            let parts = phase_time_parts(time);
+            assert!(parts.iter().all(|p| p.to_bits() & 0xfff == 0));
+            let reconstructed: f64 = parts.into_iter().map(f64::from).sum();
+            let expected = time / std::f64::consts::TAU;
+            assert!((reconstructed - expected).abs() <= 2e-14 * expected.abs().max(1e-10));
+        }
+    }
 
     #[test]
     fn adapter_selection_supports_model_numbers_and_preserves_index_precedence() {

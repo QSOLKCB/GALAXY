@@ -137,6 +137,41 @@ pub fn run(gpu: Option<&Gpu>) -> Result<Value> {
                 }
             }
         }
+        // Isolate phase arithmetic from independently rounded CPU/GPU initialization:
+        // propagate the same stored GPU orbital parameters in float64.
+        for direction in [-1, 1] {
+            for dt_myr in [2.0, 1.987654321] {
+                let s = Spin {
+                    particles: 1031,
+                    snapshot_limit: 257,
+                    steps: 100_000,
+                    snapshot_every: 0,
+                    dt_myr,
+                    direction,
+                    physics: Physics {
+                        black_hole_million: 1000.0,
+                        ..Physics::default()
+                    },
+                    ..Spin::default()
+                };
+                let field = gpu.initialize(&s)?;
+                let initial = gpu.sample(&field, &s)?;
+                let mut previous = 0;
+                for total in [98_765, 100_000] {
+                    let mut expected = initial.clone();
+                    reference::advance(&mut expected, &s, total, total);
+                    gpu.advance(&field, &s, total - previous, total);
+                    previous = total;
+                    for (a, b) in gpu.sample(&field, &s)?.iter().zip(expected) {
+                        for (x, y) in a.state.iter().zip(b.state) {
+                            if !x.is_finite() || (*x - y).abs() > 3e-4 * (1.0 + y.abs()) {
+                                return Err(format!("Long circular phase/reference mismatch at step {total}, dt {dt_myr}, direction {direction}: {x} vs {y}").into());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // i*particles exceeds u32 here; verify the GPU's exact gather mapping.
         let s = Spin {
             particles: 262147,
@@ -159,6 +194,8 @@ pub fn run(gpu: Option<&Gpu>) -> Result<Value> {
         json!({"status":"passed","uff_python_predictions":expected.len(),"compact_python_predictions":compact_cases.len(),
         "gpu_checked":gpu.is_some(),"adapter":gpu.map(|g|&g.info),"gpu_velocity_relative_tolerance":2e-4,
         "gpu_compact_relative_tolerance":8e-5,"orbit_comparison_cases":if gpu.is_some() {4} else {0},
+        "long_circular_phase_cases":if gpu.is_some() {8} else {0},
+        "long_circular_reference":"float64 propagation of identical stored orbital parameters",
         "large_gather_particles":if gpu.is_some() {262147} else {0}}),
     )
 }

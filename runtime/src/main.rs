@@ -216,6 +216,14 @@ fn execute(job: &Job, directory: &Path, options: &Backend) -> Result<Value> {
     Ok(details)
 }
 fn run(job_path: &Path, directory: &Path, options: &Backend) -> Result<()> {
+    run_with_artifacts(job_path, directory, options, output::artifacts)
+}
+fn run_with_artifacts(
+    job_path: &Path,
+    directory: &Path,
+    options: &Backend,
+    artifact_manifest: impl FnOnce(&Path) -> Result<Vec<Value>>,
+) -> Result<()> {
     let job = load_job(job_path)?;
     if let Some(parent) = directory.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
@@ -232,19 +240,17 @@ fn run(job_path: &Path, directory: &Path, options: &Backend) -> Result<()> {
         "runtime_source_sha256":env!("GALAXY_RUNTIME_SOURCE_SHA256"),"job_sha256":output::sha256(&fs::read(directory.join("job.json"))?),
         "uff_source":provenance,"backend_requested":if options.cpu {"cpu"} else {"gpu"},"allow_software":options.allow_software});
     output::write_json(&directory.join("receipt.json"), &receipt)?;
-    match execute(&job, directory, options) {
-        Ok(details) => {
-            receipt["status"] = json!("complete");
-            receipt["results"] = details;
-            receipt["artifacts"] = json!(output::artifacts(directory)?);
-            output::write_json(&directory.join("receipt.json"), &receipt)?;
-        }
-        Err(error) => {
-            receipt["status"] = json!("failed");
-            receipt["error"] = json!(error.to_string());
-            output::write_json(&directory.join("receipt.json"), &receipt)?;
-            return Err(error);
-        }
+    let result = execute(&job, directory, options).and_then(|details| {
+        receipt["results"] = details;
+        receipt["artifacts"] = json!(artifact_manifest(directory)?);
+        receipt["status"] = json!("complete");
+        output::write_json(&directory.join("receipt.json"), &receipt)
+    });
+    if let Err(error) = result {
+        receipt["status"] = json!("failed");
+        receipt["error"] = json!(error.to_string());
+        output::write_json(&directory.join("receipt.json"), &receipt)?;
+        return Err(error);
     }
     println!("Completed: {}", directory.display());
     Ok(())
@@ -274,5 +280,62 @@ fn main() {
     if let Err(error) = result {
         eprintln!("GALAXY: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_finalization_errors_record_a_failed_receipt() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let temp = Scratch(std::env::temp_dir().join(format!(
+                "galaxy-receipt-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )));
+        fs::create_dir(&temp.0).unwrap();
+        let job = temp.0.join("job.json");
+        fs::write(
+            &job,
+            br#"{"schema_version":1,"task":{"kind":"curves","radii":2}}"#,
+        )
+        .unwrap();
+        let backend = Backend {
+            cpu: true,
+            adapter: None,
+            allow_software: false,
+        };
+        for stage in ["enumeration", "hashing"] {
+            let directory = temp.0.join(stage);
+            let error = run_with_artifacts(&job, &directory, &backend, |path| {
+                assert!(path.join("rotation-curves.csv").is_file());
+                if stage == "enumeration" {
+                    output::artifacts(&path.join("missing-directory"))
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "injected artifact read failure",
+                    )
+                    .into())
+                }
+            })
+            .unwrap_err();
+            let receipt: Value =
+                serde_json::from_slice(&fs::read(directory.join("receipt.json")).unwrap()).unwrap();
+            assert_eq!(receipt["status"], "failed", "{stage}");
+            assert_eq!(receipt["error"], error.to_string());
+            assert!(receipt["results"]["curve_evaluations"].as_u64().unwrap() > 0);
+            assert!(receipt["artifacts"].is_null());
+        }
     }
 }
