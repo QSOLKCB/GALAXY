@@ -23,9 +23,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
         with:
-          workspaces: runtime
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/target
+          key: native-gpu-${{ runner.os }}-rust-1.85.1-${{ hashFiles('runtime/Cargo.lock') }}
       - name: Native equations, job validation and CLI artifacts
         run: cargo test --manifest-path runtime/Cargo.toml --locked
       - name: Local and SSH runner checks
