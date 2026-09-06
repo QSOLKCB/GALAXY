@@ -5,10 +5,11 @@ import json
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("vast_runner", ROOT / "scripts/vast-runner.py")
@@ -102,20 +103,60 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(json.loads(target.read_text()), {"status": "complete"})
         self.assertTrue(target.resolve().is_relative_to(destination.resolve()))
 
-    def execute_mock_remote(self, exit_code):
+    def test_download_accepts_exact_limit_and_preserves_exit_code(self):
+        payload = bytes(range(64))
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code):
+                destination = self.root / f"boundary-{exit_code}.tar.gz"
+                command = [sys.executable, "-c",
+                           f"import sys; sys.stdout.buffer.write(bytes(range(64))); sys.exit({exit_code})"]
+                with patch.object(runner, "MAX_DOWNLOAD_BYTES", len(payload)):
+                    self.assertEqual(runner.download_results(command, destination), exit_code)
+                self.assertEqual(destination.read_bytes(), payload)
+
+    def test_download_terminates_oversized_sender_without_exceeding_disk_limit(self):
+        destination = self.root / "oversized.tar.gz"
+        limit = 128 * 1024
+        real_popen = subprocess.Popen
+        processes = []
+        def launch(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+        # A finite 8 MiB sender keeps the regression test itself bounded.
+        command = [sys.executable, "-u", "-c",
+                   "import sys\nfor _ in range(128):\n    sys.stdout.buffer.write(b'x' * 65536)\n"]
+        with patch.object(runner, "MAX_DOWNLOAD_BYTES", limit), patch.object(runner.subprocess, "Popen", side_effect=launch):
+            with self.assertRaisesRegex(ValueError, "compressed download"):
+                runner.download_results(command, destination)
+        self.assertLessEqual(destination.stat().st_size, limit)
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
+        self.assertNotEqual(processes[0].returncode, 0)
+        self.assertTrue(processes[0].stdout.closed)
+
+    def test_download_kills_and_reaps_sender_if_termination_times_out(self):
+        process = Mock(stdout=io.BytesIO(b"overflow"))
+        process.wait.side_effect = [subprocess.TimeoutExpired("ssh", 5), -9]
+        with patch.object(runner, "MAX_DOWNLOAD_BYTES", 1), patch.object(runner.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(ValueError, "compressed download"):
+                runner.download_results(["ssh", "example.test"], self.root / "timeout.tar.gz")
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_count, 2)
+        self.assertTrue(process.stdout.closed)
+
+    def execute_mock_remote(self, exit_code, retrieval_exit_code=0):
         download = self.root / "download.tar.gz"
         self.archive(download)
         def run(command, **kwargs):
-            if "stdin" in kwargs:
-                self.assertGreater(len(kwargs["stdin"].read()), 0)
-            if "stdout" in kwargs:
-                kwargs["stdout"].write(download.read_bytes())
+            self.assertGreater(len(kwargs["stdin"].read()), 0)
             return subprocess.CompletedProcess(command, 0)
-        class Process:
-            stdout = ["remote job log\n"]
-            def wait(self):
-                return exit_code
-        with patch.object(runner.subprocess, "run", side_effect=run), patch.object(runner.subprocess, "Popen", return_value=Process()):
+        process = Mock(stdout=["remote job log\n"])
+        process.wait.return_value = exit_code
+        self.download_process = Mock(stdout=io.BytesIO(download.read_bytes()))
+        self.download_process.wait.return_value = retrieval_exit_code
+        with patch.object(runner.subprocess, "run", side_effect=run), patch.object(runner.subprocess, "Popen", side_effect=[process, self.download_process]):
             return runner.main(self.args)
 
     def test_success_retrieves_results_and_records_status(self):
@@ -132,6 +173,29 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["remote_exit_code"], 23)
         self.assertTrue(report["results_retrieved"])
+
+    def test_oversized_download_is_not_reported_as_success(self):
+        with patch.object(runner, "MAX_DOWNLOAD_BYTES", 32):
+            with self.assertRaisesRegex(ValueError, "compressed download"):
+                self.execute_mock_remote(0)
+        report = json.loads((self.root / "output/runner.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["remote_exit_code"], 0)
+        self.assertFalse(report["results_retrieved"])
+        self.assertFalse((self.root / "output/results").exists())
+        self.download_process.terminate.assert_called_once_with()
+        self.download_process.wait.assert_called_once_with(timeout=5)
+        self.assertTrue(self.download_process.stdout.closed)
+
+    def test_download_failure_is_not_reported_as_success(self):
+        with self.assertRaises(RuntimeError):
+            self.execute_mock_remote(0, retrieval_exit_code=23)
+        report = json.loads((self.root / "output/runner.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["remote_exit_code"], 0)
+        self.assertEqual(report["retrieval_exit_code"], 23)
+        self.assertFalse(report["results_retrieved"])
+        self.assertFalse((self.root / "output/results").exists())
 
 if __name__ == "__main__":
     unittest.main()

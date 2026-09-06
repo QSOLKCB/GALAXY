@@ -15,6 +15,7 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+MAX_DOWNLOAD_BYTES = 4 * 1024**3
 
 def source_files(root=ROOT):
     fixed = ["runtime/Cargo.toml", "runtime/Cargo.lock", "runtime/build.rs",
@@ -35,6 +36,32 @@ def archive_source(archive, job, root=ROOT):
         for path in source_files(root):
             tar.add(path, arcname="source/" + path.relative_to(root).as_posix(), recursive=False)
         tar.add(job, arcname="job.json", recursive=False)
+
+def download_results(command, destination):
+    # Bound the compressed stream before writing it to the temporary filesystem.
+    with destination.open("xb") as sink:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE)
+        try:
+            total = 0
+            while True:
+                chunk = process.stdout.read(min(64 * 1024, MAX_DOWNLOAD_BYTES - total + 1))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("Result archive exceeds the 4 GiB compressed download limit; retrieve it manually")
+                sink.write(chunk)
+            return process.wait()
+        except BaseException:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
+        finally:
+            process.stdout.close()
 
 def extract_results(archive, output):
     # Only regular result files in a newly created local run directory.
@@ -147,12 +174,13 @@ def main(argv=None):
                     raise
             report["remote_exit_code"] = returncode
             download = Path(temp) / "results.tar.gz"
-            with download.open("wb") as sink:
-                retrieval = subprocess.run(action["ssh"] + [action["download"]], stdout=sink)
-            if retrieval.returncode == 0:
+            report["results_retrieved"] = False
+            retrieval_code = download_results(action["ssh"] + [action["download"]], download)
+            report["retrieval_exit_code"] = retrieval_code
+            if retrieval_code == 0:
                 extract_results(download, args.output)
-            report["results_retrieved"] = retrieval.returncode == 0
-            if returncode != 0 or retrieval.returncode != 0:
+                report["results_retrieved"] = True
+            if returncode != 0 or retrieval_code != 0:
                 raise RuntimeError("Remote run or result retrieval failed; see runner.log and the recorded remote directory")
             report["status"] = "complete"
             save()

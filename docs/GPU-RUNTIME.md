@@ -245,9 +245,12 @@ particle-density preview with an authored palette, not photometry. CSV positions
 and velocities have kpc and km/s units. At most 256 snapshots are admitted per job;
 `snapshot_every: 0` writes only initial/final snapshots.
 
-Each curves/compact job admits at most 1,048,576 evaluations. The SSH extractor
-caps result extraction at 4 GiB; larger retained remote outputs can be retrieved
-manually. There is no automatic resume/checkpoint import or encoded video output
+Each curves/compact job admits at most 1,048,576 evaluations. The SSH runner caps
+the compressed result download at 4 GiB before writing excess bytes to disk and
+separately caps extracted result files at 4 GiB. Exceeding the download limit
+terminates the SSH transfer, records a failed run and removes the temporary
+download. Larger retained remote outputs can be retrieved manually.
+There is no automatic resume/checkpoint import or encoded video output
 in this runtime version; the offline viewer plays the PNG sequence.
 
 ## Validation
