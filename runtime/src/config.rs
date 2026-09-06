@@ -179,7 +179,12 @@ impl Spin {
         if self.snapshot_limit == 0 || self.snapshot_limit > 65_536 {
             return Err("snapshot_limit must be in 1..=65536".into());
         }
-        if self.snapshot_every > 0 && self.steps / self.snapshot_every > 254 {
+        let snapshot_count = if self.snapshot_every == 0 {
+            2
+        } else {
+            1 + self.steps.div_ceil(self.snapshot_every)
+        };
+        if snapshot_count > 256 {
             return Err("At most 256 snapshots per job; increase snapshot_every".into());
         }
         if !(1..=8).contains(&self.arms) || ![1, -1].contains(&self.direction) {

@@ -58,7 +58,9 @@ The simulation does not require a window system, browser, CUDA toolkit or Python
 The SSH runner requires Python 3.12+ on the machine launching it.
 
 Use `--adapter 1` to select the index listed by `devices`, or `--adapter NVIDIA`
-to select the first matching name. A process uses one adapter; separate processes
+to select the first matching name. An existing index takes precedence; other
+values match names, so `--adapter 4090` selects a matching RTX 4090.
+A process uses one adapter; separate processes
 can target different indices, including cards with identical names. No automatic
 multi-GPU partitioning or cross-device synchronization is implemented.
 

@@ -191,6 +191,55 @@ impl Drop for Scratch {
     }
 }
 #[test]
+fn snapshot_limit_counts_initial_and_final_frames_exactly() {
+    for (steps, snapshot_every, accepted) in [
+        (255, 1, true),
+        (256, 1, false),
+        (509, 2, true),
+        (510, 2, true),
+        (511, 2, false),
+        (100_000, 0, true),
+        (1, 100, true),
+    ] {
+        let s = Spin {
+            steps,
+            snapshot_every,
+            ..Spin::default()
+        };
+        assert_eq!(s.validate().is_ok(), accepted, "{steps}/{snapshot_every}");
+    }
+    let temp = Scratch::new();
+    let job = temp.0.join("boundary.json");
+    let out = temp.0.join("boundary");
+    fs::write(
+        &job,
+        serde_json::to_vec(&json!({"schema_version":1,"task":{
+            "kind":"spin","particles":1,"steps":255,"snapshot_every":1,"image_size":128
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_galaxy-runtime"))
+        .args(["run", "--cpu", "--job"])
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let receipt: Value =
+        serde_json::from_slice(&fs::read(out.join("receipt.json")).unwrap()).unwrap();
+    assert_eq!(receipt["status"], "complete");
+    let frames = receipt["results"]["spin"]["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 256);
+    assert_eq!(frames[0]["step"], 0);
+    assert_eq!(frames[255]["step"], 255);
+}
+#[test]
 fn cli_writes_complete_results_and_never_overwrites_existing_runs() {
     let temp = Scratch::new();
     for (name, task) in [

@@ -127,6 +127,27 @@ pub fn devices() -> Vec<Value> {
         })
         .collect()
 }
+fn select_adapter(
+    infos: &[wgpu::AdapterInfo],
+    name: Option<&str>,
+    allow_software: bool,
+) -> Option<usize> {
+    // A listed index takes precedence. Other values, including GPU model numbers,
+    // are name substrings. Never switch away from a disallowed software index.
+    if let Some(index) = name
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|&i| i < infos.len())
+    {
+        return (allow_software || !software(&infos[index])).then_some(index);
+    }
+    let query = name.map(str::to_lowercase);
+    infos.iter().position(|info| {
+        (allow_software || !software(info))
+            && query
+                .as_ref()
+                .map_or(true, |n| info.name.to_lowercase().contains(n))
+    })
+}
 pub struct Gpu {
     pub info: Value,
     device: wgpu::Device,
@@ -142,9 +163,10 @@ pub struct Field {
 }
 impl Gpu {
     pub fn new(name: Option<&str>, allow_software: bool) -> Result<Self> {
-        let (index,adapter) = adapters().into_iter().enumerate().find(|(index,a)| {
-            let info = a.get_info(); (allow_software || !software(&info)) && name.map_or(true, |n| n.parse::<usize>().map_or_else(|_|info.name.to_lowercase().contains(&n.to_lowercase()),|i|i==*index))
-        }).ok_or("No matching hardware compute adapter. Run `devices`; NVIDIA containers need graphics driver capability. --allow-software permits a software adapter only for validation; --cpu selects the explicit CPU reference.")?;
+        let mut available_adapters = adapters();
+        let infos: Vec<_> = available_adapters.iter().map(|a| a.get_info()).collect();
+        let index = select_adapter(&infos, name, allow_software).ok_or("No matching hardware compute adapter. Run `devices`; NVIDIA containers need graphics driver capability. --allow-software permits a software adapter only for validation; --cpu selects the explicit CPU reference.")?;
+        let adapter = available_adapters.swap_remove(index);
         let mut info = describe(&adapter);
         info["index"] = json!(index);
         let available = adapter.limits();
@@ -401,5 +423,43 @@ impl Gpu {
     pub fn sample(&self, field: &Field, s: &Spin) -> Result<Vec<Particle>> {
         self.dispatch(field, "gather", s.sample_count(), 1);
         self.read(field)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adapter_selection_supports_model_numbers_and_preserves_index_precedence() {
+        let info = |name: &str, device_type| wgpu::AdapterInfo {
+            name: name.into(),
+            vendor: 0,
+            device: 0,
+            device_type,
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+        };
+        let infos = [
+            info("NVIDIA GeForce RTX 4090", wgpu::DeviceType::DiscreteGpu),
+            info("NVIDIA GeForce RTX 5090", wgpu::DeviceType::DiscreteGpu),
+            info("llvmpipe", wgpu::DeviceType::Cpu),
+        ];
+        for (query, expected) in [
+            (None, Some(0)),
+            (Some("0"), Some(0)),
+            (Some("1"), Some(1)),
+            (Some("4090"), Some(0)),
+            (Some("5090"), Some(1)),
+            (Some("nViDiA"), Some(0)),
+            (Some("9999"), None),
+            (Some("2"), None),
+            (Some("LLVMPipe"), None),
+        ] {
+            assert_eq!(select_adapter(&infos, query, false), expected, "{query:?}");
+        }
+        assert_eq!(select_adapter(&infos, Some("2"), true), Some(2));
+        assert_eq!(select_adapter(&infos, Some("LLVMPipe"), true), Some(2));
     }
 }
