@@ -48,12 +48,15 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("source/tests/uff-reference.json", names)
         self.assertFalse(any("/target/" in name or "/.git/" in name for name in names))
 
-    def archive(self, path, name="results/receipt.json", link=False):
+    def archive(self, path, name="results/receipt.json", link=False, directory=False):
         with tarfile.open(path, "w:gz") as tar:
             entry = tarfile.TarInfo(name)
             if link:
                 entry.type = tarfile.SYMTYPE
                 entry.linkname = "/tmp/elsewhere"
+                tar.addfile(entry)
+            elif directory:
+                entry.type = tarfile.DIRTYPE
                 tar.addfile(entry)
             else:
                 data = b'{"status":"complete"}'
@@ -67,6 +70,37 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.extract_results(path, self.root / "destination")
         self.assertFalse((self.root / "escape").exists())
+
+    def test_result_extraction_rejects_windows_paths_before_filesystem_access(self):
+        path = self.root / "windows-paths.tar.gz"
+        names = [
+            r"results/sub\..\..\..\payload",
+            r"results\..\payload",
+            "results/C:/payload",
+            "results/C:payload",
+            "results/sub/D:/payload",
+            r"results/\\server\share\payload",
+            r"results/\rooted\payload",
+            "results/receipt.json:payload",
+        ]
+        for index, name in enumerate(names):
+            for directory in (False, True):
+                with self.subTest(name=name, directory=directory):
+                    destination = self.root / f"destination-{index}-{int(directory)}"
+                    self.archive(path, name, directory=directory)
+                    with self.assertRaisesRegex(ValueError, "Unexpected result archive path"):
+                        runner.extract_results(path, destination)
+                    self.assertFalse(destination.exists())
+
+    def test_result_extraction_accepts_nested_posix_paths(self):
+        path = self.root / "nested.tar.gz"
+        name = "results/nested run/receipt.json"
+        self.archive(path, name)
+        destination = self.root / "destination"
+        runner.extract_results(path, destination)
+        target = destination / "results" / "nested run" / "receipt.json"
+        self.assertEqual(json.loads(target.read_text()), {"status": "complete"})
+        self.assertTrue(target.resolve().is_relative_to(destination.resolve()))
 
     def execute_mock_remote(self, exit_code):
         download = self.root / "download.tar.gz"

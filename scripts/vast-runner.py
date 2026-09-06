@@ -38,13 +38,19 @@ def archive_source(archive, job, root=ROOT):
 
 def extract_results(archive, output):
     # Only regular result files in a newly created local run directory.
+    destination = output.resolve()
     with tarfile.open(archive, "r:gz") as tar:
         total = 0
         for member in tar:
             path = PurePosixPath(member.name)
-            if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "results":
+            # The archive uses POSIX paths; Windows must not reinterpret separators,
+            # drive-qualified components, or alternate data stream syntax.
+            if ("\\" in member.name or ":" in member.name or path.is_absolute()
+                    or ".." in path.parts or not path.parts or path.parts[0] != "results"):
                 raise ValueError("Unexpected result archive path")
             target = output.joinpath(*path.parts)
+            if not target.resolve().is_relative_to(destination):
+                raise ValueError("Unexpected result archive path")
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
             elif member.isfile():
