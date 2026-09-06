@@ -7,11 +7,27 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::{BufWriter, Write},
+    io::{self, BufWriter, Read, Write},
     path::Path,
 };
 pub fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 pub fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     let mut writer = BufWriter::new(File::create(path)?);
@@ -112,7 +128,61 @@ pub fn artifacts(directory: &Path) -> Result<Vec<Value>> {
         .map(|e| e.map(|v| v.path()))
         .collect::<std::io::Result<Vec<_>>>()?;
     files.sort();
-    files.into_iter().filter(|p|p.file_name().unwrap()!="receipt.json" && p.is_file()).map(|p| {
-        let bytes = fs::read(&p)?; Ok(json!({"file":p.file_name().unwrap().to_string_lossy(),"bytes":bytes.len(),"sha256":sha256(&bytes)}))
-    }).collect()
+    files
+        .into_iter()
+        .filter(|p| p.file_name().unwrap() != "receipt.json" && p.is_file())
+        .map(|p| {
+            let file = File::open(&p)?;
+            let bytes = file.metadata()?.len();
+            let hash = sha256_reader(file)?;
+            Ok(json!({"file":p.file_name().unwrap().to_string_lossy(),"bytes":bytes,"sha256":hash}))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hashing_bounds_reads_and_handles_short_reads_interruptions_and_errors() {
+        struct Zeros {
+            remaining: usize,
+            interrupted: bool,
+        }
+        impl Read for Zeros {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                assert!(
+                    buffer.len() <= 64 * 1024,
+                    "hashing requested an unbounded read"
+                );
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let count = self.remaining.min(buffer.len()).min(10_007);
+                buffer[..count].fill(0);
+                self.remaining -= count;
+                Ok(count)
+            }
+        }
+        assert_eq!(
+            sha256_reader(Zeros {
+                remaining: 2 * 1024 * 1024 + 17,
+                interrupted: false
+            })
+            .unwrap(),
+            "0b5f645725e6aa767bcaa0838f4e22a623d0f308b45127aaf5c1c7d20b51eb14"
+        );
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::PermissionDenied.into())
+            }
+        }
+        assert_eq!(
+            sha256_reader(Broken).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
 }

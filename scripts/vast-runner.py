@@ -2,6 +2,7 @@
 """Run a locked GALAXY checkout on an existing SSH-accessible GPU instance."""
 # SPDX-License-Identifier: Apache-2.0
 import argparse
+import codecs
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -16,6 +17,10 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_DOWNLOAD_BYTES = 4 * 1024**3
+MAX_LOG_BYTES = 16 * 1024**2
+MAX_RESULT_MEMBERS = 4096
+MAX_RESULT_PATHS = 4096
+STREAM_CHUNK_BYTES = 64 * 1024
 
 def source_files(root=ROOT):
     fixed = ["runtime/Cargo.toml", "runtime/Cargo.lock", "runtime/build.rs",
@@ -37,20 +42,32 @@ def archive_source(archive, job, root=ROOT):
             tar.add(path, arcname="source/" + path.relative_to(root).as_posix(), recursive=False)
         tar.add(job, arcname="job.json", recursive=False)
 
-def download_results(command, destination):
-    # Bound the compressed stream before writing it to the temporary filesystem.
+def _display_log(text):
+    encoding = getattr(sys.stdout, "encoding", None)
+    if encoding:
+        text = text.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(text, end="", flush=True)
+
+def _receive_output(command, destination, limit, error_message, display=False):
+    # Binary chunks bound memory even if the sender never emits a newline.
+    decoder = codecs.getincrementaldecoder("utf-8")("replace") if display else None
     with destination.open("xb") as sink:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT if display else None)
         try:
             total = 0
             while True:
-                chunk = process.stdout.read(min(64 * 1024, MAX_DOWNLOAD_BYTES - total + 1))
+                chunk = process.stdout.read1(min(STREAM_CHUNK_BYTES, limit - total + 1))
                 if not chunk:
                     break
                 total += len(chunk)
-                if total > MAX_DOWNLOAD_BYTES:
-                    raise ValueError("Result archive exceeds the 4 GiB compressed download limit; retrieve it manually")
+                if total > limit:
+                    raise ValueError(error_message)
                 sink.write(chunk)
+                if display:
+                    _display_log(decoder.decode(chunk))
+            if display:
+                _display_log(decoder.decode(b"", final=True))
             return process.wait()
         except BaseException:
             process.terminate()
@@ -63,12 +80,24 @@ def download_results(command, destination):
         finally:
             process.stdout.close()
 
+def download_results(command, destination):
+    return _receive_output(command, destination, MAX_DOWNLOAD_BYTES,
+                           "Result archive exceeds the 4 GiB compressed download limit; retrieve it manually")
+
+def run_remote(command, log):
+    return _receive_output(command, log, MAX_LOG_BYTES,
+                           "Remote output exceeds the 16 MiB remote log limit; inspect the recorded remote directory",
+                           display=True)
+
 def extract_results(archive, output):
     # Only regular result files in a newly created local run directory.
     destination = output.resolve()
     with tarfile.open(archive, "r:gz") as tar:
         total = 0
-        for member in tar:
+        paths = set()
+        for member_count, member in enumerate(tar, 1):
+            if member_count > MAX_RESULT_MEMBERS:
+                raise ValueError(f"Result archive exceeds the {MAX_RESULT_MEMBERS} member limit; retrieve it manually")
             path = PurePosixPath(member.name)
             # The archive uses POSIX paths; Windows must not reinterpret separators,
             # drive-qualified components, or alternate data stream syntax.
@@ -78,6 +107,11 @@ def extract_results(archive, output):
             target = output.joinpath(*path.parts)
             if not target.resolve().is_relative_to(destination):
                 raise ValueError("Unexpected result archive path")
+            # Count implicit parent directories too, before creating any of them.
+            for depth in range(1, len(path.parts) + 1):
+                paths.add(path.parts[:depth])
+                if len(paths) > MAX_RESULT_PATHS:
+                    raise ValueError(f"Result archive exceeds the {MAX_RESULT_PATHS} path limit; retrieve it manually")
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
             elif member.isfile():
@@ -145,7 +179,8 @@ def main(argv=None):
         return 0
     args.output.mkdir(parents=True, exist_ok=False)
     report = {"status": "uploading", "remote_directory": action["remote_directory"], "host": args.host,
-              "port": args.port, "job_sha256": hashlib.sha256(args.job.read_bytes()).hexdigest()}
+              "port": args.port, "job_sha256": hashlib.sha256(args.job.read_bytes()).hexdigest(),
+              "results_retrieved": False}
     def save():
         (args.output / "runner.json").write_text(json.dumps(report, indent=2) + "\n")
     save()
@@ -159,19 +194,7 @@ def main(argv=None):
                 subprocess.run(action["ssh"] + [action["upload"]], stdin=source, check=True)
             report["status"] = "running"
             save()
-            # Stream output, preserve the real remote exit status, and keep a local log.
-            with (args.output / "runner.log").open("w") as log:
-                process = subprocess.Popen(action["ssh"] + [action["run"]], stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, text=True)
-                try:
-                    for line in process.stdout:
-                        print(line, end="", flush=True)
-                        log.write(line)
-                    returncode = process.wait()
-                except BaseException:
-                    process.terminate()
-                    process.wait()
-                    raise
+            returncode = run_remote(action["ssh"] + [action["run"]], args.output / "runner.log")
             report["remote_exit_code"] = returncode
             download = Path(temp) / "results.tar.gz"
             report["results_retrieved"] = False

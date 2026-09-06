@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
+from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
@@ -103,6 +104,102 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(json.loads(target.read_text()), {"status": "complete"})
         self.assertTrue(target.resolve().is_relative_to(destination.resolve()))
 
+    def test_result_extraction_caps_empty_files_and_directories(self):
+        for directory in (False, True):
+            with self.subTest(directory=directory):
+                archive = self.root / f"many-{int(directory)}.tar.gz"
+                destination = self.root / f"many-{int(directory)}"
+                with tarfile.open(archive, "w:gz") as tar:
+                    for index in range(3):
+                        member = tarfile.TarInfo(f"results/entry-{index}")
+                        if directory:
+                            member.type = tarfile.DIRTYPE
+                        tar.addfile(member)
+                with patch.object(runner, "MAX_RESULT_MEMBERS", 2):
+                    with self.assertRaisesRegex(ValueError, "member limit"):
+                        runner.extract_results(archive, destination)
+                self.assertEqual(len(list((destination / "results").iterdir())), 2)
+                self.assertFalse((destination / "results/entry-2").exists())
+
+    def test_result_extraction_accepts_exact_member_and_path_limits(self):
+        archive = self.root / "exact-members.tar.gz"
+        names = ["results", "results/empty", "results/nested", "results/nested/empty"]
+        with tarfile.open(archive, "w:gz") as tar:
+            for index, name in enumerate(names):
+                member = tarfile.TarInfo(name)
+                if index in (0, 2):
+                    member.type = tarfile.DIRTYPE
+                tar.addfile(member)
+        destination = self.root / "exact-members"
+        with patch.object(runner, "MAX_RESULT_MEMBERS", 4), patch.object(runner, "MAX_RESULT_PATHS", 4):
+            runner.extract_results(archive, destination)
+        self.assertEqual(len(list(destination.rglob("*"))), 4)
+        self.assertEqual((destination / names[-1]).stat().st_size, 0)
+
+    def test_result_path_limit_counts_implicit_parent_directories(self):
+        for index, name in enumerate(["results/a/b/file", "results/a/b/c/file"]):
+            with self.subTest(name=name):
+                archive = self.root / f"parents-{index}.tar.gz"
+                destination = self.root / f"parents-{index}"
+                self.archive(archive, name)
+                with patch.object(runner, "MAX_RESULT_PATHS", 4):
+                    if index == 0:
+                        runner.extract_results(archive, destination)
+                        self.assertEqual(len(list(destination.rglob("*"))), 4)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "path limit"):
+                            runner.extract_results(archive, destination)
+                        self.assertFalse(destination.exists())
+
+    def test_excessive_remote_log_is_not_reported_as_success(self):
+        with patch.object(runner, "MAX_LOG_BYTES", 8):
+            with self.assertRaisesRegex(ValueError, "remote log limit"):
+                self.execute_mock_remote(0)
+        report = json.loads((self.root / "output/runner.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertLessEqual((self.root / "output/runner.log").stat().st_size, 8)
+        self.assertFalse((self.root / "output/results").exists())
+        self.assertFalse(report["results_retrieved"])
+        self.remote_process.terminate.assert_called_once_with()
+        self.remote_process.wait.assert_called_once_with(timeout=5)
+        self.assertTrue(self.remote_process.stdout.closed)
+        self.download_process.wait.assert_not_called()
+
+    def test_remote_log_preserves_exact_bytes_and_decodes_split_utf8(self):
+        payload = b"ready: \xe2\x82\xac\n\xff\xe2"
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code):
+                destination = self.root / f"log-{exit_code}.log"
+                console = io.StringIO()
+                process = Mock(stdout=io.BytesIO(payload))
+                process.wait.return_value = exit_code
+                with patch.object(runner, "MAX_LOG_BYTES", len(payload)), patch.object(runner, "STREAM_CHUNK_BYTES", 3), patch.object(runner.subprocess, "Popen", return_value=process) as launch, redirect_stdout(console):
+                    self.assertEqual(runner.run_remote(["ssh", "example.test"], destination), exit_code)
+                self.assertEqual(destination.read_bytes(), payload)
+                self.assertEqual(console.getvalue(), payload.decode("utf-8", errors="replace"))
+                self.assertEqual(launch.call_args.kwargs["stderr"], subprocess.STDOUT)
+                self.assertTrue(process.stdout.closed)
+
+    def test_remote_log_stops_noisy_sender_without_newlines(self):
+        destination = self.root / "noisy.log"
+        limit = 128 * 1024
+        real_popen = subprocess.Popen
+        processes = []
+        def launch(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+        command = [sys.executable, "-u", "-c",
+                   "import sys\nfor _ in range(128):\n    sys.stdout.buffer.write(b'x' * 32768)\n    sys.stderr.buffer.write(b'y' * 32768)\n"]
+        with patch.object(runner, "MAX_LOG_BYTES", limit), patch.object(runner.subprocess, "Popen", side_effect=launch), redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "remote log limit"):
+                runner.run_remote(command, destination)
+        self.assertLessEqual(destination.stat().st_size, limit)
+        self.assertIn(b"y", destination.read_bytes())
+        self.assertIsNotNone(processes[0].poll())
+        self.assertNotEqual(processes[0].returncode, 0)
+        self.assertTrue(processes[0].stdout.closed)
+
     def test_download_accepts_exact_limit_and_preserves_exit_code(self):
         payload = bytes(range(64))
         for exit_code in (0, 23):
@@ -152,11 +249,11 @@ class RunnerTests(unittest.TestCase):
         def run(command, **kwargs):
             self.assertGreater(len(kwargs["stdin"].read()), 0)
             return subprocess.CompletedProcess(command, 0)
-        process = Mock(stdout=["remote job log\n"])
-        process.wait.return_value = exit_code
+        self.remote_process = Mock(stdout=io.BytesIO(b"remote job log\n"))
+        self.remote_process.wait.return_value = exit_code
         self.download_process = Mock(stdout=io.BytesIO(download.read_bytes()))
         self.download_process.wait.return_value = retrieval_exit_code
-        with patch.object(runner.subprocess, "run", side_effect=run), patch.object(runner.subprocess, "Popen", side_effect=[process, self.download_process]):
+        with patch.object(runner.subprocess, "run", side_effect=run), patch.object(runner.subprocess, "Popen", side_effect=[self.remote_process, self.download_process]):
             return runner.main(self.args)
 
     def test_success_retrieves_results_and_records_status(self):

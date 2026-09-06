@@ -153,7 +153,10 @@ python3 scripts/vast-runner.py \
 toolchain on an Ubuntu/Debian instance where you are root. Omit it once these
 exist. The runner uploads only the runtime's source/build inputs and job file,
 builds and executes remotely, then retrieves the results under
-`runs/vast-spin/results/`. `runner.log` preserves output and `runner.json` records
+`runs/vast-spin/results/`. `runner.log` preserves up to 16 MiB of combined remote
+stdout/stderr, streamed in bounded binary chunks even without newlines. If that
+limit is exceeded, the runner stops its SSH process, records a failed run and
+retains the partial log. `runner.json` records
 the remote directory, archive/job hashes, exit status and retrieval result.
 A shared `galaxy-build-cache` under the remote root reuses compiled dependencies.
 
@@ -247,11 +250,17 @@ and velocities have kpc and km/s units. At most 256 snapshots are admitted per j
 
 Each curves/compact job admits at most 1,048,576 evaluations. The SSH runner caps
 the compressed result download at 4 GiB before writing excess bytes to disk and
-separately caps extracted result files at 4 GiB. Exceeding the download limit
+separately caps extracted result files at 4 GiB. Archives admit at most 4,096
+members, including empty files and directories, and at most 4,096 destination
+paths, including implicit parent directories. Both counts are checked before
+creating each entry. Exceeding the download limit
 terminates the SSH transfer, records a failed run and removes the temporary
 download. Larger retained remote outputs can be retrieved manually.
 There is no automatic resume/checkpoint import or encoded video output
 in this runtime version; the offline viewer plays the PNG sequence.
+
+Artifact receipt hashes read each file in 64 KiB chunks and obtain byte counts
+from file metadata, so finalizing a large CSV does not allocate another full copy.
 
 ## Validation
 

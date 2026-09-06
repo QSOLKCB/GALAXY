@@ -240,6 +240,26 @@ fn snapshot_limit_counts_initial_and_final_frames_exactly() {
     assert_eq!(frames[255]["step"], 255);
 }
 #[test]
+fn artifact_receipts_match_hashes_and_file_metadata() {
+    let temp = Scratch::new();
+    fs::write(temp.0.join("empty.bin"), []).unwrap();
+    fs::write(temp.0.join("small.txt"), b"abc").unwrap();
+    File::create(temp.0.join("large.bin"))
+        .unwrap()
+        .set_len(2 * 1024 * 1024 + 17)
+        .unwrap();
+    fs::write(temp.0.join("receipt.json"), b"{}").unwrap();
+    fs::create_dir(temp.0.join("nested")).unwrap();
+    assert_eq!(
+        output::artifacts(&temp.0).unwrap(),
+        vec![
+            json!({"file":"empty.bin","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}),
+            json!({"file":"large.bin","bytes":2 * 1024 * 1024 + 17,"sha256":"0b5f645725e6aa767bcaa0838f4e22a623d0f308b45127aaf5c1c7d20b51eb14"}),
+            json!({"file":"small.txt","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}),
+        ]
+    );
+}
+#[test]
 fn cli_writes_complete_results_and_never_overwrites_existing_runs() {
     let temp = Scratch::new();
     for (name, task) in [
