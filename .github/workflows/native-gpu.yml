@@ -26,6 +26,19 @@ jobs:
       - name: Check SSH runner and result extraction on Windows
         run: python runtime/tests/test_runner.py
 
+  runner-python:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: ['3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check SSH runner across supported Python versions
+        run: python runtime/tests/test_runner.py
+
   verify:
     runs-on: ubuntu-24.04
     steps:
