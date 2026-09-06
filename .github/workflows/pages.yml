@@ -24,8 +24,9 @@ jobs:
         run: |
           cargo test --manifest-path rust/Cargo.toml --locked --offline
           bash scripts/build-wasm.sh
-          git diff --exit-code -- wasm/
+          git diff --exit-code -- wasm/ data/uff-demo.js rust/src/uff_data.rs
           node tests/smoke.mjs
+          node tests/physics.mjs
           node tests/app.mjs
           node scripts/build-site.mjs
       - uses: actions/upload-pages-artifact@v3

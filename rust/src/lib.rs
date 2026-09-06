@@ -2,6 +2,8 @@
 //! A logical population is indexed, never allocated in full.
 //! The browser uploads this bounded float32 buffer to WebGL once per reseed.
 use std::cell::RefCell;
+pub mod physics;
+mod uff_data;
 
 pub const MAX_LOGICAL: u64 = 1_u64 << 32;
 pub const MAX_RENDERED: usize = 65_536;
@@ -11,6 +13,7 @@ thread_local! {
     // One worker/thread owns its buffer; exported pointers remain valid until
     // the next generate() call. JS reacquires memory.buffer after every call.
     static SAMPLE: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+    static ORBIT_RATES: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn logical_index(index: usize, count: usize, logical: u64) -> u32 {
@@ -49,7 +52,7 @@ pub fn make_sample(logical: u64, count: usize, seed: u32) -> Option<Vec<f32>> {
 }
 
 #[no_mangle]
-pub extern "C" fn abi_version() -> u32 { 1 }
+pub extern "C" fn abi_version() -> u32 { 2 }
 
 #[no_mangle]
 pub extern "C" fn max_rendered() -> u32 { MAX_RENDERED as u32 }
@@ -57,6 +60,7 @@ pub extern "C" fn max_rendered() -> u32 { MAX_RENDERED as u32 }
 // f64 accepts the exact Number 2^32 without JS BigInt or u32 truncation.
 #[no_mangle]
 pub extern "C" fn generate(logical: f64, count: u32, seed: u32) -> u32 {
+    ORBIT_RATES.with(|rates| rates.borrow_mut().clear());
     let valid = logical.is_finite()
         && logical >= 1.0
         && logical <= MAX_LOGICAL as f64
@@ -77,6 +81,49 @@ pub extern "C" fn buffer_ptr() -> *const f32 {
 #[no_mangle]
 pub extern "C" fn buffer_len() -> u32 {
     SAMPLE.with(|sample| sample.borrow().len() as u32)
+}
+
+/// Recompute one angular rate per existing sampled star; no full population allocation.
+#[no_mangle]
+pub extern "C" fn configure_dynamics(
+    model: u32, disk_ml: f64, bulge_ml: f64, black_hole_million: f64,
+    uff_v_inf: f64, uff_core: f64, uff_beta: f64, halo_log_mass: f64,
+    halo_concentration: f64, burkert_log_density: f64, burkert_core: f64,
+    mond_a0: f64, bulge: f64, shear: f64,
+) -> u32 {
+    let p = physics::Parameters { model, disk_ml, bulge_ml, black_hole_million, uff_v_inf,
+        uff_core, uff_beta, halo_log_mass, halo_concentration, burkert_log_density, burkert_core, mond_a0 };
+    ORBIT_RATES.with(|rates| {
+        let mut buffer = rates.borrow_mut();
+        buffer.clear();
+        if !p.valid() || !bulge.is_finite() || !(0.0..=0.5).contains(&bulge) ||
+            !shear.is_finite() || !(0.0..=1.0).contains(&shear) { return 0; }
+        SAMPLE.with(|sample| {
+            for star in sample.borrow().chunks_exact(STRIDE) {
+                let radius = physics::star_radius(star[0] as f64, star[4] as f64, bulge);
+                let Some(rate) = physics::angular_rate(radius, &p, shear) else { buffer.clear(); return 0; };
+                buffer.push(rate as f32);
+            }
+            buffer.len() as u32
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn orbit_ptr() -> *const f32 { ORBIT_RATES.with(|rates| rates.borrow().as_ptr()) }
+#[no_mangle]
+pub extern "C" fn orbit_len() -> u32 { ORBIT_RATES.with(|rates| rates.borrow().len() as u32) }
+
+/// Scalar diagnostic for parity checks and direct Wasm users. Invalid requests return NaN.
+#[no_mangle]
+pub extern "C" fn circular_velocity(
+    radius: f64, model: u32, disk_ml: f64, bulge_ml: f64, black_hole_million: f64,
+    uff_v_inf: f64, uff_core: f64, uff_beta: f64, halo_log_mass: f64,
+    halo_concentration: f64, burkert_log_density: f64, burkert_core: f64, mond_a0: f64,
+) -> f64 {
+    let p = physics::Parameters { model, disk_ml, bulge_ml, black_hole_million, uff_v_inf,
+        uff_core, uff_beta, halo_log_mass, halo_concentration, burkert_log_density, burkert_core, mond_a0 };
+    physics::velocity_kms(radius, &p).unwrap_or(f64::NAN)
 }
 
 #[cfg(test)]

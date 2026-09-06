@@ -6,6 +6,7 @@
     precision highp float;
     attribute vec4 a_first;
     attribute vec4 a_second;
+    attribute float a_rate;
     uniform vec2 u_scale;
     uniform vec4 u_shape; // arms, pitch radians, scatter, bulge
     uniform vec4 u_view; // inclination radians, rotation radians, thickness, shear
@@ -28,8 +29,7 @@
         angle = floor(v * u_shape.x) * 6.28318530718 / u_shape.x
           + log(r / 0.1) / tan(u_shape.y) + (w - 0.5) * u_shape.z;
       }
-      float omega = 0.32 * ((1.0 - u_view.w) + u_view.w / sqrt(r*r + 0.0144));
-      angle += u_phase * omega;
+      angle += u_phase * a_rate;
       float x = r * cos(angle), y = r * sin(angle);
       float z = (a_first.w - 0.5) * 2.0 * (bulge ? 0.19 * (1.0 - r / 0.3)
         : halo ? 0.4 : u_view.z * (0.4 + r));
@@ -84,6 +84,10 @@
       this.count = data.length / Core.STRIDE;
       this.colourKey = "";
     }
+    setRates(rates) {
+      if (rates.length !== this.count) throw new Error("Orbit rate count does not match the star sample");
+      this.rates = rates;
+    }
     resize(width, height, dpr) { this.width = width; this.height = height; this.dpr = dpr; }
     draw(settings, phase) {
       const ctx = this.context, width = this.width, height = this.height;
@@ -101,7 +105,7 @@
       ctx.globalCompositeOperation = "lighter";
       // Cached colours and a reused point keep the bounded fallback allocation-free per star/frame.
       for (let i = 0; i < this.count; i++) {
-        const p = Core.starAt(this.data, i, settings, phase, this.point);
+        const p = Core.starAt(this.data, i, settings, phase, this.point, this.rates);
         const x = width / 2 + p.x * scale, y = height / 2 + p.y * scale;
         const radius = p.size * settings.starSize;
         ctx.fillStyle = this.colours[i];
@@ -145,6 +149,7 @@
       }
       this.program = program;
       this.buffer = gl.createBuffer();
+      this.rateBuffer = gl.createBuffer();
       gl.useProgram(program);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       for (const [name, offset] of [["a_first", 0], ["a_second", 16]]) {
@@ -152,6 +157,10 @@
         gl.enableVertexAttribArray(location);
         gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 32, offset);
       }
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.rateBuffer);
+      const rateLocation = gl.getAttribLocation(program, "a_rate");
+      gl.enableVertexAttribArray(rateLocation);
+      gl.vertexAttribPointer(rateLocation, 1, gl.FLOAT, false, 4, 0);
       this.uniforms = {};
       for (const name of ["scale", "shape", "view", "phase", "size", "density", "exposure", "palette", "pointMax"]) this.uniforms[name] = gl.getUniformLocation(program, "u_" + name);
       gl.uniform1f(this.uniforms.pointMax, gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1]);
@@ -164,6 +173,12 @@
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
       this.count = data.length / Core.STRIDE;
+    }
+    setRates(rates) {
+      if (rates.length !== this.count) throw new Error("Orbit rate count does not match the star sample");
+      const gl = this.gl;
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.rateBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, rates, gl.STATIC_DRAW);
     }
     resize(width, height, dpr) {
       this.width = width; this.height = height; this.dpr = dpr;
@@ -184,7 +199,7 @@
       gl.drawArrays(gl.POINTS, 0, this.count);
     }
     dispose() {
-      this.gl.deleteBuffer(this.buffer); this.gl.deleteProgram(this.program);
+      this.gl.deleteBuffer(this.buffer); this.gl.deleteBuffer(this.rateBuffer); this.gl.deleteProgram(this.program);
     }
   }
   function createRenderer(canvas, forceCanvas = false) {

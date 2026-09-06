@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 // Adapted from VORTEX 2.1.0: bounded logical sampling, formatting and settings.
 (function (global, factory) {
-  const api = factory();
+  const physics = global.UffPhysics || (typeof require === "function" ? require("./uff-physics.js") : null);
+  const api = factory(physics);
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   global.GalaxyCore = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (Physics) {
   "use strict";
 
-  const VERSION = "0.1.0";
+  const VERSION = "0.2.0";
   const TAU = Math.PI * 2;
   const STRIDE = 8;
   const MAX_LOGICAL_JS = 2 ** 24;
@@ -36,7 +37,7 @@
   }
   function defaults() {
     return {
-      ...PRESETS.grand, logicalCount: MAX_LOGICAL_JS, renderedCount: 16384,
+      ...PRESETS.grand, ...Physics.defaults(), logicalCount: MAX_LOGICAL_JS, renderedCount: 16384,
       speed: 0.35, direction: 1, phase: 0, running: true, evolution: "animated",
       zoom: 1, exposure: 1, starSize: 1, palette: "stellar", seed: 303,
       profile: "grand"
@@ -45,6 +46,7 @@
   function normalizeSettings(candidate = {}, limits = {}) {
     const input = candidate && typeof candidate === "object" ? candidate : {};
     const settings = defaults();
+    Object.assign(settings, Physics.normalize(input));
     const ranges = {
       logicalCount: [256, limits.logical || MAX_LOGICAL_JS],
       renderedCount: [256, limits.rendered || MAX_CANVAS_PARTICLES],
@@ -98,21 +100,31 @@
 
   // Authored kinematic model; the GPU uses the same equations in renderer.js.
   // No pairwise forces, accretion, centre crossing, or claim of N-body dynamics.
-  function starAt(data, index, settings, phase, out = {}) {
+  function starRadius(u, kind, bulge) {
+    return kind < Math.fround(bulge) ? 0.015 + 0.27 * Math.pow(u, 1.8)
+      : kind >= 0.97 ? 0.25 + 0.85 * u : 0.06 + 0.92 * Math.pow(u, 1.4);
+  }
+  function buildOrbitRates(data, settings) {
+    const rates = new Float32Array(data.length / STRIDE);
+    for (let i = 0; i < rates.length; i++) {
+      rates[i] = Physics.angularRate(starRadius(data[i * STRIDE], data[i * STRIDE + 4], settings.bulge), settings);
+    }
+    return rates;
+  }
+  function starAt(data, index, settings, phase, out = {}, rates = null) {
     const offset = index * STRIDE;
     const u = data[offset], v = data[offset + 1], w = data[offset + 2];
     const kind = data[offset + 4];
-    const bulge = kind < settings.bulge;
+    const bulge = kind < Math.fround(settings.bulge);
     const halo = kind >= 0.97;
-    const radius = bulge ? 0.015 + 0.27 * Math.pow(u, 1.8)
-      : halo ? 0.25 + 0.85 * u : 0.06 + 0.92 * Math.pow(u, 1.4);
+    const radius = starRadius(u, kind, settings.bulge);
     let angle = TAU * v;
     if (!bulge && !halo) {
       angle = Math.floor(v * settings.arms) * TAU / settings.arms +
         Math.log(radius / 0.1) / Math.tan(settings.pitch * Math.PI / 180) +
         (w - 0.5) * settings.scatter;
     }
-    const omega = 0.32 * ((1 - settings.shear) + settings.shear / Math.sqrt(radius * radius + 0.12 * 0.12));
+    const omega = rates ? rates[index] : Physics.angularRate(radius, settings);
     // Phase already carries accumulated speed and direction. Editing either
     // changes future motion only, so pausing and reversing cannot jump the field.
     angle += phase * omega;
@@ -141,18 +153,22 @@
     return (settings.evolution === "phase" ? 0 : clock) + settings.phase / 360 * TAU;
   }
   function exportState(settings, clock) {
-    return { application: "GALAXY", version: VERSION, settings: { ...settings }, clock };
+    return { application: "GALAXY", version: VERSION, physicsSource: Physics.SOURCE_ID, settings: { ...settings }, clock };
   }
   function importState(document, limits) {
-    if (!document || document.application !== "GALAXY" || document.version !== VERSION ||
+    if (!document || document.application !== "GALAXY" || !["0.1.0", VERSION].includes(document.version) ||
         !document.settings || typeof document.settings !== "object" || Array.isArray(document.settings) ||
         !Number.isFinite(document.clock) || Math.abs(document.clock) > 1e7) {
       throw new Error("Choose a GALAXY " + VERSION + " settings file.");
     }
-    return { settings: normalizeSettings(document.settings, limits), clock: document.clock };
+    if (document.version === VERSION && (document.physicsSource !== Physics.SOURCE_ID || !Object.hasOwn(Physics.MODELS, document.settings.dynamics))) {
+      throw new Error("This settings file uses different UFF source data or an unknown dynamics model.");
+    }
+    const candidate = document.version === "0.1.0" ? { ...document.settings, dynamics: "legacy" } : document.settings;
+    return { settings: normalizeSettings(candidate, limits), clock: document.clock };
   }
   return Object.freeze({ VERSION, TAU, STRIDE, MAX_LOGICAL_JS, MAX_LOGICAL_RUST,
     MAX_CANVAS_PARTICLES, MAX_GPU_PARTICLES, PRESETS, clamp, fract, formatCount,
     formatPowerOfTwo, defaults, normalizeSettings, logicalIndexForSample, hash32,
-    sampleValue, buildSample, starAt, advanceClock, effectivePhase, exportState, importState });
+    sampleValue, buildSample, starRadius, buildOrbitRates, starAt, advanceClock, effectivePhase, exportState, importState });
 });

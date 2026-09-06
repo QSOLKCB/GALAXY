@@ -1,16 +1,44 @@
 # GALAXY
 
-An offline spinning galaxy instrument built from the VORTEX 2.1.0 particle lab.
-Spiral arms, a central stellar bulge and a sparse halo replace VORTEX's
-gate–centre–mouth paths. Change morphology, spin, shear, inclination, density
-and starlight while the galaxy runs.
+An offline spinning galaxy instrument built from the VORTEX 2.1.0 particle lab,
+now driven by rotation-curve models and demonstration data from
+[QSOL UFF](https://github.com/QSOLKCB/UFF). Change the mass model and watch the
+orbital speeds and rotation curve respond, with the original visual mode still
+available for comparison.
 
 Open **`index.html`** directly in a modern browser. No install, server, CDN or
 network connection is needed, including for the bundled Rust/WebAssembly engine.
 
-**GitHub Pages:** <https://qsolkcb.github.io/GALAXY/> — becomes available after
-this implementation is merged and the Pages workflow deploys. In the repository's
-Pages settings, choose **GitHub Actions** as the source if it is not already set.
+**GitHub Pages:** <https://qsolkcb.github.io/GALAXY/> — updates after changes merge
+and the Pages workflow deploys. In the repository's Pages settings, choose
+**GitHub Actions** as the source if it is not already set.
+
+## UFF dynamics in v0.2
+
+Select a **Rotation law** to drive each star's orbital rate from `V(R)/R`:
+
+| Mode | Contribution and controls |
+| --- | --- |
+| UFF empirical v4 + baryons | UFF velocity scale, core radius and bounded shape β |
+| Newtonian baryons | Signed gas contribution, disc and bulge mass-to-light ratios |
+| NFW halo + baryons | Halo mass M₂₀₀ and concentration |
+| Burkert halo + baryons | Central halo density and core radius |
+| MOND / RAR | UFF's exponential acceleration relation and adjustable a₀ |
+| Original visual rotation | The v0.1 authored rotation law and manual shear |
+
+An optional weak-field central mass applies to all physical models, with the
+MOND boost acting on the combined Newtonian input as in UFF. Defaults use UFF's
+initial parameters; **no fitting is performed**. The initial mode is UFF empirical.
+
+The live plot shows the selected total circular speed, baryons alone, and UFF's
+six demo rows with their supplied error bars. Readouts show circular speed at
+8 kpc, the corresponding orbital period, and model time. Inclination changes
+the viewing angle; it does not change the deprojected rotation curve.
+
+The full UFF `DEMO_GALAXY.csv` is bundled unchanged and identified by a pinned
+source commit and SHA-256 receipt. It is demonstration input, not an identified
+observational catalogue. See [UFF physics notes](docs/UFF-DYNAMICS.md) for
+equations, units, source links and interpolation choices.
 
 ## Capacity
 
@@ -27,14 +55,15 @@ The accelerated path defaults to **16,384 rendered stars**. **PUSH IT TO THE
 LIMIT** selects the maximum population and sample supported by the active engine.
 You can still select VORTEX's 256/512/1,024-particle budgets independently.
 
-The largest sample contains **2 MiB of float32 particle data**. WebGL holds a
-GPU copy; Wasm allocator memory, transient rebuild buffers, framebuffer memory,
-and the browser's own overhead are additional. The interface reports the particle
-buffer, not total application memory.
+The largest sample contains **2 MiB of float32 star properties plus 256 KiB of
+orbital rates: 2.25 MiB total**. WebGL holds GPU copies; Wasm allocator memory,
+transient rebuild buffers, framebuffer memory, and browser overhead are additional.
+The interface reports the two particle buffers, not total application memory.
 
 Rust generates a deterministic sample with exact 64-bit intermediate indexing.
-WebGL uploads it once per population, seed or budget change, then evolves every
-rendered star in a vertex shader using one point draw call per frame. Neither
+Orbital rates are recalculated when the mass model, stellar population or
+sample changes. WebGL uploads these bounded buffers, then evolves every rendered
+star in a vertex shader using one point draw call per frame. Neither
 language choice nor logical indexing alone makes billions of stars visible.
 The 2²⁴ JavaScript ceiling preserves the supplied VORTEX contract; it is not a
 fundamental JavaScript integer limit. See [the engine notes](docs/ENGINE.md).
@@ -43,26 +72,32 @@ fundamental JavaScript integer limit. See [the engine notes](docs/ENGINE.md).
 
 - Choose **Grand design**, **Pinwheel**, **Flocculent**, or **Edge-on** morphology.
 - Adjust spiral arms, pitch, spread, bulge and thickness.
-- **Differential shear** makes inner stars orbit faster and gradually winds the
-  arms. Set it to **zero** for a stable rotating spiral pattern.
-- Pause or reverse without resetting the accumulated motion. **Reset phase**
-  returns to the original spiral arrangement.
-- **Timeless phase slice** freezes the animation clock and uses the phase slider.
+- In physical modes, the selected `V(R)/R` sets differential rotation. In
+  **Original visual rotation**, the **Differential shear** slider controls
+  winding; set it to zero for a stable rotating spiral pattern.
+- Pause or reverse without resetting accumulated motion. **Reset time/phase**
+  returns to the original spiral. Changing a mass model, mass parameter or bulge
+  population restarts the clock so a fresh comparison starts from that spiral.
+- **Timeless phase slice** freezes the animation clock and uses the offset
+  slider. Physical modes display time in Myr; visual mode displays phase degrees.
 - Drag to adjust inclination and position angle; scroll to zoom. The same
   adjustments have labelled keyboard-accessible controls. Double-click resets
   the view; Space pauses when a form control does not have focus.
 - Save a PNG, record up to 30 seconds of WebM when the browser supports it, or
-  save/load JSON settings including the seed, logical population and clock.
+  save/load JSON settings including seed, population, clock, mass parameters and
+  UFF source identity. v0.1 files load with their original visual rotation law.
 - Reduced-motion preferences start the simulation paused. Hidden tabs do not
   accumulate a jump in animation time.
 
 ## Model boundary
 
-This is a **deterministic kinematic visualization**, not a gravitational N-body
-solver or a model fitted to a particular observed galaxy. Disc stars start on
-seeded logarithmic arms and orbit at fixed radii using an authored softened
-rotation curve. The bulge and halo are visual populations. No pairwise gravity,
-dark-matter inference, gas dynamics, star formation or accretion is computed.
+This is a **deterministic circular-orbit visualization**. In UFF modes, physical
+rotation curves set the angular speeds in kpc, km/s and Myr. Stars stay at fixed
+radii; the distribution and vertical structure remain authored. The morphology
+sliders control display geometry independently from the mass-to-light sliders.
+It is not a self-consistent N-body evolution, a fit to an observed galaxy, or a
+gas/stellar-formation solver. The empirical UFF and MOND options retain the model
+definitions and scope documented by UFF.
 
 Logical indices describe the population from which representative particles are
 sampled. Only the **rendered** count is evaluated and drawn each frame. The FPS
@@ -79,12 +114,15 @@ root without starting a browser:
 ```bash
 cargo test --manifest-path rust/Cargo.toml --locked --offline
 cargo run --manifest-path rust/Cargo.toml --example sample --release --locked --offline -- 32 65536 303
+cargo run --manifest-path rust/Cargo.toml --example rotation_curve --release --locked --offline
 ```
 
 The example arguments are **logical exponent**, **sample count**, and **seed**.
 The command above exercises 2³² logical stars and a 65,536-star sample. It prints
 the actual buffer size, final logical ID and native generation time. Use
 `24 1024 303` to compare with the legacy VORTEX budget.
+The `rotation_curve` example prints all five physical models in km/s at the
+six demo radii using the same Rust code as the browser module.
 
 The generated Wasm payloads are committed so downloaded copies work offline.
 To change the Rust sampler, install Rust with the pinned toolchain in
@@ -94,24 +132,27 @@ To change the Rust sampler, install Rust with the pinned toolchain in
 cargo test --manifest-path rust/Cargo.toml --locked --offline
 bash scripts/build-wasm.sh
 node tests/smoke.mjs
+node tests/physics.mjs
 node tests/app.mjs
 node tests/benchmark.mjs
 node scripts/build-site.mjs
 ```
 
-The packaged binary exposes `memory`, `abi_version`, `max_rendered`, `generate`,
-`buffer_ptr`, and `buffer_len`. The browser wrapper contains the same binary,
-encoded as a classic script for direct `file://` use.
+The packaged binary exposes the sampling API plus `configure_dynamics`,
+`orbit_ptr`, `orbit_len`, and `circular_velocity` under ABI version 2. The browser
+wrapper contains the same binary, encoded for direct `file://` use.
 
 The crate has no third-party dependencies. Installing the Rust toolchain and its
 Wasm standard library for the first time needs a connection; building thereafter
 uses `--offline`. Running the already-packaged application does not need Rust.
 
-CI rebuilds the module with the pinned compiler, checks the shipped payload for
-drift, tests JS/Wasm agreement and maximum sample size, and checks application
-controls and fallback behavior. The application suite uses DOM/renderer adapters;
+CI regenerates the CSV tables, rebuilds with the pinned compiler, checks the
+shipped payloads for drift, and tests **195 predictions generated by the original
+UFF Python implementation** against JS and compiled Wasm. It also checks maximum
+sample size, orbital units, settings migration, controls and fallbacks.
+The application suite uses DOM/renderer adapters;
 it does not assert browser shader compilation, video-encoder behavior or GPU FPS.
-`tests/benchmark.mjs` measures **Wasm sample generation only**.
+`tests/benchmark.mjs` measures **Wasm sample and orbital-rate generation only**.
 
 An optional local server can serve the same files:
 

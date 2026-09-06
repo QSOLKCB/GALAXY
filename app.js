@@ -3,10 +3,11 @@
 (async function () {
   "use strict";
   const Core = globalThis.GalaxyCore;
+  const Physics = globalThis.UffPhysics;
   const byId = id => document.getElementById(id);
   const state = {
     settings: Core.defaults(), clock: 0, lastTimestamp: null, dirty: true,
-    wasm: null, data: null, renderer: null, canvas: byId("fieldCanvas"),
+    wasm: null, data: null, rates: null, curve: null, renderer: null, canvas: byId("fieldCanvas"),
     limits: { logical: Core.MAX_LOGICAL_JS, rendered: Core.MAX_CANVAS_PARTICLES },
     recorder: null, recordingStream: null, recordingTimer: null,
     frames: 0, fpsStart: performance.now(), frameRequest: null
@@ -14,6 +15,7 @@
   const profileNames = { grand: "Grand design spiral", pinwheel: "Pinwheel galaxy", flocculent: "Flocculent spiral", edge: "Edge-on galaxy", custom: "Custom galaxy" };
   const shapeKeys = new Set(["arms", "pitch", "scatter", "bulge", "thickness", "shear", "inclination", "rotation"]);
   const rangeKeys = ["arms", "pitch", "scatter", "bulge", "thickness", "speed", "shear", "phase", "inclination", "rotation", "zoom", "exposure", "starSize"];
+  const physicsKeys = Object.keys(Physics.RANGES);
 
   function status(message) { byId("status").textContent = message; }
   function capabilities() {
@@ -27,20 +29,23 @@
     const bytes = Uint8Array.from(atob(globalThis.GALAXY_WASM_BASE64), c => c.charCodeAt(0));
     const { instance } = await WebAssembly.instantiate(bytes, {});
     const api = instance.exports;
-    if (api.abi_version() !== 1 || api.max_rendered() !== Core.MAX_GPU_PARTICLES || !(api.memory instanceof WebAssembly.Memory)) {
+    if (api.abi_version() !== 2 || api.max_rendered() !== Core.MAX_GPU_PARTICLES || !(api.memory instanceof WebAssembly.Memory)) {
       throw new Error("Unsupported Rust module");
     }
     return api;
   }
-  function rebuild() {
+  function rebuild(sample = true) {
     state.settings = Core.normalizeSettings(state.settings, state.limits);
     const s = state.settings;
     if (state.wasm) {
       try {
-        const count = state.wasm.generate(s.logicalCount, s.renderedCount, s.seed);
+        const count = sample ? state.wasm.generate(s.logicalCount, s.renderedCount, s.seed) : s.renderedCount;
         if (count !== s.renderedCount || state.wasm.buffer_len() !== count * Core.STRIDE) throw new Error("Invalid star buffer");
-        // generate() can grow Wasm memory: never reuse an earlier memory view.
+        const orbitCount = state.wasm.configure_dynamics(...Physics.parameters(s), s.bulge, s.shear);
+        if (orbitCount !== count || state.wasm.orbit_len() !== count) throw new Error("Invalid orbital-rate buffer");
+        // Either operation can grow memory; reacquire BOTH views afterwards.
         state.data = new Float32Array(state.wasm.memory.buffer, state.wasm.buffer_ptr(), count * Core.STRIDE);
+        state.rates = new Float32Array(state.wasm.memory.buffer, state.wasm.orbit_ptr(), count);
       } catch (error) {
         state.wasm = null;
         capabilities();
@@ -48,10 +53,21 @@
         rebuild();
         return;
       }
-    } else state.data = Core.buildSample(s.logicalCount, s.renderedCount, s.seed);
+    } else {
+      if (sample || !state.data) state.data = Core.buildSample(s.logicalCount, s.renderedCount, s.seed);
+      state.rates = Core.buildOrbitRates(state.data, s);
+    }
     state.renderer.setData(state.data);
+    state.renderer.setRates(state.rates);
     state.dirty = true;
     syncControls();
+  }
+  function restartDynamics() {
+    state.clock = 0; state.settings.phase = 0; state.lastTimestamp = null;
+    rebuild(false);
+  }
+  function updatePhysicsTime() {
+    byId("physicsTime").textContent = (Core.effectivePhase(state.clock, state.settings) * Physics.MYR_PER_CLOCK).toFixed(1) + " Myr";
   }
 
   function selectValue(id, value, maximum) {
@@ -79,6 +95,34 @@
       if (key === "thickness") value = s[key].toFixed(3);
       byId(key + "Value").textContent = value;
     }
+    for (const key of physicsKeys) {
+      byId(key).value = String(s[key]);
+      byId(key + "Value").textContent = ["blackHoleMillion", "uffVInf"].includes(key) ? s[key].toFixed(0) : s[key].toFixed(2);
+    }
+    const physical = s.dynamics !== "legacy";
+    byId("dynamics").value = s.dynamics;
+    byId("physicalParameters").hidden = !physical;
+    byId("rotationPanel").hidden = !physical;
+    byId("shearControl").hidden = physical;
+    byId("uffParameters").hidden = s.dynamics !== "uff-empirical";
+    byId("nfwParameters").hidden = s.dynamics !== "nfw";
+    byId("burkertParameters").hidden = s.dynamics !== "burkert";
+    byId("mondParameters").hidden = s.dynamics !== "mond-rar";
+    byId("speedLabel").textContent = physical ? "Time rate" : "Spin speed";
+    if (physical) byId("speedValue").textContent = (s.speed * Physics.MYR_PER_CLOCK).toFixed(1) + " Myr/s";
+    byId("phaseLabel").textContent = physical ? "Time slice offset" : "Phase offset";
+    if (physical) byId("phaseValue").textContent = (s.phase / 360 * Core.TAU * Physics.MYR_PER_CLOCK).toFixed(1) + " Myr";
+    byId("resetField").textContent = physical ? "Reset time" : "Reset phase";
+    byId("dynamicsNote").textContent = physical ? "UFF demo component curves. Changing the mass model restarts the orbital phase." : "Original authored rotation law with adjustable shear.";
+    byId("physicsBadge").textContent = Physics.LABELS[s.dynamics];
+    if (physical) {
+      const velocity = Physics.velocityKms(8, s);
+      byId("velocityReadout").textContent = velocity.toFixed(1) + " km/s";
+      byId("periodReadout").textContent = (Core.TAU * 8 / velocity / (Physics.RATE_CONVERSION / Physics.MYR_PER_CLOCK)).toFixed(0) + " Myr";
+      Physics.Data.rows.forEach((row, index) => { byId("modelRow" + index).textContent = Physics.velocityKms(row[0], s).toFixed(2); });
+      updatePhysicsTime();
+      state.curve.draw(s);
+    }
     selectValue("logicalCount", s.logicalCount, state.limits.logical);
     selectValue("renderedCount", s.renderedCount, Math.min(state.limits.rendered, s.logicalCount));
     for (const key of ["profile", "palette", "evolution", "seed"]) byId(key).value = String(s[key]);
@@ -88,13 +132,14 @@
     byId("playToggle").disabled = s.evolution === "phase";
     byId("playToggle").setAttribute("aria-pressed", String(s.running && s.evolution !== "phase"));
     byId("fieldTitle").textContent = profileNames[s.profile];
-    byId("motionBadge").textContent = s.shear === 0 ? "Stable spiral pattern" : "Differential rotation";
+    byId("motionBadge").textContent = physical ? Physics.LABELS[s.dynamics] : s.shear === 0 ? "Stable spiral pattern" : "Differential rotation";
     byId("projectionBadge").textContent = "INCLINATION " + Math.round(s.inclination) + "°";
     byId("logicalReadout").textContent = Core.formatCount(s.logicalCount);
     byId("renderedReadout").textContent = Core.formatCount(state.renderer.count);
     byId("topologyReadout").textContent = Core.formatPowerOfTwo(s.logicalCount) + " indexed field";
-    byId("memoryReadout").textContent = state.data.byteLength >= 1048576
-      ? (state.data.byteLength / 1048576).toFixed(2) + " MiB" : (state.data.byteLength / 1024).toFixed(0) + " KiB";
+    const bytes = state.data.byteLength + state.rates.byteLength;
+    byId("memoryReadout").textContent = bytes >= 1048576
+      ? (bytes / 1048576).toFixed(2) + " MiB" : (bytes / 1024).toFixed(0) + " KiB";
     byId("engineStatus").textContent = (state.wasm ? "Rust / Wasm" : "JavaScript") + " + " + state.renderer.name;
     byId("capacityNote").textContent = "Available: " + Core.formatPowerOfTwo(state.limits.logical) +
       " logical / " + Core.formatCount(state.limits.rendered) + " rendered. " +
@@ -106,6 +151,7 @@
     const dpr = Math.min(globalThis.devicePixelRatio || 1, 2);
     state.canvas.width = Math.round(width * dpr); state.canvas.height = Math.round(height * dpr);
     state.renderer.resize(width, height, dpr);
+    state.curve.draw(state.settings);
     state.dirty = true;
   }
   function togglePlay() {
@@ -218,12 +264,22 @@
       const profile = event.target.value;
       if (Core.PRESETS[profile]) Object.assign(state.settings, Core.PRESETS[profile]);
       state.settings.profile = profile; state.clock = 0; state.settings.phase = 0;
-      state.dirty = true; syncControls();
+      rebuild(false);
     });
     for (const key of rangeKeys) byId(key).addEventListener("input", event => {
       state.settings[key] = Number(event.target.value);
       if (shapeKeys.has(key)) state.settings.profile = "custom";
-      state.dirty = true; syncControls();
+      if (key === "bulge") restartDynamics();
+      else if (key === "shear") rebuild(false);
+      else { state.dirty = true; syncControls(); }
+    });
+    byId("dynamics").addEventListener("change", event => {
+      state.settings.dynamics = event.target.value;
+      restartDynamics();
+    });
+    for (const key of physicsKeys) byId(key).addEventListener("input", event => {
+      state.settings[key] = Number(event.target.value);
+      restartDynamics();
     });
     for (const key of ["logicalCount", "renderedCount", "seed"]) byId(key).addEventListener("change", event => {
       state.settings[key] = event.target.value === "" ? 303 : Number(event.target.value);
@@ -281,6 +337,7 @@
         state.dirty = false; state.frames++;
       }
       if (timestamp - state.fpsStart >= 750) {
+        if (state.settings.dynamics !== "legacy") updatePhysicsTime();
         byId("fpsReadout").textContent = state.settings.evolution === "phase" || !state.settings.running || state.settings.speed === 0
           ? "STILL FRAME" : Math.round(state.frames * 1000 / (timestamp - state.fpsStart)) + " FPS";
         state.frames = 0; state.fpsStart = timestamp;
@@ -292,6 +349,7 @@
   try {
     const result = globalThis.GalaxyRenderer.createRenderer(state.canvas);
     state.renderer = result.renderer; state.canvas = result.canvas;
+    state.curve = new globalThis.GalaxyRotationCurve(byId("rotationCanvas"));
     let wasmReason = "";
     try { state.wasm = await loadWasm(); } catch (error) { wasmReason = error.message; }
     capabilities();

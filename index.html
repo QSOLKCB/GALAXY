@@ -5,13 +5,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="description" content="An offline spinning galaxy instrument. Shape spiral arms, explore stellar rotation, and scale a deterministic star field with Rust and WebGL.">
+  <meta name="description" content="An offline galaxy instrument driven by UFF rotation curves, baryonic data and configurable mass models, with Rust and WebGL star sampling.">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; media-src blob:; connect-src 'self'; object-src 'none'; base-uri 'none'">
   <title>GALAXY · Stellar motion lab</title>
   <link rel="stylesheet" href="style.css">
+  <script defer src="data/uff-demo.js"></script>
+  <script defer src="uff-physics.js"></script>
   <script defer src="galaxy-core.js"></script>
   <script defer src="wasm/galaxy-wasm.js"></script>
   <script defer src="renderer.js"></script>
+  <script defer src="rotation-curve.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
@@ -32,12 +35,50 @@
       <div class="readout-grid" aria-label="Particle accounting">
         <div><span>LOGICAL STARS</span><strong id="logicalReadout">16,777,216</strong><small id="topologyReadout">2²⁴ indexed field</small></div>
         <div><span>RENDERED STARS</span><strong id="renderedReadout">—</strong><small>representative sample / frame</small></div>
-        <div><span>PARTICLE BUFFER</span><strong id="memoryReadout">—</strong><small>8 float32 values / sampled star</small></div>
+        <div><span>PARTICLE BUFFER</span><strong id="memoryReadout">—</strong><small>sample + orbital-rate buffers</small></div>
       </div>
+      <section id="rotationPanel" class="rotation-panel" aria-label="UFF rotation curve">
+        <div class="curve-heading"><h2>Rotation curve</h2><span id="physicsBadge">UFF empirical v4</span></div>
+        <canvas id="rotationCanvas" role="img" aria-label="Galaxy circular velocity in kilometres per second against radius in kiloparsecs"></canvas>
+        <div class="curve-legend"><span>━ Selected model</span><span>┄ Baryons</span><span>○ UFF demo input ± error</span></div>
+        <div class="physics-readouts"><span>At 8 kpc <b id="velocityReadout">—</b></span><span>Orbit period <b id="periodReadout">—</b></span><span>Model time <b id="physicsTime">0 Myr</b></span></div>
+        <p class="control-note">UFF demonstration data · fixed parameters, no fit. Shaded ends extend the supplied component speeds beyond 0.5–12 kpc.</p>
+        <details><summary>Compare the six demo rows</summary><table><thead><tr><th>Radius (kpc)</th><th>Demo ± error (km/s)</th><th>Model (km/s)</th></tr></thead><tbody>
+          <tr><td>0.5</td><td>40 ± 5</td><td id="modelRow0">—</td></tr>
+          <tr><td>1.0</td><td>65 ± 5</td><td id="modelRow1">—</td></tr>
+          <tr><td>2.0</td><td>90 ± 4</td><td id="modelRow2">—</td></tr>
+          <tr><td>5.0</td><td>115 ± 4</td><td id="modelRow3">—</td></tr>
+          <tr><td>8.0</td><td>130 ± 6</td><td id="modelRow4">—</td></tr>
+          <tr><td>12.0</td><td>135 ± 7</td><td id="modelRow5">—</td></tr>
+        </tbody></table></details>
+      </section>
       <p id="status" class="status-note" role="status" aria-live="polite">Preparing the deterministic star field.</p>
-      <details class="model-note"><summary>About this galaxy</summary><p>A seeded spiral disc with a central bulge and sparse halo. Stars follow authored circular orbits; differential rotation gradually winds the arms. Set shear to zero for a lasting spiral pattern. This is a kinematic visualization, not a gravitational N-body solver. Logical stars identify a sampled population; only the rendered count is drawn.</p><p>Descended from VORTEX’s bounded particle architecture. Captures and settings stay on your device.</p></details>
+      <details class="model-note"><summary>About this galaxy</summary><p>The UFF modes use gas, disc and bulge component curves to calculate circular speeds, with a selectable halo or acceleration law and an optional central mass. Those speeds drive the stars’ orbits. The original visual mode retains its adjustable shear.</p><p>The star distribution remains an authored disc, bulge and halo. Morphology controls change that display geometry; mass-to-light controls change the dynamics. Logical stars describe a sampled population. Only the rendered count is drawn.</p><p>UFF’s demo table is an included example, not an identified observational catalogue. <a href="https://github.com/QSOLKCB/UFF/blob/596cd732df61587aa1a9801cad1ec13483b1347f/docs/MODELS.md">Source equations and model definitions ↗</a></p></details>
     </section>
     <aside class="control-rack" aria-label="Galaxy controls">
+      <section class="rack-section"><h2 class="section-label"><span>00</span>UFF dynamics</h2>
+        <label for="dynamics">Rotation law<select id="dynamics"><option value="uff-empirical">UFF empirical v4 + baryons</option><option value="baryons">Newtonian baryons</option><option value="nfw">NFW halo + baryons</option><option value="burkert">Burkert halo + baryons</option><option value="mond-rar">MOND / RAR</option><option value="legacy">Original visual rotation</option></select></label>
+        <p id="dynamicsNote" class="control-note">Changing the mass model restarts the orbital phase.</p>
+        <div id="physicalParameters">
+          <label for="diskML">Disc mass / light<output id="diskMLValue" for="diskML">0.50</output><input id="diskML" type="range" min="0.05" max="1.5" step="0.05" value="0.5"></label>
+          <label for="bulgeML">Bulge mass / light<output id="bulgeMLValue" for="bulgeML">0.70</output><input id="bulgeML" type="range" min="0.05" max="2" step="0.05" value="0.7"></label>
+          <label for="blackHoleMillion">Central mass / million M☉<output id="blackHoleMillionValue" for="blackHoleMillion">0</output><input id="blackHoleMillion" type="range" min="0" max="1000" step="1" value="0"></label>
+          <div id="uffParameters">
+            <label for="uffVInf">UFF velocity scale / km/s<output id="uffVInfValue" for="uffVInf">120</output><input id="uffVInf" type="range" min="0" max="500" step="1" value="120"></label>
+            <label for="uffCore">UFF core radius / kpc<output id="uffCoreValue" for="uffCore">3.00</output><input id="uffCore" type="range" min="0.02" max="100" step="0.01" value="3"></label>
+            <label for="uffBeta">UFF shape β<output id="uffBetaValue" for="uffBeta">0.00</output><input id="uffBeta" type="range" min="-1" max="1" step="0.01" value="0"></label>
+          </div>
+          <div id="nfwParameters" hidden>
+            <label for="haloLogMass">NFW log₁₀ M₂₀₀ / M☉<output id="haloLogMassValue" for="haloLogMass">11.50</output><input id="haloLogMass" type="range" min="8" max="14.5" step="0.05" value="11.5"></label>
+            <label for="haloConcentration">NFW concentration<output id="haloConcentrationValue" for="haloConcentration">10.00</output><input id="haloConcentration" type="range" min="1" max="40" step="0.5" value="10"></label>
+          </div>
+          <div id="burkertParameters" hidden>
+            <label for="burkertLogDensity">Burkert log₁₀ ρ₀ / M☉ kpc⁻³<output id="burkertLogDensityValue" for="burkertLogDensity">7.50</output><input id="burkertLogDensity" type="range" min="4" max="11" step="0.05" value="7.5"></label>
+            <label for="burkertCore">Burkert core radius / kpc<output id="burkertCoreValue" for="burkertCore">5.00</output><input id="burkertCore" type="range" min="0.05" max="100" step="0.05" value="5"></label>
+          </div>
+          <div id="mondParameters" hidden><label for="mondA0">MOND a₀ / 10⁻¹⁰ m s⁻²<output id="mondA0Value" for="mondA0">1.20</output><input id="mondA0" type="range" min="0.03" max="6.3" step="0.01" value="1.2"></label></div>
+        </div>
+      </section>
       <section class="rack-section"><h2 class="section-label"><span>01</span>Galaxy structure</h2>
         <label for="profile">Morphology<select id="profile"><option value="grand">Grand design · 2 arms</option><option value="pinwheel">Pinwheel · 4 arms</option><option value="flocculent">Flocculent · 6 arms</option><option value="edge">Edge-on disc</option><option value="custom">Custom galaxy</option></select></label>
         <label for="arms">Spiral arms<output id="armsValue" for="arms">2</output><input id="arms" type="range" min="1" max="8" step="1" value="2"></label>
@@ -54,11 +95,11 @@
         <label for="seed">Galaxy seed<input id="seed" type="number" min="0" max="4294967295" step="1" value="303"></label>
       </section>
       <section class="rack-section"><h2 class="section-label"><span>03</span>Stellar motion</h2>
-        <label for="speed">Spin speed<output id="speedValue" for="speed">0.35×</output><input id="speed" type="range" min="0" max="2" step="0.01" value="0.35"></label>
-        <label for="shear">Differential shear<output id="shearValue" for="shear">35%</output><input id="shear" type="range" min="0" max="1" step="0.01" value="0.35"></label>
+        <label for="speed"><span id="speedLabel">Time rate</span><output id="speedValue" for="speed">0.35×</output><input id="speed" type="range" min="0" max="2" step="0.01" value="0.35"></label>
+        <label id="shearControl" for="shear">Differential shear<output id="shearValue" for="shear">35%</output><input id="shear" type="range" min="0" max="1" step="0.01" value="0.35"></label>
         <div class="button-pair" role="group" aria-label="Spin direction"><button id="rotateCW" type="button" aria-pressed="true">↻ Forward</button><button id="rotateCCW" type="button" aria-pressed="false">↺ Reverse</button></div>
         <label for="evolution">Evolution<select id="evolution"><option value="animated">Animated rotation</option><option value="phase">Timeless phase slice</option></select></label>
-        <label for="phase">Phase offset<output id="phaseValue" for="phase">0°</output><input id="phase" type="range" min="0" max="360" step="1" value="0"></label>
+        <label for="phase"><span id="phaseLabel">Time slice offset</span><output id="phaseValue" for="phase">0 Myr</output><input id="phase" type="range" min="0" max="360" step="1" value="0"></label>
       </section>
       <section class="rack-section"><h2 class="section-label"><span>04</span>Observation</h2>
         <label for="inclination">Inclination<output id="inclinationValue" for="inclination">38°</output><input id="inclination" type="range" min="0" max="90" step="1" value="38"></label>

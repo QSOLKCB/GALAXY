@@ -53,6 +53,7 @@ async function boot({ rust = true, gpu = true, brokenWasm = false, reducedMotion
   const makeRenderer = (canvas, forceCanvas) => {
     renderer = { gpu: gpu && !forceCanvas, name: gpu && !forceCanvas ? "WebGL" : "Canvas 2D", count: 0, uploads: 0, draws: [],
       setData(data) { this.data = data; this.count = data.length / 8; this.uploads++; },
+      setRates(rates) { this.rates = rates; },
       resize() {}, dispose() {},
       draw(settings, phase) { this.draws.push({ settings: { ...settings }, phase }); }
     };
@@ -63,8 +64,11 @@ async function boot({ rust = true, gpu = true, brokenWasm = false, reducedMotion
     requestAnimationFrame(fn) { scheduled = fn; return 1; }, devicePixelRatio: 1,
     matchMedia: () => ({ matches: reducedMotion }),
     URL: { createObjectURL(blob) { urls.push(blob); return "blob:test"; }, revokeObjectURL() {} },
-    GalaxyRenderer: { createRenderer: makeRenderer }
+    GalaxyRenderer: { createRenderer: makeRenderer },
+    GalaxyRotationCurve: class { draw() {} }
   });
+  vm.runInContext(read("data/uff-demo.js"), context);
+  vm.runInContext(read("uff-physics.js"), context);
   vm.runInContext(read("galaxy-core.js"), context);
   if (rust) vm.runInContext(read("wasm/galaxy-wasm.js"), context);
   if (brokenWasm) context.GALAXY_WASM_BASE64 = "AAAA";
@@ -83,13 +87,32 @@ async function boot({ rust = true, gpu = true, brokenWasm = false, reducedMotion
 const app = await boot();
 assert.equal(app.renderer().count, 16384);
 assert.equal(app.el("engineStatus").textContent, "Rust / Wasm + WebGL");
+assert.equal(app.el("dynamics").value, "uff-empirical");
+assert.equal(app.el("shearControl").hidden, true);
 await app.click("pushLimit");
 assert.equal(app.renderer().count, 65536);
 assert.equal(app.renderer().data.byteLength, 2097152);
+assert.equal(app.renderer().rates.byteLength, 262144);
+assert.equal(app.el("memoryReadout").textContent, "2.25 MiB");
 assert.equal(app.el("logicalCount").value, "4294967296");
 const maxExport = await app.exported();
 assert.equal(maxExport.settings.logicalCount, 2 ** 32);
 assert.equal(maxExport.settings.renderedCount, 65536);
+for (const model of ["baryons", "nfw", "burkert", "mond-rar", "uff-empirical", "legacy"]) {
+  await app.change("dynamics", model);
+  const recipe = await app.exported();
+  assert.equal(recipe.settings.dynamics, model);
+  assert.equal(recipe.clock, 0);
+  assert.equal(app.renderer().rates.length, app.renderer().count);
+}
+assert.equal(app.el("rotationPanel").hidden, true);
+await app.change("dynamics", "uff-empirical");
+const previousRates = Array.from(app.renderer().rates);
+await app.change("uffVInf", 240, "input");
+assert.ok(app.renderer().rates.every((rate, i) => rate > previousRates[i]));
+assert.equal(app.el("uffParameters").hidden, false);
+assert.equal(app.el("nfwParameters").hidden, true);
+await app.change("uffVInf", 120, "input");
 await app.change("speed", 1, "input");
 app.tick(1000); app.tick(1040);
 const beforePause = app.renderer().draws.at(-1).phase;
@@ -124,6 +147,37 @@ await app.el("importState").emit("change");
 assert.match(app.el("captureStatus").textContent, /Could not load/);
 assert.deepEqual(await app.exported(), beforeBadImport);
 
+// Legacy shear edits retain an evolved clock and a nonzero phase offset while
+// updating the rates used by the renderer, in both Rust and JS sampling paths.
+for (const rust of [true, false]) {
+  const legacy = await boot({ rust });
+  for (const mode of ["animated", "paused", "phase"]) {
+    const recipe = await legacy.exported();
+    recipe.clock = 12.75;
+    Object.assign(recipe.settings, { dynamics: "legacy", shear: 0, phase: 90,
+      running: mode !== "paused", evolution: mode === "phase" ? "phase" : "animated" });
+    legacy.el("importState").files = [{ size: 2000, text: async () => JSON.stringify(recipe) }];
+    await legacy.el("importState").emit("change"); legacy.tick(2000);
+    const before = await legacy.exported();
+    const displayedPhase = legacy.renderer().draws.at(-1).phase;
+    const oldRates = Array.from(legacy.renderer().rates);
+    await legacy.change("shear", 0.8, "input");
+    const after = await legacy.exported();
+    assert.equal(after.clock, before.clock, `${mode} shear edit must preserve the clock`);
+    assert.equal(after.settings.phase, before.settings.phase, `${mode} shear edit must preserve the offset`);
+    assert.equal(after.settings.running, before.settings.running);
+    assert.equal(after.settings.evolution, before.settings.evolution);
+    assert.equal(after.settings.shear, 0.8);
+    assert.ok(legacy.renderer().rates.some((rate, i) => rate !== oldRates[i]), "Shear must rebuild the orbital rates");
+    legacy.tick(2000);
+    assert.equal(legacy.renderer().draws.at(-1).phase, displayedPhase, "The redraw must use the preserved phase");
+    legacy.tick(2040);
+    const next = await legacy.exported();
+    if (mode === "animated") assert.ok(next.clock > before.clock, "Animation must continue after the edit");
+    else assert.equal(next.clock, before.clock, "Paused and phase-slice clocks must stay frozen");
+  }
+}
+
 for (const args of [{ rust: false }, { brokenWasm: true }]) {
   const fallback = await boot(args);
   assert.equal(fallback.renderer().count, 1024);
@@ -149,4 +203,4 @@ assert.equal(canvasEvent.prevented, true); assert.equal(reduced.el("playToggle")
 await app.el("fieldCanvas").emit("webglcontextlost");
 assert.equal(app.renderer().count, 1024);
 assert.match(app.el("status").textContent, /context lost/);
-console.log("PASS: app startup, real Wasm buffers, max field, pause/reverse, phase slice, controls, capture, imports, reduced motion, missing/corrupt Wasm and context-loss fallback.");
+console.log("PASS: app startup, real Wasm buffers, max field, pause/reverse, phase slice, legacy shear continuity, controls, capture, imports, reduced motion, missing/corrupt Wasm and context-loss fallback.");
