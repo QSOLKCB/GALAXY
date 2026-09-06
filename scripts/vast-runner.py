@@ -98,9 +98,21 @@ class _BoundedTarReader:
         self.source = source
         self.position = 0
         self.limit = MAX_TAR_METADATA_BYTES
+        self.file_start = None
+        self.file_end = None
 
     def read(self, size=-1):
-        if size < 0 or size > STREAM_CHUNK_BYTES:
+        if size < 0:
+            raise ValueError("Result archive exceeds the 64 KiB tar read limit; retrieve it manually")
+        in_validated_file = (self.file_start is not None
+                             and self.file_start <= self.position < self.file_end)
+        if in_validated_file:
+            # ExFileObject is buffered and Python 3.14 may ask for 128 KiB even
+            # when the caller copies in 64 KiB chunks. The member size has
+            # already passed validation, so allow the request only inside that
+            # exact payload range and never let it spill into the next header.
+            size = min(size, self.file_end - self.position)
+        elif size > STREAM_CHUNK_BYTES:
             raise ValueError("Result archive exceeds the 64 KiB tar read limit; retrieve it manually")
         if self.position + size > self.limit:
             raise ValueError("Result archive exceeds the 16 MiB tar metadata limit; retrieve it manually")
@@ -131,7 +143,10 @@ class _BoundedTarReader:
 
     def allow_file(self, size):
         # Called only after a regular, non-sparse file passes the extracted-size cap.
-        # Its bytes are consumed before tarfile is allowed to parse another header.
+        # Mark exactly this payload as validated so buffered ExFileObject reads may
+        # exceed the metadata request cap without granting that allowance to headers.
+        self.file_start = self.position
+        self.file_end = self.position + size
         self.limit += size
 
 def extract_results(archive, output):
