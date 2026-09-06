@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
 from contextlib import redirect_stdout
+import gzip
 import io
 import json
 from pathlib import Path
@@ -103,6 +104,125 @@ class RunnerTests(unittest.TestCase):
         target = destination / "results" / "nested run" / "receipt.json"
         self.assertEqual(json.loads(target.read_text()), {"status": "complete"})
         self.assertTrue(target.resolve().is_relative_to(destination.resolve()))
+
+    def metadata_archive(self, path, kind, size, repeats=1, payload=True):
+        # Write raw headers: tarfile hides these records from member iteration.
+        header = tarfile.TarInfo("././@LongLink")
+        header.type = kind
+        header.size = size
+        entry = tarfile.TarInfo("results/receipt.json")
+        data = b'{"status":"complete"}'
+        entry.size = len(data)
+        with gzip.open(path, "wb") as stream:
+            for _ in range(repeats):
+                stream.write(header.tobuf(format=tarfile.GNU_FORMAT))
+                if payload:
+                    value = (b"results/receipt.json\0" if kind in
+                             (tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK) else b"")
+                    stream.write(value.ljust(size, b"\0"))
+                    stream.write(b"\0" * (-size % 512))
+            stream.write(entry.tobuf())
+            stream.write(data.ljust(512, b"\0"))
+            stream.write(b"\0" * 1024)
+
+    def test_result_metadata_rejected_before_oversized_decompression_request(self):
+        kinds = (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                 tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
+        for kind in kinds:
+            for size in (64 * 1024 + 512, 1 << 40):
+                with self.subTest(kind=kind, size=size):
+                    archive = self.root / "metadata.tar.gz"
+                    destination = self.root / "metadata"
+                    # The huge declaration has no huge payload, keeping the test bounded.
+                    self.metadata_archive(archive, kind, size, payload=size < 1 << 40)
+                    original_read = gzip.GzipFile.read
+                    requests = []
+                    def read(source, amount=-1):
+                        requests.append(amount)
+                        self.assertLessEqual(amount, 64 * 1024)
+                        self.assertGreaterEqual(amount, 0)
+                        return original_read(source, amount)
+                    with patch.object(gzip.GzipFile, "read", autospec=True, side_effect=read):
+                        with self.assertRaisesRegex(ValueError, "tar read limit"):
+                            runner.extract_results(archive, destination)
+                    self.assertEqual(requests, [512])
+                    self.assertFalse(destination.exists())
+
+    def test_result_metadata_accepts_exact_read_limit(self):
+        for kind in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME):
+            with self.subTest(kind=kind):
+                archive = self.root / "exact-metadata.tar.gz"
+                destination = self.root / f"exact-metadata-{kind.decode()}"
+                self.metadata_archive(archive, kind, 64 * 1024)
+                runner.extract_results(archive, destination)
+                self.assertEqual(json.loads((destination / "results/receipt.json").read_text()),
+                                 {"status": "complete"})
+
+    def test_result_metadata_budget_counts_hidden_headers_before_first_member(self):
+        for kind in (tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME):
+            with self.subTest(kind=kind):
+                archive = self.root / "hidden-headers.tar.gz"
+                destination = self.root / "hidden-headers"
+                self.metadata_archive(archive, kind, 512, repeats=3)
+                with patch.object(runner, "MAX_TAR_METADATA_BYTES", 2048):
+                    with self.assertRaisesRegex(ValueError, "tar metadata limit"):
+                        runner.extract_results(archive, destination)
+                self.assertFalse(destination.exists())
+
+    def test_result_metadata_budget_preserves_gnu_and_pax_file_streaming(self):
+        data = bytes(range(256)) * 1024 + b"tail"
+        name = "results/" + "long-name-" * 10 + "receipt.json"
+        for format in (tarfile.GNU_FORMAT, tarfile.PAX_FORMAT):
+            archive = self.root / f"long-path-{format}.tar.gz"
+            with tarfile.open(archive, "w:gz", format=format) as tar:
+                entry = tarfile.TarInfo(name)
+                entry.size = len(data)
+                tar.addfile(entry, io.BytesIO(data))
+                tar.addfile(tarfile.TarInfo("results/empty"))
+            # End with exactly the first zero header consumed by TarFile.next().
+            with tarfile.open(archive, "r:gz") as tar:
+                final = tar.getmembers()[-1]
+                metadata_bytes = final.offset_data + 512 - len(data)
+            for allowed in (metadata_bytes, metadata_bytes - 1):
+                with self.subTest(format=format, allowed=allowed):
+                    destination = self.root / f"stream-{format}-{allowed}"
+                    with patch.object(runner, "MAX_TAR_METADATA_BYTES", allowed):
+                        if allowed == metadata_bytes:
+                            runner.extract_results(archive, destination)
+                            self.assertEqual((destination / name).read_bytes(), data)
+                            self.assertEqual((destination / "results/empty").stat().st_size, 0)
+                        else:
+                            with self.assertRaisesRegex(ValueError, "tar metadata limit"):
+                                runner.extract_results(archive, destination)
+
+    def test_result_file_allowance_requires_a_validated_nonsparse_size(self):
+        cases = ((tarfile.GNUTYPE_SPARSE, 0, "sparse file"),
+                 (tarfile.REGTYPE, -1, "invalid (file size|offset)"),
+                 (tarfile.REGTYPE, 4 * 1024**3 + 1, "4 GiB runner limit"))
+        for kind, size, error in cases:
+            with self.subTest(kind=kind, size=size):
+                archive = self.root / "invalid-file.tar.gz"
+                destination = self.root / "invalid-file"
+                header = tarfile.TarInfo("results/data.csv")
+                header.type = kind
+                header.size = size
+                with gzip.open(archive, "wb") as stream:
+                    stream.write(header.tobuf(format=tarfile.GNU_FORMAT))
+                    stream.write(b"\0" * 1024)
+                with self.assertRaisesRegex((ValueError, tarfile.ReadError), error):
+                    runner.extract_results(archive, destination)
+                self.assertFalse(destination.exists())
+
+    def test_oversized_metadata_is_not_reported_as_success(self):
+        archive = self.root / "bad-results.tar.gz"
+        self.metadata_archive(archive, tarfile.XHDTYPE, 64 * 1024 + 512)
+        with self.assertRaisesRegex(ValueError, "tar read limit"):
+            self.execute_mock_remote(0, download=archive)
+        report = json.loads((self.root / "output/runner.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["remote_exit_code"], 0)
+        self.assertFalse(report["results_retrieved"])
+        self.assertFalse((self.root / "output/results").exists())
 
     def test_result_extraction_caps_empty_files_and_directories(self):
         for directory in (False, True):
@@ -243,9 +363,10 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(process.wait.call_count, 2)
         self.assertTrue(process.stdout.closed)
 
-    def execute_mock_remote(self, exit_code, retrieval_exit_code=0):
-        download = self.root / "download.tar.gz"
-        self.archive(download)
+    def execute_mock_remote(self, exit_code, retrieval_exit_code=0, download=None):
+        if download is None:
+            download = self.root / "download.tar.gz"
+            self.archive(download)
         def run(command, **kwargs):
             self.assertGreater(len(kwargs["stdin"].read()), 0)
             return subprocess.CompletedProcess(command, 0)

@@ -261,7 +261,13 @@ and velocities have kpc and km/s units. At most 256 snapshots are admitted per j
 
 Each curves/compact job admits at most 1,048,576 evaluations. The SSH runner caps
 the compressed result download at 4 GiB before writing excess bytes to disk and
-separately caps extracted result files at 4 GiB. Archives admit at most 4,096
+separately caps extracted result files at 4 GiB. Before tar parsing, a guarded
+gzip reader rejects requests above 64 KiB and limits all headers, extended
+metadata and padding consumed by the parser to 16 MiB. Only validated regular
+file payloads receive additional byte allowance; files are copied in 64 KiB
+chunks before another header is parsed. Forward skips also spend the budget,
+and sparse files are rejected. This bounds PAX/GNU metadata even when it is
+hidden from member iteration. Archives admit at most 4,096
 members, including empty files and directories, and at most 4,096 destination
 paths, including implicit parent directories. Both counts are checked before
 creating each entry. Exceeding the download limit

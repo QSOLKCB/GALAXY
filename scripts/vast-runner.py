@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import argparse
 import codecs
+import gzip
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -17,6 +18,8 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_DOWNLOAD_BYTES = 4 * 1024**3
+MAX_RESULT_BYTES = 4 * 1024**3
+MAX_TAR_METADATA_BYTES = 16 * 1024**2
 MAX_LOG_BYTES = 16 * 1024**2
 MAX_RESULT_MEMBERS = 4096
 MAX_RESULT_PATHS = 4096
@@ -89,10 +92,55 @@ def run_remote(command, log):
                            "Remote output exceeds the 16 MiB remote log limit; inspect the recorded remote directory",
                            display=True)
 
+class _BoundedTarReader:
+    """Forward-only gzip reads, checked before tarfile can allocate metadata."""
+    def __init__(self, source):
+        self.source = source
+        self.position = 0
+        self.limit = MAX_TAR_METADATA_BYTES
+
+    def read(self, size=-1):
+        if size < 0 or size > STREAM_CHUNK_BYTES:
+            raise ValueError("Result archive exceeds the 64 KiB tar read limit; retrieve it manually")
+        if self.position + size > self.limit:
+            raise ValueError("Result archive exceeds the 16 MiB tar metadata limit; retrieve it manually")
+        data = self.source.read(size)
+        self.position += len(data)
+        return data
+
+    def tell(self):
+        return self.position
+
+    def seekable(self):
+        return False
+
+    def seek(self, offset, whence=0):
+        if whence == 1:
+            offset += self.position
+        elif whence != 0:
+            raise ValueError("Unexpected result archive seek")
+        if offset < self.position:
+            raise ValueError("Unexpected backward result archive seek")
+        if offset > self.limit:
+            raise ValueError("Result archive exceeds the 16 MiB tar metadata limit; retrieve it manually")
+        # Never delegate to gzip.seek(): skipped padding must spend the budget too.
+        while self.position < offset:
+            if not self.read(min(STREAM_CHUNK_BYTES, offset - self.position)):
+                raise ValueError("Truncated result archive")
+        return self.position
+
+    def allow_file(self, size):
+        # Called only after a regular, non-sparse file passes the extracted-size cap.
+        # Its bytes are consumed before tarfile is allowed to parse another header.
+        self.limit += size
+
 def extract_results(archive, output):
     # Only regular result files in a newly created local run directory.
     destination = output.resolve()
-    with tarfile.open(archive, "r:gz") as tar:
+    # Use r: so parser read requests reach the guard directly. r| would insert
+    # a buffering layer that can assemble an oversized metadata payload first.
+    with gzip.open(archive, "rb") as source, tarfile.open(
+            fileobj=_BoundedTarReader(source), mode="r:") as tar:
         total = 0
         paths = set()
         for member_count, member in enumerate(tar, 1):
@@ -115,12 +163,15 @@ def extract_results(archive, output):
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
             elif member.isfile():
+                if member.sparse is not None or member.size < 0:
+                    raise ValueError("Result archive contains a sparse file or invalid file size")
                 total += member.size
-                if total > 4 * 1024**3:
+                if total > MAX_RESULT_BYTES:
                     raise ValueError("Result archive exceeds the 4 GiB runner limit; retrieve it manually")
+                tar.fileobj.allow_file(member.size)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with tar.extractfile(member) as src, target.open("xb") as dest:
-                    shutil.copyfileobj(src, dest)
+                    shutil.copyfileobj(src, dest, length=STREAM_CHUNK_BYTES)
             else:
                 raise ValueError("Result archive contains a link or special file")
 
