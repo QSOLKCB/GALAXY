@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task": {
+    "kind": "compact",
+    "mass_min_msun": 10000,
+    "mass_max_msun": 10000000000,
+    "masses": 128,
+    "spin_min": -0.998,
+    "spin_max": 0.998,
+    "spins": 128,
+    "velocity_dispersion_kms": 150
+  }
+}

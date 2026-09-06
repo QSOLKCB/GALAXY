@@ -1,0 +1,7 @@
+.git
+**/target
+_site
+runs
+**/__pycache__
+upload
+*.zip

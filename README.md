@@ -13,6 +13,26 @@ network connection is needed, including for the bundled Rust/WebAssembly engine.
 and the Pages workflow deploys. In the repository's Pages settings, choose
 **GitHub Actions** as the source if it is not already set.
 
+## Native GPU runtime v0.3
+
+[`runtime/`](runtime/) runs headless Rust compute jobs on local or cloud GPUs,
+including Vulkan-capable NVIDIA instances on Vast.ai. It evolves actual resident
+particle states and supports circular spin, perturbed leapfrog orbits, UFF
+rotation-curve sweeps and compact-object diagnostics. Jobs produce PNG/CSV output,
+an offline snapshot viewer and a run receipt identifying the adapter and inputs.
+
+```bash
+bash scripts/run-gpu.sh devices
+bash scripts/run-gpu.sh verify
+bash scripts/run-gpu.sh run --job runtime/jobs/spin-local.json --output runs/local-spin
+```
+
+The local preset uses 262,144 actual particles; the cloud preset uses 1,048,576.
+The runtime cap is 8,388,608, subject to the adapter's storage-buffer limits.
+See **[GPU runtime and Vast.ai runner instructions](docs/GPU-RUNTIME.md)** for
+setup, Docker, SSH submission, example jobs, precision and validation details.
+The browser engine's logical/sample counts below describe its separate path.
+
 ## UFF dynamics in v0.2
 
 Select a **Rotation law** to drive each star's orbital rate from `V(R)/R`:
