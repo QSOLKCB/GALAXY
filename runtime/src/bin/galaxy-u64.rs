@@ -297,7 +297,6 @@ fn software(info: &wgpu::AdapterInfo) -> bool {
             .iter()
             .any(|s| name.contains(s))
 }
-
 fn describe(adapter: &wgpu::Adapter) -> Value {
     let info = adapter.get_info();
     let limits = adapter.limits();
@@ -597,7 +596,6 @@ impl Gpu {
             if s.integrator == Integrator::Circular { 1 } else { steps },
         );
     }
-
     fn sample(&self, field: &Field) -> Result<Vec<Particle>> {
         if field.sample_count == 0 {
             return Ok(Vec::new());
@@ -913,6 +911,7 @@ fn execute(job: &Job, directory: &Path, gpu: &Gpu) -> Result<Value> {
     } else {
         0.0
     };
+    let sample_cache_entries = frame_steps.len() as u64 * sample_count as u64;
     Ok(json!({
         "adapter": gpu.info,
         "arithmetic": "float32 GPU kernels; 64-bit split global addressing on CPU/WGSL; float64 host diagnostics",
@@ -923,7 +922,8 @@ fn execute(job: &Job, directory: &Path, gpu: &Gpu) -> Result<Value> {
         "tiles": tiles,
         "snapshot_limit": s.sample_count(),
         "sample_index_math": "exact u128 host mapping into the u64 logical index space",
-        "sample_cache_bytes": frame_steps.len() as u64 * sample_count as u64 * 32,
+        "sample_cache_bytes": sample_cache_entries * std::mem::size_of::<Option<Particle>>() as u64,
+        "sample_cache_particle_payload_bytes": sample_cache_entries * std::mem::size_of::<Particle>() as u64,
         "simulated_time_myr": s.steps as f64 * s.dt_myr,
         "particle_updates": updates,
         "initialization_compute_wall_seconds": initialization_seconds,
