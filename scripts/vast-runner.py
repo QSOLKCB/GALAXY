@@ -33,6 +33,11 @@ def source_files(root=ROOT):
     files = [root / name for name in fixed]
     files += sorted((root / "runtime/src").glob("*.rs"))
     files += sorted((root / "runtime/src").glob("*.wgsl"))
+    # build.rs fingerprints the experimental u64 binary sources even when a
+    # stable galaxy-runtime job is launched remotely, so the stable archive must
+    # carry those nested source files too.
+    files += sorted((root / "runtime/src/bin").glob("*.rs"))
+    files += sorted((root / "runtime/src/bin").glob("*.wgsl"))
     files += sorted((root / "rust/src").glob("*.rs"))
     for path in files:
         if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
