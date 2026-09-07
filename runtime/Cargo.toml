@@ -6,6 +6,7 @@ rust-version = "1.85"
 license = "Apache-2.0"
 publish = false
 description = "Headless native GPU runtime for GALAXY and UFF jobs"
+default-run = "galaxy-runtime"
 
 [dependencies]
 galaxy-sampler = { path = "../rust" }
