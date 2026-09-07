@@ -1,0 +1,107 @@
+name: U64 tiled runtime
+
+on:
+  pull_request:
+    paths:
+      - 'runtime/src/bin/**'
+      - 'runtime/build.rs'
+      - 'runtime/jobs/beyond-u32.json'
+      - 'scripts/run-u64.sh'
+      - 'docs/U64-TILED-RUNTIME.md'
+      - '.github/workflows/u64-tiled.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'runtime/src/bin/**'
+      - 'runtime/build.rs'
+      - 'runtime/jobs/beyond-u32.json'
+      - 'scripts/run-u64.sh'
+      - 'docs/U64-TILED-RUNTIME.md'
+      - '.github/workflows/u64-tiled.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u64-tiled-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/target
+          key: u64-tiled-${{ runner.os }}-rust-1.85.1-${{ hashFiles('runtime/Cargo.lock') }}
+      - name: Unit and integration tests
+        run: cargo test --manifest-path runtime/Cargo.toml --locked
+      - name: Validate beyond-u32 workload
+        run: cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-u64 -- validate --job runtime/jobs/beyond-u32.json
+      - name: Host boundary discriminator
+        run: cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-u64 -- verify --cpu
+
+  software-vulkan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/target
+          key: u64-tiled-vulkan-${{ runner.os }}-rust-1.85.1-${{ hashFiles('runtime/Cargo.lock') }}
+      - name: Install software Vulkan
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          driver = next(Path('/usr/share/vulkan/icd.d').glob('*lvp*.json'))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'VK_DRIVER_FILES={driver}\n')
+          PY
+      - name: Compile u64 runtime
+        run: cargo build --manifest-path runtime/Cargo.toml --locked --bin galaxy-u64
+      - name: GPU-side 2^32 boundary proof
+        run: cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-u64 -- verify --allow-software
+      - name: End-to-end multi-tile smoke job
+        run: |
+          cat >u64-smoke.json <<'JSON'
+          {
+            "schema_version": 1,
+            "task": {
+              "logical_particles": 10003,
+              "tile_particles": 4096,
+              "steps": 4,
+              "dt_myr": 0.05,
+              "snapshot_every": 2,
+              "snapshot_limit": 257,
+              "image_size": 128,
+              "integrator": "leapfrog",
+              "radial_kick_kms": 10.0
+            }
+          }
+          JSON
+          cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-u64 -- run --allow-software --job u64-smoke.json --output runs/u64-smoke
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path('runs/u64-smoke/receipt.json').read_text())
+          assert receipt['status'] == 'complete'
+          result = receipt['results']
+          assert result['logical_particles'] == 10003
+          assert result['tiles'] == 3
+          assert result['particle_updates'] == 40012
+          ids = [int(line.split(',', 1)[0]) for line in Path('runs/u64-smoke/frame-000004.csv').read_text().splitlines()[1:]]
+          assert len(ids) == 257
+          assert ids == sorted(ids)
+          assert len(set(ids)) == len(ids)
+          PY

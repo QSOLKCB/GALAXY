@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "task": {
+    "physics": {
+      "model": "nfw",
+      "black_hole_million": 4.3
+    },
+    "integrator": "leapfrog",
+    "logical_particles": 4303355904,
+    "tile_particles": 8388608,
+    "seed": 303,
+    "steps": 1000,
+    "dt_myr": 0.05,
+    "snapshot_every": 100,
+    "snapshot_limit": 65536,
+    "radial_kick_kms": 20.0,
+    "softening_kpc": 0.02
+  }
+}

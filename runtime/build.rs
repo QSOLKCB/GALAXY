@@ -14,6 +14,8 @@ fn main() {
         "src/kernels.wgsl",
         "src/output.rs",
         "src/verify.rs",
+        "src/bin/galaxy-u64.rs",
+        "src/bin/u64_kernels.wgsl",
         "../rust/src/lib.rs",
         "../rust/src/physics.rs",
         "../rust/src/uff_data.rs",
