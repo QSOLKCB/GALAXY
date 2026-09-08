@@ -146,11 +146,13 @@ Do not reduce those values and continue calling the result the canonical beyond-
 
 ## CUDA execution schedule
 
-For leapfrog jobs, the CUDA kernel fuses the requested repeated steps inside each independent particle thread for a tile/frame interval rather than launching one CUDA kernel per step.
+For leapfrog jobs, GALAXY preserves the requested snapshot boundaries but splits long frame intervals across **bounded CUDA launches**. Each launch is limited by both a per-thread repeat cap and a resident particle-update budget. A full 8,388,608-particle tile therefore executes at most one leapfrog step per launch, while smaller tiles may safely fuse a bounded number of ordered steps.
 
-That transformation is valid only because the current tiled model has no particle-particle or tile-coupled state. Each thread still performs the same ordered float32 kick-drift-kick updates for its own particle. The receipt records this schedule explicitly.
+The chunking changes only the kernel-launch partition. Each particle still performs the same ordered float32 kick-drift-kick updates, launches run in-order on the same CUDA stream, and sampling occurs only after the complete requested frame interval has finished. This avoids very long single kernels that can hit CUDA watchdog or provider timeout limits without introducing extra snapshot states.
 
-This is an execution optimization, not a new physical approximation. If coupled-particle physics is introduced later, the fused schedule must be re-reviewed.
+The receipt records the bounded launch policy, including the maximum fused steps and maximum resident particle-updates allowed per leapfrog launch.
+
+This is an execution optimization, not a new physical approximation. If coupled-particle physics is introduced later, the schedule must be re-reviewed.
 
 ## Numerical equivalence
 
@@ -189,7 +191,8 @@ CUDA receipts identify:
 - `runtime_source_sha256` over the CUDA entrypoint, implementation, pinned UFF data/provenance, bootstrap definition, and backend router;
 - resolved `job_sha256`;
 - artifact hashes;
-- initialization and integration kernel timings.
+- initialization and integration kernel timings;
+- bounded leapfrog launch limits when that integrator is selected.
 
 Vulkan runs launched through `scripts/run-u64.sh` likewise preserve `backend_requested` as `auto` or `vulkan` and record `backend_selected: "vulkan"`. The Rust `runtime_source_sha256` includes the wrapper because the wrapper can materially rewrite that provenance evidence.
 
