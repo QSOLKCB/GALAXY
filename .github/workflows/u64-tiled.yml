@@ -61,7 +61,7 @@ jobs:
         run: cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-u64 -- verify --cpu
       - name: CUDA backend host contract
         run: |
-          python3 -m py_compile runtime/cuda/galaxy_u64_cuda.py
+          python3 -m py_compile runtime/cuda/galaxy_u64_cuda.py runtime/cuda/galaxy_u64_cuda_impl.py
           python3 tests/test_cuda_u64.py
           python3 runtime/cuda/galaxy_u64_cuda.py verify --cpu
           python3 runtime/cuda/galaxy_u64_cuda.py validate --job runtime/jobs/beyond-u32.json
@@ -91,8 +91,8 @@ jobs:
             bash scripts/run-u64.sh devices --backend auto >"$router_tmp/software.out" 2>"$router_tmp/software.err"
           grep -qx auto "$router_tmp/software.out"
 
-          # With no explicit loader override, a failed vulkaninfo probe must be
-          # authoritative even if the image happens to contain system ICD JSON.
+          # A failed optional vulkaninfo probe plus a failed Rust probe must fall
+          # through to CUDA even if the image has stale system ICD configuration.
           cat >"$router_tmp/vulkaninfo" <<'SH'
           #!/usr/bin/env bash
           exit 1
@@ -106,8 +106,121 @@ jobs:
           grep -qx auto "$router_tmp/system.out"
           ! grep -q 'find /usr/share/vulkan/icd.d' scripts/run-u64.sh
 
-          # The bootstrap must reject a process-visible CUDA device count of zero
-          # before printing its success banner.
+          # Conversely, vulkaninfo is optional: GALAXY's own Rust device command
+          # may prove a hardware Vulkan adapter and auto must select that backend.
+          cat >"$router_tmp/cargo-stub" <<'SH'
+          #!/usr/bin/env bash
+          if [[ " $* " == *" devices "* ]]; then
+            cat <<'JSON'
+          [
+            {
+              "name": "Mock Hardware Vulkan",
+              "backend": "Vulkan",
+              "device_type": "DiscreteGpu",
+              "software": false
+            }
+          ]
+          JSON
+            exit 0
+          fi
+          output=""
+          previous=""
+          for arg in "$@"; do
+            if [[ "$previous" == "--output" ]]; then output="$arg"; fi
+            case "$arg" in --output=*) output="${arg#*=}" ;; esac
+            previous="$arg"
+          done
+          if [[ -n "$output" ]]; then
+            mkdir -p "$output"
+            cat >"$output/receipt.json" <<'JSON'
+          {
+            "schema_version": 1,
+            "status": "complete",
+            "backend_requested": "gpu",
+            "allow_software": false
+          }
+          JSON
+          fi
+          exit 0
+          SH
+          chmod +x "$router_tmp/cargo-stub"
+
+          auto_out="$router_tmp/vulkan-auto-run"
+          env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES \
+            PATH="$router_tmp:$PATH" \
+            GALAXY_CARGO="$router_tmp/cargo-stub" \
+            GALAXY_CUDA_PYTHON="$router_tmp/python-stub" \
+            bash scripts/run-u64.sh run --backend auto --job ignored.json --output "$auto_out"
+          python3 - <<PY
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path("$auto_out/receipt.json").read_text())
+          assert receipt["backend_requested"] == "auto", receipt
+          assert receipt["backend_selected"] == "vulkan", receipt
+          PY
+
+          forced_out="$router_tmp/vulkan-forced-run"
+          GALAXY_CARGO="$router_tmp/cargo-stub" \
+            bash scripts/run-u64.sh run --backend vulkan --job ignored.json --output "$forced_out"
+          python3 - <<PY
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path("$forced_out/receipt.json").read_text())
+          assert receipt["backend_requested"] == "vulkan", receipt
+          assert receipt["backend_selected"] == "vulkan", receipt
+          PY
+
+          # Relative custom CUDA sites are repository-relative in both the runner
+          # and bootstrap, regardless of the caller's current working directory.
+          relative_site=".ci-relative-cuda-site"
+          expected_site="$GITHUB_WORKSPACE/$relative_site"
+          mkdir -p "$expected_site"
+          cat >"$router_tmp/pythonpath-stub" <<'SH'
+          #!/usr/bin/env bash
+          printf '%s\n' "${PYTHONPATH%%:*}"
+          SH
+          chmod +x "$router_tmp/pythonpath-stub"
+          (
+            cd /tmp
+            GALAXY_CUDA_SITE="$relative_site" \
+            GALAXY_CUDA_PYTHON="$router_tmp/pythonpath-stub" \
+              bash "$GITHUB_WORKSPACE/scripts/run-u64.sh" devices --backend cuda
+          ) >"$router_tmp/runner-site.out"
+          grep -Fx "$expected_site" "$router_tmp/runner-site.out"
+
+          cat >"$router_tmp/nvidia-smi" <<'SH'
+          #!/usr/bin/env bash
+          echo 'NVIDIA-SMI mock  Driver Version: 999.0  CUDA Version: 13.0'
+          SH
+          cat >"$router_tmp/bootstrap-python-stub" <<'SH'
+          #!/usr/bin/env bash
+          if [[ "${1:-}" == "-m" ]]; then
+            previous=""
+            for arg in "$@"; do
+              if [[ "$previous" == "--target" ]]; then
+                printf '%s\n' "$arg" >"$BOOTSTRAP_TARGET_CAPTURE"
+                exit 0
+              fi
+              previous="$arg"
+            done
+            exit 2
+          fi
+          cat >/dev/null
+          exit 0
+          SH
+          chmod +x "$router_tmp/nvidia-smi" "$router_tmp/bootstrap-python-stub"
+          (
+            cd /tmp
+            PATH="$router_tmp:$PATH" \
+            GALAXY_CUDA_SITE="$relative_site" \
+            GALAXY_CUDA_BOOTSTRAP_PYTHON="$router_tmp/bootstrap-python-stub" \
+            BOOTSTRAP_TARGET_CAPTURE="$router_tmp/bootstrap-target" \
+              bash "$GITHUB_WORKSPACE/scripts/bootstrap-cuda.sh"
+          ) >"$router_tmp/bootstrap.out" 2>"$router_tmp/bootstrap.err"
+          grep -Fx "$expected_site" "$router_tmp/bootstrap-target"
+
+          # The real bootstrap must reject a process-visible CUDA device count of
+          # zero before printing its success banner.
           grep -Fq 'if count <= 0:' scripts/bootstrap-cuda.sh
           grep -Fq 'no CUDA devices are visible to this process' scripts/bootstrap-cuda.sh
 
