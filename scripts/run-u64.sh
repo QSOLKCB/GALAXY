@@ -48,6 +48,7 @@ cuda_python() {
     return 1
   fi
   local site="${GALAXY_CUDA_SITE:-$ROOT/.galaxy-cuda-python}"
+  export GALAXY_BACKEND_REQUESTED="$BACKEND"
   if [[ -d "$site" ]]; then
     PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}" \
       exec "$python" runtime/cuda/galaxy_u64_cuda.py "${ARGS[@]}"
@@ -68,16 +69,42 @@ vulkan_runtime() {
     -- "${ARGS[@]}"
 }
 
-has_hardware_vulkan_hint() {
-  local dir="${VK_ICD_FILENAMES:-${VK_DRIVER_FILES:-}}"
-  if [[ -n "$dir" ]]; then
-    return 0
-  fi
-  if command -v vulkaninfo >/dev/null 2>&1; then
-    if vulkaninfo --summary 2>/dev/null |
-      grep -Eiq 'deviceName.*(NVIDIA|AMD|Intel|Apple)|GPU[0-9].*(NVIDIA|AMD|Intel|Apple)'; then
-      return 0
+vulkaninfo_has_hardware_adapter() {
+  command -v vulkaninfo >/dev/null 2>&1 || return 1
+  vulkaninfo --summary 2>/dev/null |
+    grep -Eiq 'deviceName.*(NVIDIA|AMD|Intel|Apple)|GPU[0-9].*(NVIDIA|AMD|Intel|Apple)'
+}
+
+explicit_icd_is_probeable_hardware() {
+  local explicit="${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}"
+  [[ -n "$explicit" ]] || return 1
+
+  # An explicit loader override is authoritative. Do not infer hardware merely
+  # from the variable being non-empty: stale paths and software ICDs are common
+  # in cloud images. Require every referenced JSON to exist and reject known
+  # software drivers, then require vulkaninfo to prove a real adapter.
+  local path
+  local old_ifs="$IFS"
+  IFS=':'
+  for path in $explicit; do
+    [[ -n "$path" && -f "$path" && -r "$path" ]] || { IFS="$old_ifs"; return 1; }
+    if [[ "${path,,}" =~ (lvp|lavapipe|swiftshader|software) ]] ||
+       grep -Eiq 'lvp|lavapipe|swiftshader|software' "$path"; then
+      IFS="$old_ifs"
+      return 1
     fi
+  done
+  IFS="$old_ifs"
+  vulkaninfo_has_hardware_adapter
+}
+
+has_hardware_vulkan_hint() {
+  if [[ -n "${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}" ]]; then
+    explicit_icd_is_probeable_hardware
+    return
+  fi
+  if vulkaninfo_has_hardware_adapter; then
+    return 0
   fi
   if [[ -d /usr/share/vulkan/icd.d ]]; then
     if find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*.json' \
