@@ -103,7 +103,7 @@ rewrite_vulkan_receipt() {
       indent=$0
       sub(/[^ ].*/, "", indent)
       if (add_selected == 1) {
-        print indent "\"backend_selected\": \"vulkan\"," 
+        print indent "\"backend_selected\": \"vulkan\","
       }
       sub(/"backend_requested"[[:space:]]*:[[:space:]]*"[^"]*"/, "\"backend_requested\": \"" requested "\"")
       found=1
@@ -156,6 +156,7 @@ vulkaninfo_has_hardware_adapter() {
 }
 
 rust_vulkan_has_hardware_adapter() {
+  local query="${1:-}"
   if [[ ! -x "$GALAXY_CARGO" ]] && ! command -v "$GALAXY_CARGO" >/dev/null 2>&1; then
     return 1
   fi
@@ -169,12 +170,26 @@ rust_vulkan_has_hardware_adapter() {
       -- devices 2>/dev/null)"; then
     return 1
   fi
-  printf '%s\n' "$output" | awk '
-    /^[[:space:]]*\{/ { inside=1; vulkan=0; hardware=0 }
+  printf '%s\n' "$output" | awk -v query="$query" '
+    BEGIN { q=tolower(query); numeric=(query ~ /^[0-9]+$/) }
+    /^[[:space:]]*\{/ { inside=1; vulkan=0; hardware=0; idx=""; name="" }
+    inside && /"index"[[:space:]]*:/ {
+      line=$0
+      sub(/^.*"index"[[:space:]]*:[[:space:]]*/, "", line)
+      sub(/[^0-9].*$/, "", line)
+      idx=line
+    }
+    inside && /"name"[[:space:]]*:/ {
+      line=$0
+      sub(/^.*"name"[[:space:]]*:[[:space:]]*"/, "", line)
+      sub(/"[[:space:]]*,?[[:space:]]*$/, "", line)
+      name=line
+    }
     inside && /"backend"[[:space:]]*:[[:space:]]*"Vulkan"/ { vulkan=1 }
     inside && /"software"[[:space:]]*:[[:space:]]*false/ { hardware=1 }
     inside && /^[[:space:]]*\}/ {
-      if (vulkan && hardware) found=1
+      matches=(query == "") || (numeric && idx == query) || (!numeric && index(tolower(name), q) > 0)
+      if (vulkan && hardware && matches) found=1
       inside=0
     }
     END { exit found ? 0 : 1 }
@@ -182,6 +197,15 @@ rust_vulkan_has_hardware_adapter() {
 }
 
 probe_hardware_vulkan() {
+  local adapter=""
+  adapter="$(argument_value --adapter || true)"
+  if [[ -n "$adapter" ]]; then
+    # The adapter query is part of backend selection. Do not let an unrelated
+    # Vulkan device make auto commit to Vulkan when the requested adapter only
+    # exists on CUDA.
+    rust_vulkan_has_hardware_adapter "$adapter"
+    return
+  fi
   vulkaninfo_has_hardware_adapter || rust_vulkan_has_hardware_adapter
 }
 
@@ -214,8 +238,8 @@ has_hardware_vulkan_hint() {
   fi
 
   # System ICD JSON is loader configuration, not hardware evidence. Prefer the
-  # cheap vulkaninfo probe, but do not require that optional utility: when it is
-  # missing or fails, ask GALAXY's own Rust/wgpu device enumeration instead.
+  # cheap vulkaninfo probe when no adapter was requested; otherwise use GALAXY's
+  # own enumeration so the adapter query participates in backend selection.
   probe_hardware_vulkan
 }
 
@@ -232,7 +256,7 @@ case "$BACKEND" in
       vulkan_runtime
       exit 0
     fi
-    echo "GALAXY: no usable hardware Vulkan+Cargo path detected; selecting CUDA." >&2
+    echo "GALAXY: no usable hardware Vulkan+Cargo path detected for the requested adapter; selecting CUDA." >&2
     echo "GALAXY: use --backend vulkan or --backend cuda to force a backend." >&2
     cuda_python
     ;;
