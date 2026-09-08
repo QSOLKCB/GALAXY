@@ -3,7 +3,7 @@
 GALAXY's 64-bit tiled spin runtime has two hardware execution paths on Linux:
 
 - **Vulkan / `wgpu`** — the original Rust `galaxy-u64` binary.
-- **CUDA / CuPy RawKernel** — `runtime/cuda/galaxy_u64_cuda.py`.
+- **CUDA / CuPy RawKernel** — `runtime/cuda/galaxy_u64_cuda.py` plus `runtime/cuda/galaxy_u64_cuda_impl.py`.
 
 The CUDA path exists for NVIDIA cloud sessions that expose CUDA/NVML but do not expose a Vulkan ICD. This is common in compute-oriented containers and managed notebook GPU environments. It does **not** silently emulate Vulkan and it does not treat `nvidia-smi` alone as proof that a GALAXY kernel executed.
 
@@ -63,7 +63,7 @@ No root access is required for the Python package installation.
 
 `auto` is the default.
 
-On Linux, `auto` prefers the existing Rust/Vulkan runtime only when Cargo and a plausible hardware Vulkan ICD are available. Otherwise it selects CUDA. Backend selection is printed to stderr and the resulting receipt records the actual backend.
+On Linux, `auto` prefers the existing Rust/Vulkan runtime only when Cargo is available and a real hardware Vulkan adapter is successfully probed. If `--adapter` is supplied, that adapter query is included in the Vulkan probe; an unrelated Vulkan-capable device cannot cause `auto` to reject a requested CUDA-only adapter. Otherwise the router selects CUDA. Backend selection is printed to stderr and receipts distinguish the requested mode from the selected backend.
 
 You can force a backend:
 
@@ -181,13 +181,16 @@ If the selected Vast.ai image/provider path exposes only CUDA compute, use the C
 CUDA receipts identify:
 
 - `"runtime": "galaxy-u64-cuda"`;
-- `"backend_requested": "cuda"`;
+- `"backend_requested": "cuda"` for an explicitly forced CUDA run, or `"backend_requested": "auto"` when automatic routing selected CUDA;
+- `"backend_selected": "cuda"`;
 - adapter `"backend": "CUDA"`;
 - CUDA driver and runtime versions;
 - compute capability and VRAM;
-- `runtime_source_sha256` over the CUDA runtime plus pinned UFF data/provenance;
+- `runtime_source_sha256` over the CUDA entrypoint, implementation, pinned UFF data/provenance, bootstrap definition, and backend router;
 - resolved `job_sha256`;
 - artifact hashes;
 - initialization and integration kernel timings.
+
+Vulkan runs launched through `scripts/run-u64.sh` likewise preserve `backend_requested` as `auto` or `vulkan` and record `backend_selected: "vulkan"`. The Rust `runtime_source_sha256` includes the wrapper because the wrapper can materially rewrite that provenance evidence.
 
 This keeps Vulkan and CUDA benchmark evidence comparable without pretending they are the same implementation.
