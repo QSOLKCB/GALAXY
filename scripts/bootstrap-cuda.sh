@@ -3,7 +3,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="${GALAXY_CUDA_SITE:-$ROOT/.galaxy-cuda-python}"
+SITE_INPUT="${GALAXY_CUDA_SITE:-.galaxy-cuda-python}"
+case "$SITE_INPUT" in
+  /*) TARGET="$SITE_INPUT" ;;
+  *) TARGET="$ROOT/$SITE_INPUT" ;;
+esac
 PYTHON="${GALAXY_CUDA_BOOTSTRAP_PYTHON:-python3}"
 CUPY_VERSION="${GALAXY_CUPY_VERSION:-14.2.0}"
 
