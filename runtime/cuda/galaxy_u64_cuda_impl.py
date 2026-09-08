@@ -24,6 +24,8 @@ from typing import Any
 
 MAX_TILE_PARTICLES = 8_388_608
 MAX_SNAPSHOTS = 256
+MAX_LEAPFROG_STEPS_PER_LAUNCH = 256
+MAX_LEAPFROG_PARTICLE_UPDATES_PER_LAUNCH = MAX_TILE_PARTICLES
 KPC_TO_M = 3.085677581491367e19
 G = 6.67430e-11 * 1.98847e30 / (KPC_TO_M * 1e6)
 KMS_TO_KPC_MYR = 31557600.0 * 1e6 * 1000.0 / KPC_TO_M
@@ -460,17 +462,27 @@ def validate_job(job: dict[str, Any]) -> dict[str, Any]:
     model = physics["model"]
     if model not in MODEL_IDS:
         raise ValueError(f"physics.model must be one of: {', '.join(MODEL_IDS)}")
-    _bounded(physics["disk_ml"], 0.0, 1.5, "physics.disk_ml")
-    _bounded(physics["bulge_ml"], 0.0, 2.0, "physics.bulge_ml")
-    _bounded(physics["black_hole_million"], 0.0, 1000.0, "physics.black_hole_million")
-    _bounded(physics["uff_v_inf"], 0.0, 500.0, "physics.uff_v_inf")
-    _bounded(physics["uff_core"], 0.02, 100.0, "physics.uff_core")
-    _bounded(physics["uff_beta"], -1.0, 1.0, "physics.uff_beta")
-    _bounded(physics["halo_log_mass"], 8.0, 14.5, "physics.halo_log_mass")
-    _bounded(physics["halo_concentration"], 1.0, 40.0, "physics.halo_concentration")
-    _bounded(physics["burkert_log_density"], 4.0, 11.0, "physics.burkert_log_density")
-    _bounded(physics["burkert_core"], 0.05, 100.0, "physics.burkert_core")
-    _bounded(physics["mond_a0"], 0.03, 6.3, "physics.mond_a0")
+    physics["disk_ml"] = _bounded(physics["disk_ml"], 0.0, 1.5, "physics.disk_ml")
+    physics["bulge_ml"] = _bounded(physics["bulge_ml"], 0.0, 2.0, "physics.bulge_ml")
+    physics["black_hole_million"] = _bounded(
+        physics["black_hole_million"], 0.0, 1000.0, "physics.black_hole_million"
+    )
+    physics["uff_v_inf"] = _bounded(physics["uff_v_inf"], 0.0, 500.0, "physics.uff_v_inf")
+    physics["uff_core"] = _bounded(physics["uff_core"], 0.02, 100.0, "physics.uff_core")
+    physics["uff_beta"] = _bounded(physics["uff_beta"], -1.0, 1.0, "physics.uff_beta")
+    physics["halo_log_mass"] = _bounded(
+        physics["halo_log_mass"], 8.0, 14.5, "physics.halo_log_mass"
+    )
+    physics["halo_concentration"] = _bounded(
+        physics["halo_concentration"], 1.0, 40.0, "physics.halo_concentration"
+    )
+    physics["burkert_log_density"] = _bounded(
+        physics["burkert_log_density"], 4.0, 11.0, "physics.burkert_log_density"
+    )
+    physics["burkert_core"] = _bounded(
+        physics["burkert_core"], 0.05, 100.0, "physics.burkert_core"
+    )
+    physics["mond_a0"] = _bounded(physics["mond_a0"], 0.03, 6.3, "physics.mond_a0")
 
     integrator = task["integrator"]
     if integrator not in {"circular", "leapfrog"}:
@@ -500,16 +512,18 @@ def validate_job(job: dict[str, Any]) -> dict[str, Any]:
     if not (128 <= task["image_size"] <= 2048):
         raise ValueError("image_size must be in 128..=2048")
 
-    _bounded(task["dt_myr"], 0.0001, 2.0, "dt_myr")
-    _bounded(task["pitch_deg"], 10.0, 40.0, "pitch_deg")
-    _bounded(task["scatter"], 0.0, 2.5, "scatter")
-    _bounded(task["bulge_fraction"], 0.0, 0.5, "bulge_fraction")
-    _bounded(task["thickness_kpc"], 0.0, 2.0, "thickness_kpc")
-    _bounded(task["radial_kick_kms"], -100.0, 100.0, "radial_kick_kms")
-    _bounded(task["softening_kpc"], 0.001, 0.2, "softening_kpc")
-    _bounded(task["extent_kpc"], 1.0, 100.0, "extent_kpc")
-    _bounded(task["inclination_deg"], 0.0, 90.0, "inclination_deg")
-    if integrator == "circular" and float(task["radial_kick_kms"]) != 0.0:
+    task["dt_myr"] = _bounded(task["dt_myr"], 0.0001, 2.0, "dt_myr")
+    task["pitch_deg"] = _bounded(task["pitch_deg"], 10.0, 40.0, "pitch_deg")
+    task["scatter"] = _bounded(task["scatter"], 0.0, 2.5, "scatter")
+    task["bulge_fraction"] = _bounded(task["bulge_fraction"], 0.0, 0.5, "bulge_fraction")
+    task["thickness_kpc"] = _bounded(task["thickness_kpc"], 0.0, 2.0, "thickness_kpc")
+    task["radial_kick_kms"] = _bounded(
+        task["radial_kick_kms"], -100.0, 100.0, "radial_kick_kms"
+    )
+    task["softening_kpc"] = _bounded(task["softening_kpc"], 0.001, 0.2, "softening_kpc")
+    task["extent_kpc"] = _bounded(task["extent_kpc"], 1.0, 100.0, "extent_kpc")
+    task["inclination_deg"] = _bounded(task["inclination_deg"], 0.0, 90.0, "inclination_deg")
+    if integrator == "circular" and task["radial_kick_kms"] != 0.0:
         raise ValueError("radial_kick_kms requires the leapfrog integrator")
 
     snapshots = snapshot_count(task)
@@ -783,6 +797,16 @@ def select_device(query: str | None) -> dict[str, Any]:
     return found[0]
 
 
+def leapfrog_steps_per_launch(resident_particles: int) -> int:
+    if resident_particles <= 0:
+        raise ValueError("resident_particles must be positive")
+    by_particle_updates = max(
+        1,
+        MAX_LEAPFROG_PARTICLE_UPDATES_PER_LAUNCH // resident_particles,
+    )
+    return min(MAX_LEAPFROG_STEPS_PER_LAUNCH, by_particle_updates)
+
+
 class CudaGpu:
     def __init__(self, adapter: str | None):
         self.cp, self.np = _load_cupy()
@@ -866,13 +890,23 @@ class CudaGpu:
                 np.float32(phases[0]), np.float32(phases[1]), np.float32(phases[2]), np.float32(phases[3]),
             )
             return self._timed(lambda: self._launch(self.k_circular, count, args))
+
         physics = self._physics_args(task)
-        args = (
-            field["particles"], np.uint32(count), np.uint32(repeats),
-            np.float32(task["dt_myr"]), np.float32(task["softening_kpc"]),
-            *physics,
-        )
-        return self._timed(lambda: self._launch(self.k_leapfrog, count, args))
+        chunk_steps = leapfrog_steps_per_launch(count)
+
+        def launch_chunks() -> None:
+            remaining = repeats
+            while remaining > 0:
+                chunk = min(remaining, chunk_steps)
+                args = (
+                    field["particles"], np.uint32(count), np.uint32(chunk),
+                    np.float32(task["dt_myr"]), np.float32(task["softening_kpc"]),
+                    *physics,
+                )
+                self._launch(self.k_leapfrog, count, args)
+                remaining -= chunk
+
+        return self._timed(launch_chunks)
 
     def sample(self, field: dict[str, Any]) -> Any:
         sample_n = int(field["sample_count"])
@@ -1025,7 +1059,11 @@ def write_viewer(directory: Path, frames: list[dict[str, Any]], particles: int) 
 def cuda_kernel_schedule(task: dict[str, Any]) -> str:
     if task["integrator"] == "circular":
         return "analytic circular phase kernel launched once per requested frame interval"
-    return "independent per-particle repeated leapfrog steps fused inside each CUDA thread"
+    return (
+        "independent per-particle leapfrog steps split across bounded CUDA launches; "
+        f"at most {MAX_LEAPFROG_STEPS_PER_LAUNCH} steps and "
+        f"{MAX_LEAPFROG_PARTICLE_UPDATES_PER_LAUNCH} resident particle-updates per launch"
+    )
 
 
 def force_model_description(task: dict[str, Any]) -> str:
@@ -1121,6 +1159,8 @@ def execute(job: dict[str, Any], directory: Path, gpu: CudaGpu) -> dict[str, Any
         "arithmetic": "float32 CUDA kernels; split-u64-compatible global addressing; float64 host diagnostics",
         "addressing": "split-u64-hash32-avalanche-v1",
         "cuda_kernel_schedule": cuda_kernel_schedule(task),
+        "cuda_leapfrog_max_steps_per_launch": MAX_LEAPFROG_STEPS_PER_LAUNCH,
+        "cuda_leapfrog_max_particle_updates_per_launch": MAX_LEAPFROG_PARTICLE_UPDATES_PER_LAUNCH,
         "logical_particles": int(task["logical_particles"]),
         "resident_tile_particles": min(int(task["logical_particles"]), int(task["tile_particles"])),
         "resident_particle_bytes": min(int(task["logical_particles"]), int(task["tile_particles"])) * 32,
