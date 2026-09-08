@@ -66,6 +66,50 @@ class CudaU64HostContractTests(unittest.TestCase):
             1,
         )
 
+    def test_validated_f64_fields_are_normalized_to_float(self):
+        job = cuda.validate_job({
+            "schema_version": 1,
+            "task": {
+                "physics": {
+                    "disk_ml": 1,
+                    "bulge_ml": 1,
+                    "black_hole_million": 0,
+                    "uff_v_inf": 120,
+                    "uff_core": 3,
+                    "uff_beta": 0,
+                    "halo_log_mass": 11,
+                    "halo_concentration": 10,
+                    "burkert_log_density": 7,
+                    "burkert_core": 5,
+                    "mond_a0": 1,
+                },
+                "dt_myr": 1,
+                "pitch_deg": 22,
+                "scatter": 1,
+                "bulge_fraction": 0,
+                "thickness_kpc": 1,
+                "radial_kick_kms": 0,
+                "softening_kpc": 0.1,
+                "extent_kpc": 16,
+                "inclination_deg": 38,
+            },
+        })
+        task = job["task"]
+        for name in (
+            "dt_myr", "pitch_deg", "scatter", "bulge_fraction", "thickness_kpc",
+            "radial_kick_kms", "softening_kpc", "extent_kpc", "inclination_deg",
+        ):
+            with self.subTest(field=name):
+                self.assertIs(type(task[name]), float)
+        for name in (
+            "disk_ml", "bulge_ml", "black_hole_million", "uff_v_inf", "uff_core",
+            "uff_beta", "halo_log_mass", "halo_concentration", "burkert_log_density",
+            "burkert_core", "mond_a0",
+        ):
+            with self.subTest(field=f"physics.{name}"):
+                self.assertIs(type(task["physics"][name]), float)
+        self.assertIn('"dt_myr": 1.0', __import__("json").dumps(job, indent=2))
+
     def test_snapshot_every_rejects_negative_and_out_of_u32_range(self):
         for value in (-1, 1 << 32):
             with self.subTest(value=value):
@@ -113,7 +157,52 @@ class CudaU64HostContractTests(unittest.TestCase):
         })["task"]
         self.assertIn("circular phase kernel", cuda.cuda_kernel_schedule(circular))
         self.assertNotIn("leapfrog", cuda.cuda_kernel_schedule(circular))
-        self.assertIn("repeated leapfrog steps", cuda.cuda_kernel_schedule(leapfrog))
+        self.assertIn("bounded CUDA launches", cuda.cuda_kernel_schedule(leapfrog))
+        self.assertIn("particle-updates per launch", cuda.cuda_kernel_schedule(leapfrog))
+
+    def test_long_leapfrog_intervals_are_chunked_without_intermediate_sampling(self):
+        self.assertEqual(cuda.leapfrog_steps_per_launch(cuda.MAX_TILE_PARTICLES), 1)
+        self.assertLessEqual(
+            cuda.leapfrog_steps_per_launch(4096),
+            cuda.MAX_LEAPFROG_STEPS_PER_LAUNCH,
+        )
+
+        class FakeNp:
+            @staticmethod
+            def uint32(value):
+                return int(value)
+
+            @staticmethod
+            def float32(value):
+                return float(value)
+
+        gpu = object.__new__(cuda.CudaGpu)
+        gpu.np = FakeNp()
+        gpu.k_leapfrog = object()
+        gpu._physics_args = lambda task: ()
+        launches = []
+        gpu._launch = lambda kernel, count, args: launches.append(int(args[2]))
+        gpu._timed = lambda fn: (fn(), 0.5)[1]
+
+        task = cuda.validate_job({
+            "schema_version": 1,
+            "task": {
+                "integrator": "leapfrog",
+                "steps": 100_000,
+                "snapshot_every": 0,
+            },
+        })["task"]
+        elapsed = gpu.advance(
+            {"particles": object(), "count": 4096},
+            task,
+            100_000,
+            100_000,
+        )
+        self.assertEqual(elapsed, 0.5)
+        self.assertEqual(sum(launches), 100_000)
+        self.assertGreater(len(launches), 1)
+        self.assertLessEqual(max(launches), cuda.MAX_LEAPFROG_STEPS_PER_LAUNCH)
+        self.assertTrue(all(chunk * 4096 <= cuda.MAX_LEAPFROG_PARTICLE_UPDATES_PER_LAUNCH for chunk in launches))
 
     def test_force_model_description_names_selected_physics(self):
         for model in cuda.MODEL_IDS:
