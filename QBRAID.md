@@ -45,8 +45,11 @@ runtime/jobs/beyond-u32.json
 runtime/src/bin/galaxy-u64.rs
 runtime/src/bin/u64_kernels.wgsl
 runtime/cuda/galaxy_u64_cuda.py
+runtime/cuda/galaxy_u64_cuda_impl.py
 scripts/run-u64.sh
 ```
+
+`runtime/cuda/galaxy_u64_cuda.py` is the strict-loading entrypoint. The CUDA kernels, physics, validation, execution, and receipt implementation live in `runtime/cuda/galaxy_u64_cuda_impl.py`; both files are mandatory review inputs before spending GPU credits or assessing backend equivalence.
 
 The stable `galaxy-runtime` remains the Rust/`wgpu` runtime. The dual-backend work in this handoff applies first to the wider-address `galaxy-u64` spin workload.
 
