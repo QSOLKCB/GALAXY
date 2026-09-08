@@ -446,7 +446,10 @@ def validate_job(job: dict[str, Any]) -> dict[str, Any]:
     unknown = set(job) - {"schema_version", "task"}
     if unknown:
         raise ValueError(f"Unknown job fields: {', '.join(sorted(unknown))}")
-    if job.get("schema_version") != 1:
+    schema_version = job.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise ValueError("schema_version must be an integer")
+    if schema_version != 1:
         raise ValueError("Unsupported galaxy-u64 schema_version; expected 1")
     raw_task = job.get("task")
     if not isinstance(raw_task, dict):
@@ -871,19 +874,21 @@ class CudaGpu:
         )
         return self._timed(lambda: self._launch(self.k_leapfrog, count, args))
 
-    def sample(self, field: dict[str, Any]) -> list[list[float]]:
+    def sample(self, field: dict[str, Any]) -> Any:
         sample_n = int(field["sample_count"])
         if sample_n == 0:
-            return []
+            return self.np.empty((0, 8), dtype=self.np.float32)
         cp, np = self.cp, self.np
         output = cp.empty((sample_n, 8), dtype=cp.float32)
         args = (field["particles"], field["indices"], output, np.uint32(sample_n))
         self._launch(self.k_gather, sample_n, args)
         self.cp.cuda.runtime.deviceSynchronize()
         host = cp.asnumpy(output)
-        if not self.np.isfinite(host).all():
+        if host.dtype != np.float32 or host.shape != (sample_n, 8):
+            raise RuntimeError("CUDA gather returned an unexpected packed sample layout")
+        if not np.isfinite(host).all():
             raise RuntimeError("CUDA produced a non-finite tiled result; reduce dt or check parameters")
-        return host.tolist()
+        return host
 
 
 def phase_time_parts(time_myr: float) -> list[float]:
@@ -948,10 +953,10 @@ def write_rgb_png(path: Path, width: int, height: int, pixels: bytes) -> None:
     path.write_bytes(payload)
 
 
-def write_snapshot(directory: Path, task: dict[str, Any], step: int, ids: list[int], points: list[list[float]]) -> dict[str, Any]:
+def write_snapshot(directory: Path, task: dict[str, Any], step: int, ids: list[int], points: Any) -> dict[str, Any]:
     if len(ids) != len(points) or len(points) != sample_count(task):
         raise RuntimeError("Invalid CUDA u64 snapshot values, ids, or sample length")
-    if any(not math.isfinite(v) for point in points for v in point):
+    if any(not math.isfinite(float(v)) for point in points for v in point):
         raise RuntimeError("Invalid CUDA u64 snapshot values, ids, or sample length")
 
     stem = f"frame-{step:06d}"
@@ -1023,13 +1028,32 @@ def cuda_kernel_schedule(task: dict[str, Any]) -> str:
     return "independent per-particle repeated leapfrog steps fused inside each CUDA thread"
 
 
+def force_model_description(task: dict[str, Any]) -> str:
+    model = task["physics"]["model"]
+    if task["integrator"] == "circular":
+        return f"prescribed circular speed from {model} velocity law"
+    return (
+        f"planar fixed radial acceleration derived from {model} circular-speed law; "
+        "softened radius; static authored height"
+    )
+
+
 def execute(job: dict[str, Any], directory: Path, gpu: CudaGpu) -> dict[str, Any]:
     task = job["task"]
     started = time.perf_counter()
     steps = frame_steps(task)
     ids = sample_ids(task)
     samples = len(ids)
-    cache: list[list[list[float] | None]] = [[None] * samples for _ in steps]
+    np = gpu.np
+    try:
+        cache = np.empty((len(steps), samples, 8), dtype=np.float32)
+        filled = np.zeros((len(steps), samples), dtype=np.bool_)
+    except (MemoryError, ValueError) as exc:
+        payload = len(steps) * samples * 32
+        raise RuntimeError(
+            f"Unable to allocate the packed {payload}-byte CUDA sample cache; "
+            "reduce snapshot_limit or snapshot count"
+        ) from exc
     tiles = tile_count(task)
     sample_cursor = 0
     initialization_seconds = 0.0
@@ -1059,10 +1083,10 @@ def execute(job: dict[str, Any], directory: Path, gpu: CudaGpu) -> dict[str, Any
                 previous = step
             if local_indices:
                 points = gpu.sample(field)
-                if len(points) != len(slots):
+                if points.shape != (len(slots), 8):
                     raise RuntimeError("CUDA tile gather returned the wrong number of global samples")
-                for slot, point in zip(slots, points):
-                    cache[frame_index][slot] = point
+                cache[frame_index, slots, :] = points
+                filled[frame_index, slots] = True
 
         del field
         gpu.cp.get_default_memory_pool().free_all_blocks()
@@ -1078,14 +1102,13 @@ def execute(job: dict[str, Any], directory: Path, gpu: CudaGpu) -> dict[str, Any
 
     frames = []
     for frame_index, step in enumerate(steps):
-        points = cache[frame_index]
-        if any(point is None for point in points):
+        if not bool(filled[frame_index].all()):
             raise RuntimeError("missing global sample after tiled CUDA execution")
-        concrete = [point for point in points if point is not None]
-        frames.append(write_snapshot(directory, task, step, ids, concrete))
+        points = cache[frame_index]
+        frames.append(write_snapshot(directory, task, step, ids, points))
         print(
             f"snapshot {frame_index+1}/{len(steps)} · step {step}/{task['steps']} · "
-            f"{step*task['dt_myr']:.2f} Myr · {len(concrete)} globally sampled",
+            f"{step*task['dt_myr']:.2f} Myr · {len(points)} globally sampled",
             file=sys.stderr,
         )
 
@@ -1105,8 +1128,9 @@ def execute(job: dict[str, Any], directory: Path, gpu: CudaGpu) -> dict[str, Any
         "snapshot_limit": sample_count(task),
         "sample_index_math": "exact Python integer mapping into the u64 logical index space",
         "sample_cache_entries": sample_cache_entries,
-        "sample_cache_particle_payload_bytes": sample_cache_entries * 32,
-        "sample_cache_host_overhead": "implementation-dependent Python object overhead; not included in payload bytes",
+        "sample_cache_particle_payload_bytes": int(cache.nbytes),
+        "sample_cache_validity_bytes": int(filled.nbytes),
+        "sample_cache_host_representation": "packed NumPy float32 array plus boolean validity bitmap",
         "simulated_time_myr": int(task["steps"]) * float(task["dt_myr"]),
         "particle_updates": updates,
         "initialization_compute_wall_seconds": initialization_seconds,
@@ -1114,11 +1138,7 @@ def execute(job: dict[str, Any], directory: Path, gpu: CudaGpu) -> dict[str, Any
         "integration_particle_updates_per_second": throughput,
         "execution_wall_seconds": time.perf_counter() - started,
         "frames": frames,
-        "force_model": (
-            "prescribed UFF circular speed"
-            if task["integrator"] == "circular"
-            else "planar fixed UFF potential; softened radial force; static authored height"
-        ),
+        "force_model": force_model_description(task),
         "partition_semantics": (
             "independent test particles in one fixed potential; tiles are an execution partition, "
             "not a physics approximation"
@@ -1150,7 +1170,7 @@ def verify_u64(gpu: CudaGpu | None) -> dict[str, Any]:
         for result, particle_id in zip(actual, ids):
             expected = initialize_particle(task, particle_id)
             for a, b in zip(result, expected):
-                if not math.isfinite(a) or abs(a-b) > 4e-4*(1.0+abs(b)):
+                if not math.isfinite(float(a)) or abs(float(a)-b) > 4e-4*(1.0+abs(b)):
                     raise RuntimeError(
                         f"CUDA u64 boundary initialization mismatch at id {particle_id}: {a} vs {b}"
                     )
