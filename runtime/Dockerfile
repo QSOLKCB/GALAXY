@@ -4,6 +4,7 @@ WORKDIR /opt/galaxy
 COPY rust-toolchain.toml ./
 COPY rust/ rust/
 COPY runtime/ runtime/
+COPY scripts/run-u64.sh scripts/run-u64.sh
 COPY data/uff/ data/uff/
 COPY tests/uff-reference.json tests/uff-reference.json
 RUN cargo build --manifest-path runtime/Cargo.toml --release --locked --bins
