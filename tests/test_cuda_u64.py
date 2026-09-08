@@ -36,6 +36,20 @@ class CudaU64HostContractTests(unittest.TestCase):
         self.assertEqual(cuda.tile_count(task), 513)
         self.assertEqual(cuda.particle_updates(task), 4_303_355_904_000)
 
+    def test_duplicate_json_keys_fail_before_validation(self):
+        payloads = [
+            '{"schema_version":1,"schema_version":1,"task":{}}',
+            '{"schema_version":1,"task":{"steps":0,"steps":1}}',
+            '{"schema_version":1,"task":{"physics":{"model":"nfw","model":"burkert"}}}',
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            for payload in payloads:
+                with self.subTest(payload=payload):
+                    path.write_text(payload, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "Duplicate JSON key"):
+                        cuda.load_job(path)
+
     def test_unknown_fields_and_boolean_integers_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "Unknown u64 task fields"):
             cuda.validate_job({"schema_version": 1, "task": {"particles": 4}})
@@ -122,7 +136,7 @@ class CudaU64HostContractTests(unittest.TestCase):
                 self.assertIn("radial acceleration", cuda.force_model_description(task))
 
     def test_sample_cache_uses_packed_numpy_storage(self):
-        source = MODULE_PATH.read_text(encoding="utf-8")
+        source = cuda.IMPLEMENTATION_PATH.read_text(encoding="utf-8")
         self.assertNotIn("host.tolist()", source)
         self.assertIn("np.empty((len(steps), samples, 8), dtype=np.float32)", source)
         self.assertIn("np.zeros((len(steps), samples), dtype=np.bool_)", source)
@@ -137,7 +151,9 @@ class CudaU64HostContractTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "invalid requested backend provenance"):
                 cuda.requested_backend()
 
-    def test_runtime_source_hash_covers_cuda_dependency_and_router_definitions(self):
+    def test_runtime_source_hash_covers_entrypoint_implementation_and_router(self):
+        self.assertIn(MODULE_PATH.resolve(), cuda.RUNTIME_SOURCE_PATHS)
+        self.assertIn(cuda.IMPLEMENTATION_PATH.resolve(), cuda.RUNTIME_SOURCE_PATHS)
         self.assertIn(cuda.BOOTSTRAP_PATH, cuda.RUNTIME_SOURCE_PATHS)
         self.assertIn(cuda.RUNNER_PATH, cuda.RUNTIME_SOURCE_PATHS)
         digest = cuda.runtime_source_sha256()
