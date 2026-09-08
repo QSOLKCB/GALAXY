@@ -32,6 +32,15 @@ TAU = math.tau
 ROOT = Path(__file__).resolve().parents[2]
 DEMO_PATH = ROOT / "data" / "uff" / "DEMO_GALAXY.csv"
 PROVENANCE_PATH = ROOT / "data" / "uff" / "provenance.json"
+BOOTSTRAP_PATH = ROOT / "scripts" / "bootstrap-cuda.sh"
+RUNNER_PATH = ROOT / "scripts" / "run-u64.sh"
+RUNTIME_SOURCE_PATHS = (
+    Path(__file__).resolve(),
+    DEMO_PATH,
+    PROVENANCE_PATH,
+    BOOTSTRAP_PATH,
+    RUNNER_PATH,
+)
 
 MODEL_IDS = {
     "baryons": 1,
@@ -79,7 +88,7 @@ TASK_DEFAULTS = {
     "inclination_deg": 38.0,
 }
 
-CUDA_SOURCE = r"""
+CUDA_SOURCE_TEMPLATE = r"""
 #include <stdint.h>
 #include <math.h>
 
@@ -88,24 +97,13 @@ CUDA_SOURCE = r"""
 #define GALAXY_G 4.301047329314801e-6f
 #define GALAXY_KMS_TO_KPC_MYR 0.001022712165045695f
 
-__device__ __constant__ float DEMO_R[6] = {
-    0.5f, 1.0f, 2.0f, 5.0f, 8.0f, 12.0f
-};
-__device__ __constant__ float DEMO_V[18] = {
-    5.0f,20.0f,10.0f,
-    10.0f,40.0f,12.0f,
-    15.0f,60.0f,14.0f,
-    20.0f,80.0f,10.0f,
-    18.0f,90.0f,8.0f,
-    15.0f,95.0f,5.0f
-};
+__GALAXY_DEMO_CONSTANTS__
 
 __device__ inline void components(float r, float* gas, float* disk, float* bulge) {
     if (r <= DEMO_R[0]) {
         *gas = DEMO_V[0]; *disk = DEMO_V[1]; *bulge = DEMO_V[2]; return;
     }
-    #pragma unroll
-    for (int i = 1; i < 6; ++i) {
+    for (int i = 1; i < GALAXY_DEMO_N; ++i) {
         if (r <= DEMO_R[i]) {
             float t = (r - DEMO_R[i-1]) / (DEMO_R[i] - DEMO_R[i-1]);
             int a = 3*(i-1), b = 3*i;
@@ -115,7 +113,8 @@ __device__ inline void components(float r, float* gas, float* disk, float* bulge
             return;
         }
     }
-    *gas = DEMO_V[15]; *disk = DEMO_V[16]; *bulge = DEMO_V[17];
+    int last = 3*(GALAXY_DEMO_N-1);
+    *gas = DEMO_V[last]; *disk = DEMO_V[last+1]; *bulge = DEMO_V[last+2];
 }
 
 __device__ inline float nfw_shape(float x) {
@@ -473,8 +472,10 @@ def validate_job(job: dict[str, Any]) -> dict[str, Any]:
     integrator = task["integrator"]
     if integrator not in {"circular", "leapfrog"}:
         raise ValueError("integrator must be circular or leapfrog")
-    for name in ("logical_particles", "tile_particles", "seed", "steps", "snapshot_every",
-                 "snapshot_limit", "arms", "image_size", "direction"):
+    for name in (
+        "logical_particles", "tile_particles", "seed", "steps", "snapshot_every",
+        "snapshot_limit", "arms", "image_size", "direction",
+    ):
         if isinstance(task[name], bool) or not isinstance(task[name], int):
             raise ValueError(f"{name} must be an integer")
     if task["logical_particles"] <= 0 or task["logical_particles"] > 0xFFFFFFFFFFFFFFFF:
@@ -485,6 +486,8 @@ def validate_job(job: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("seed must be in 0..=2^32-1")
     if not (1 <= task["steps"] <= 100_000):
         raise ValueError("steps must be in 1..=100000")
+    if not (0 <= task["snapshot_every"] <= 0xFFFFFFFF):
+        raise ValueError("snapshot_every must be in 0..=2^32-1")
     if not (1 <= task["snapshot_limit"] <= 65_536):
         raise ValueError("snapshot_limit must be in 1..=65536")
     if not (1 <= task["arms"] <= 8):
@@ -569,16 +572,49 @@ def _load_demo() -> list[tuple[float, float, float, float]]:
     rows: list[tuple[float, float, float, float]] = []
     with DEMO_PATH.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
-            rows.append((
+            values = (
                 float(row["R_kpc"]),
                 float(row["V_gas_kms"]),
                 float(row["V_disk_kms"]),
                 float(row["V_bul_kms"]),
-            ))
+            )
+            if not all(math.isfinite(value) for value in values):
+                raise RuntimeError("UFF demo table contains a non-finite CUDA input")
+            rows.append(values)
+    if not rows:
+        raise RuntimeError("UFF demo table must contain at least one row")
+    if any(b[0] <= a[0] for a, b in zip(rows, rows[1:])):
+        raise RuntimeError("UFF demo radii must be strictly increasing")
     return rows
 
 
+def _cuda_f32_literal(value: float) -> str:
+    text = format(_f32(value), ".9g")
+    if "e" not in text.lower() and "." not in text:
+        text += ".0"
+    return f"{text}f"
+
+
+def _cuda_demo_constants(rows: list[tuple[float, float, float, float]]) -> str:
+    radii = ", ".join(_cuda_f32_literal(row[0]) for row in rows)
+    components = ",\n    ".join(
+        ", ".join(_cuda_f32_literal(value) for value in row[1:])
+        for row in rows
+    )
+    count = len(rows)
+    return (
+        f"#define GALAXY_DEMO_N {count}\n"
+        f"__device__ __constant__ float DEMO_R[{count}] = {{ {radii} }};\n"
+        f"__device__ __constant__ float DEMO_V[{count * 3}] = {{\n    {components}\n}};"
+    )
+
+
 DEMO = _load_demo()
+CUDA_SOURCE = CUDA_SOURCE_TEMPLATE.replace(
+    "__GALAXY_DEMO_CONSTANTS__", _cuda_demo_constants(DEMO)
+)
+if "__GALAXY_DEMO_CONSTANTS__" in CUDA_SOURCE:
+    raise RuntimeError("CUDA UFF constants were not generated")
 
 
 def components_at(radius: float) -> tuple[float, float, float]:
@@ -602,10 +638,12 @@ def host_velocity(radius: float, p: dict[str, Any]) -> float:
         mass = 10.0 ** p["halo_log_mass"]
         rho = 3.0 * 0.07**2 / (8.0 * math.pi * G)
         r200 = (3.0 * mass / (4.0 * math.pi * 200.0 * rho)) ** (1.0 / 3.0)
+
         def nfw(x: float) -> float:
             if x < 1e-4:
                 return 0.5*x*x - (2.0/3.0)*x**3 + 0.75*x**4
             return math.log1p(x) - x/(1.0+x)
+
         c = p["halo_concentration"]
         total += G * mass * nfw(c * radius / r200) / nfw(c) / radius
     elif model == 3:
@@ -700,6 +738,7 @@ def devices() -> list[dict[str, Any]]:
     result = []
     driver = int(cp.cuda.runtime.driverGetVersion())
     runtime = int(cp.cuda.runtime.runtimeGetVersion())
+    cupy_version = str(cp.__version__)
     for index in range(cp.cuda.runtime.getDeviceCount()):
         props = cp.cuda.runtime.getDeviceProperties(index)
         name = _decode_name(props.get("name", f"CUDA device {index}"))
@@ -713,6 +752,7 @@ def devices() -> list[dict[str, Any]]:
             "driver": "NVIDIA CUDA Driver",
             "driver_version": driver,
             "runtime_version": runtime,
+            "cupy_version": cupy_version,
             "software": False,
             "compute_capability": f"{int(props.get('major', 0))}.{int(props.get('minor', 0))}",
             "total_memory_bytes": int(total_mem),
@@ -874,7 +914,7 @@ def _sha256_file(path: Path) -> str:
 
 def runtime_source_sha256() -> str:
     digest = hashlib.sha256()
-    for path in (Path(__file__).resolve(), DEMO_PATH, PROVENANCE_PATH):
+    for path in RUNTIME_SOURCE_PATHS:
         digest.update(path.relative_to(ROOT).as_posix().encode())
         digest.update(b"\0")
         with path.open("rb") as handle:
@@ -977,6 +1017,12 @@ def write_viewer(directory: Path, frames: list[dict[str, Any]], particles: int) 
     (directory / "viewer.html").write_text(html, encoding="utf-8")
 
 
+def cuda_kernel_schedule(task: dict[str, Any]) -> str:
+    if task["integrator"] == "circular":
+        return "analytic circular phase kernel launched once per requested frame interval"
+    return "independent per-particle repeated leapfrog steps fused inside each CUDA thread"
+
+
 def execute(job: dict[str, Any], directory: Path, gpu: CudaGpu) -> dict[str, Any]:
     task = job["task"]
     started = time.perf_counter()
@@ -1051,7 +1097,7 @@ def execute(job: dict[str, Any], directory: Path, gpu: CudaGpu) -> dict[str, Any
         "adapter": gpu.info,
         "arithmetic": "float32 CUDA kernels; split-u64-compatible global addressing; float64 host diagnostics",
         "addressing": "split-u64-hash32-avalanche-v1",
-        "cuda_kernel_schedule": "independent per-particle repeated leapfrog steps fused inside each CUDA thread",
+        "cuda_kernel_schedule": cuda_kernel_schedule(task),
         "logical_particles": int(task["logical_particles"]),
         "resident_tile_particles": min(int(task["logical_particles"]), int(task["tile_particles"])),
         "resident_particle_bytes": min(int(task["logical_particles"]), int(task["tile_particles"])) * 32,
@@ -1122,6 +1168,15 @@ def verify_u64(gpu: CudaGpu | None) -> dict[str, Any]:
     }
 
 
+def requested_backend() -> str:
+    requested = os.environ.get("GALAXY_BACKEND_REQUESTED", "cuda").lower()
+    if requested not in {"auto", "cuda"}:
+        raise RuntimeError(
+            f"CUDA runtime received invalid requested backend provenance {requested!r}; expected auto or cuda"
+        )
+    return requested
+
+
 def run_job(job_path: Path, directory: Path, adapter: str | None) -> None:
     job = load_job(job_path)
     directory.parent.mkdir(parents=True, exist_ok=True)
@@ -1136,13 +1191,15 @@ def run_job(job_path: Path, directory: Path, adapter: str | None) -> None:
         "runtime_source_sha256": runtime_source_sha256(),
         "job_sha256": _sha256_file(directory / "job.json"),
         "uff_source": provenance,
-        "backend_requested": "cuda",
+        "backend_requested": requested_backend(),
+        "backend_selected": "cuda",
         "allow_software": False,
     }
     _write_json(directory / "receipt.json", receipt)
     try:
         gpu = CudaGpu(adapter)
         print(f"Engine: {gpu.info['name']} (CUDA)", file=sys.stderr)
+        receipt["cuda_dependency"] = {"cupy_version": gpu.info["cupy_version"]}
         receipt["results"] = execute(job, directory, gpu)
         receipt["artifacts"] = artifacts(directory)
         receipt["status"] = "complete"
