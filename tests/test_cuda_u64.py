@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
-import json
 import math
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "runtime" / "cuda" / "galaxy_u64_cuda.py"
@@ -41,6 +42,20 @@ class CudaU64HostContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "direction must be an integer"):
             cuda.validate_job({"schema_version": 1, "task": {"direction": True}})
 
+    def test_snapshot_every_rejects_negative_and_out_of_u32_range(self):
+        for value in (-1, 1 << 32):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "snapshot_every must be in 0..=2\^32-1"):
+                    cuda.validate_job({
+                        "schema_version": 1,
+                        "task": {"snapshot_every": value},
+                    })
+        zero = cuda.validate_job({
+            "schema_version": 1,
+            "task": {"snapshot_every": 0, "steps": 3},
+        })
+        self.assertEqual(cuda.frame_steps(zero["task"]), [0, 3])
+
     def test_sample_plan_is_exact_monotonic_and_reaches_high_ids(self):
         job = cuda.validate_job({
             "schema_version": 1,
@@ -56,6 +71,41 @@ class CudaU64HostContractTests(unittest.TestCase):
         self.assertEqual(ids, sorted(ids))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertGreater(ids[-1], 1 << 32)
+
+    def test_cuda_constants_are_generated_from_checked_in_demo_table(self):
+        self.assertIn(f"#define GALAXY_DEMO_N {len(cuda.DEMO)}", cuda.CUDA_SOURCE)
+        self.assertNotIn("__GALAXY_DEMO_CONSTANTS__", cuda.CUDA_SOURCE)
+        for radius, gas, disk, bulge in cuda.DEMO:
+            self.assertIn(cuda._cuda_f32_literal(radius), cuda.CUDA_SOURCE)
+            self.assertIn(cuda._cuda_f32_literal(gas), cuda.CUDA_SOURCE)
+            self.assertIn(cuda._cuda_f32_literal(disk), cuda.CUDA_SOURCE)
+            self.assertIn(cuda._cuda_f32_literal(bulge), cuda.CUDA_SOURCE)
+
+    def test_kernel_schedule_matches_integrator(self):
+        circular = cuda.validate_job({"schema_version": 1, "task": {}})["task"]
+        leapfrog = cuda.validate_job({
+            "schema_version": 1,
+            "task": {"integrator": "leapfrog"},
+        })["task"]
+        self.assertIn("circular phase kernel", cuda.cuda_kernel_schedule(circular))
+        self.assertNotIn("leapfrog", cuda.cuda_kernel_schedule(circular))
+        self.assertIn("repeated leapfrog steps", cuda.cuda_kernel_schedule(leapfrog))
+
+    def test_requested_backend_provenance_preserves_auto(self):
+        with mock.patch.dict(os.environ, {"GALAXY_BACKEND_REQUESTED": "auto"}, clear=False):
+            self.assertEqual(cuda.requested_backend(), "auto")
+        with mock.patch.dict(os.environ, {"GALAXY_BACKEND_REQUESTED": "cuda"}, clear=False):
+            self.assertEqual(cuda.requested_backend(), "cuda")
+        with mock.patch.dict(os.environ, {"GALAXY_BACKEND_REQUESTED": "vulkan"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "invalid requested backend provenance"):
+                cuda.requested_backend()
+
+    def test_runtime_source_hash_covers_cuda_dependency_and_router_definitions(self):
+        self.assertIn(cuda.BOOTSTRAP_PATH, cuda.RUNTIME_SOURCE_PATHS)
+        self.assertIn(cuda.RUNNER_PATH, cuda.RUNTIME_SOURCE_PATHS)
+        digest = cuda.runtime_source_sha256()
+        self.assertEqual(len(digest), 64)
+        int(digest, 16)
 
     def test_phase_split_is_finite(self):
         parts = cuda.phase_time_parts(123456789.25)
