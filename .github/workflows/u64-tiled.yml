@@ -4,19 +4,29 @@ on:
   pull_request:
     paths:
       - 'runtime/src/bin/**'
+      - 'runtime/cuda/**'
       - 'runtime/build.rs'
       - 'runtime/jobs/beyond-u32.json'
       - 'scripts/run-u64.sh'
+      - 'scripts/bootstrap-cuda.sh'
+      - 'tests/test_cuda_u64.py'
       - 'docs/U64-TILED-RUNTIME.md'
+      - 'docs/CUDA-RUNTIME.md'
+      - 'QBRAID.md'
       - '.github/workflows/u64-tiled.yml'
   push:
     branches: [main]
     paths:
       - 'runtime/src/bin/**'
+      - 'runtime/cuda/**'
       - 'runtime/build.rs'
       - 'runtime/jobs/beyond-u32.json'
       - 'scripts/run-u64.sh'
+      - 'scripts/bootstrap-cuda.sh'
+      - 'tests/test_cuda_u64.py'
       - 'docs/U64-TILED-RUNTIME.md'
+      - 'docs/CUDA-RUNTIME.md'
+      - 'QBRAID.md'
       - '.github/workflows/u64-tiled.yml'
   workflow_dispatch:
 
@@ -45,6 +55,13 @@ jobs:
         run: cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-u64 -- validate --job runtime/jobs/beyond-u32.json
       - name: Host boundary discriminator
         run: cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-u64 -- verify --cpu
+      - name: CUDA backend host contract
+        run: |
+          python3 -m py_compile runtime/cuda/galaxy_u64_cuda.py
+          python3 tests/test_cuda_u64.py
+          python3 runtime/cuda/galaxy_u64_cuda.py verify --cpu
+          python3 runtime/cuda/galaxy_u64_cuda.py validate --job runtime/jobs/beyond-u32.json
+          bash -n scripts/run-u64.sh scripts/bootstrap-cuda.sh
 
   software-vulkan:
     runs-on: ubuntu-24.04
