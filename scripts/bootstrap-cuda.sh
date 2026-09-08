@@ -48,8 +48,14 @@ import cupy as cp
 print("CuPy:", cp.__version__)
 print("CUDA driver:", cp.cuda.runtime.driverGetVersion())
 print("CUDA runtime:", cp.cuda.runtime.runtimeGetVersion())
-print("CUDA devices:", cp.cuda.runtime.getDeviceCount())
-for i in range(cp.cuda.runtime.getDeviceCount()):
+count = cp.cuda.runtime.getDeviceCount()
+print("CUDA devices:", count)
+if count <= 0:
+    raise SystemExit(
+        "CuPy initialized but no CUDA devices are visible to this process. "
+        "Check CUDA_VISIBLE_DEVICES/container GPU exposure before running GALAXY."
+    )
+for i in range(count):
     with cp.cuda.Device(i):
         p = cp.cuda.runtime.getDeviceProperties(i)
         name = p["name"]
