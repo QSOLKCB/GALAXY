@@ -103,17 +103,13 @@ has_hardware_vulkan_hint() {
     explicit_icd_is_probeable_hardware
     return
   fi
-  if vulkaninfo_has_hardware_adapter; then
-    return 0
-  fi
-  if [[ -d /usr/share/vulkan/icd.d ]]; then
-    if find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*.json' \
-      ! -iname '*lvp*' ! -iname '*lavapipe*' ! -iname '*swiftshader*' \
-      -print -quit 2>/dev/null | grep -q .; then
-      return 0
-    fi
-  fi
-  return 1
+
+  # System ICD JSON files are only loader configuration, not evidence that the
+  # corresponding physical device is mounted into this process. This matters in
+  # cloud containers that retain NVIDIA/Intel JSON while exposing CUDA only.
+  # Auto may select Vulkan only after vulkaninfo successfully enumerates a real
+  # hardware adapter; otherwise it must remain able to fall through to CUDA.
+  vulkaninfo_has_hardware_adapter
 }
 
 case "$BACKEND" in
