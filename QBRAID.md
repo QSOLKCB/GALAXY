@@ -2,13 +2,16 @@
 
 ## Purpose
 
-This file is an execution handoff for an AI agent running inside a qBraid GPU environment.
+This is the execution handoff for an AI agent running GALAXY on qBraid GPU hardware.
 
-The mission is to validate and benchmark GALAXY on real qBraid GPU hardware, with special focus on the experimental 64-bit tiled runtime that can evolve one deterministic logical particle population beyond the 32-bit index space while keeping GPU-resident memory bounded.
+GALAXY's memory-bounded `galaxy-u64` workload now has two explicit NVIDIA-capable Linux paths:
 
-Do not treat this as a generic CUDA benchmark. GALAXY currently uses the Rust `wgpu` stack and requires a real hardware backend exposed through Vulkan on Linux. `nvidia-smi` alone is not sufficient proof that the required compute backend is available.
+- **Vulkan / Rust `wgpu`** when a real hardware Vulkan adapter and Cargo are available;
+- **CUDA / CuPy RawKernel** when the session exposes CUDA/NVML but not Vulkan or Cargo.
 
-The scientific and reproducibility contract matters more than obtaining a fast number.
+The scientific and reproducibility contract is the same on both paths. Never silently fall back to CPU, never relabel one backend as the other, and never treat `nvidia-smi` alone as proof that a GALAXY kernel executed.
+
+The CUDA backend was added specifically so a qBraid L4-style compute session can be a valid GALAXY target even when the managed environment withholds a Vulkan ICD.
 
 ---
 
@@ -20,19 +23,7 @@ Repository:
 https://github.com/QSOLKCB/GALAXY
 ```
 
-The 64-bit tiled runtime is currently developed on:
-
-```text
-upgrade/u64-tiled-runtime
-```
-
-Associated pull request:
-
-```text
-https://github.com/QSOLKCB/GALAXY/pull/4
-```
-
-Before doing any compute work, record the exact commit:
+Before compute work, record the exact revision:
 
 ```bash
 git status --short --branch
@@ -40,38 +31,35 @@ git rev-parse HEAD
 git log -1 --oneline
 ```
 
-Do not silently switch branches, modify scientific parameters, or change the runtime implementation merely to make a benchmark pass.
-
-If the branch has already been merged, use the merged `main` commit and record that SHA instead.
+Do not silently switch branches, alter the scientific parameters, or reduce the canonical large job while continuing to describe it as the same benchmark.
 
 ---
 
-## Read these files first
-
-Read, in this order:
+## Read first
 
 ```text
 README.md
-docs/GPU-RUNTIME.md
 docs/U64-TILED-RUNTIME.md
+docs/CUDA-RUNTIME.md
 runtime/jobs/beyond-u32.json
 runtime/src/bin/galaxy-u64.rs
 runtime/src/bin/u64_kernels.wgsl
+runtime/cuda/galaxy_u64_cuda.py
+runtime/cuda/galaxy_u64_cuda_impl.py
+scripts/run-u64.sh
 ```
 
-The existing stable runtime is `galaxy-runtime`.
+`runtime/cuda/galaxy_u64_cuda.py` is the strict-loading entrypoint. The CUDA kernels, physics, validation, execution, and receipt implementation live in `runtime/cuda/galaxy_u64_cuda_impl.py`; both files are mandatory review inputs before spending GPU credits or assessing backend equivalence.
 
-The wider-address experimental runtime is `galaxy-u64`.
-
-Do not confuse their contracts.
+The stable `galaxy-runtime` remains the Rust/`wgpu` runtime. The dual-backend work in this handoff applies first to the wider-address `galaxy-u64` spin workload.
 
 ---
 
-## Core scientific boundary
+## Scientific boundary
 
-The tiled execution scheme is valid for the current native spin workload because the particles are independent test particles evolving in the same fixed potential.
+Tiling is valid for the present workload because particles are independent test particles evolving in one fixed UFF-derived potential.
 
-The current tiled mode does **not** implement:
+The tiled mode does **not** implement:
 
 - pairwise stellar forces;
 - evolving self-gravity;
@@ -80,33 +68,13 @@ The current tiled mode does **not** implement:
 - an evolving density field shared between tiles;
 - cross-tile particle interactions.
 
-Therefore each tile can be evolved independently without changing the present mathematical model.
+Tiles are therefore an execution partition, not an additional approximation to the current equations.
 
-Do not generalize this argument to future coupled-particle modes.
-
-The GPU orbit state remains `float32`. 64-bit addressing increases the addressable logical population; it does not increase floating-point numerical precision.
+The particle/orbit state remains `float32`. The wider address space increases the logical population range; it does not increase numerical precision.
 
 ---
 
-# Mission
-
-Run the following progression on a real qBraid GPU, preserving evidence at each stage:
-
-1. identify the hardware and software environment;
-2. prove GALAXY sees a real hardware compute adapter;
-3. run the stable runtime verification suite;
-4. prove that the 64-bit runtime distinguishes particle identities across `2^32`;
-5. run a small multi-tile smoke workload;
-6. validate the supplied `beyond-u32.json` job;
-7. only after all prior gates pass, execute the full beyond-`2^32` workload;
-8. preserve the receipt, resolved job, terminal log, hashes, and machine information;
-9. report measured results without extrapolating beyond what was executed.
-
-Do not skip directly to the expensive run.
-
----
-
-# 1. Hardware and environment preflight
+# 1. Hardware and backend preflight
 
 Run:
 
@@ -114,108 +82,101 @@ Run:
 pwd
 uname -a
 cat /etc/os-release || true
+python3 --version || true
+command -v cargo || true
 nvidia-smi || true
-```
-
-Then inspect Vulkan availability:
-
-```bash
 command -v vulkaninfo || true
 ls -la /usr/share/vulkan/icd.d/ 2>/dev/null || true
-vulkaninfo --summary 2>&1 | tee qbraid-vulkaninfo.txt
+vulkaninfo --summary 2>&1 | tee qbraid-vulkaninfo.txt || true
 ```
 
-A useful qBraid machine for the existing Linux runtime must expose an actual NVIDIA Vulkan physical device.
+Choose the backend from actual capabilities:
 
-A CUDA-capable GPU that does not expose Vulkan is **not yet a valid GALAXY hardware target** for this runtime.
+### Vulkan path
 
-If Vulkan is absent, do not rewrite GALAXY to CUDA without explicit user authorization. Report the environment limitation instead.
+Use Vulkan only if GALAXY can see a real hardware Vulkan device. Do not count llvmpipe, lavapipe, SwiftShader, or another software adapter as hardware validation.
 
-Do not count `llvmpipe`, `lavapipe`, SwiftShader, or another software adapter as hardware validation.
+### CUDA path
+
+If the NVIDIA GPU is visible through CUDA/NVML but Vulkan or Cargo is absent, **do not stop**. The CUDA backend is an authorized GALAXY hardware path for `galaxy-u64`.
+
+Bootstrap the pinned runtime dependency once:
+
+```bash
+bash scripts/bootstrap-cuda.sh
+```
+
+This installs the supported CuPy CUDA toolkit wheel into the repository-local `.galaxy-cuda-python/` directory. It does not require root, Rust, Cargo, `nvcc`, Vulkan, or `vulkaninfo`.
+
+GALAXY currently maps only CUDA 12.x and CUDA 13.x to pinned CuPy packages. If the driver advertises another major version, stop and report it rather than guessing a wheel.
 
 ---
 
-# 2. Build the repository exactly as pinned
+# 2. Confirm the intended GPU
 
-From the GALAXY repository root:
-
-```bash
-cargo build --manifest-path runtime/Cargo.toml --release --locked
-```
-
-Do not update dependency versions or regenerate the lockfile unless compilation is impossible for a clearly documented reason and the user explicitly approves the change.
-
-The existing stable runtime should remain the default Cargo binary.
-
----
-
-# 3. Confirm GALAXY sees the qBraid GPU
-
-Run:
+For a CUDA-only qBraid session:
 
 ```bash
-runtime/target/release/galaxy-runtime devices | tee qbraid-devices.json
+bash scripts/run-u64.sh devices --backend cuda | tee qbraid-cuda-devices.json
 ```
 
-Expected characteristics for the selected adapter:
+For Vulkan:
+
+```bash
+bash scripts/run-u64.sh devices --backend vulkan | tee qbraid-vulkan-devices.json
+```
+
+`--backend auto` is available, but for benchmark evidence prefer an explicit backend.
+
+A valid CUDA hardware entry should identify:
 
 ```text
-backend: Vulkan
-device_type: DiscreteGpu or another real hardware GPU class
+backend: CUDA
 software: false
 ```
 
-Record:
+Record the GPU model, device index, driver/runtime versions, compute capability, VRAM, and whether multiple devices are visible.
 
-- GPU model;
-- device index;
-- driver;
-- driver version;
-- reported storage-buffer limits;
-- VRAM from `nvidia-smi`;
-- whether multiple GPUs are visible.
-
-The current runtime uses one adapter per process. Do not claim multi-GPU execution unless the implementation has actually been changed and validated for it.
-
-Select the intended GPU explicitly in later commands with `--adapter`.
+The current runtime uses one GPU per process. Do not claim multi-GPU execution.
 
 ---
 
-# 4. Stable-runtime verification gate
+# 3. Host contract gate
 
-Run on the selected real hardware adapter:
+Before spending GPU credits, validate the exact addressing and job contract:
 
 ```bash
-bash scripts/run-gpu.sh verify --adapter 0 | tee qbraid-stable-verify.txt
+python3 tests/test_cuda_u64.py
+bash scripts/run-u64.sh verify --backend cuda --cpu | tee qbraid-u64-host-boundary.txt
+bash scripts/run-u64.sh validate --backend cuda \
+  --job runtime/jobs/beyond-u32.json \
+  | tee qbraid-beyond-u32-validate.txt
 ```
 
-If the qBraid target GPU is not adapter `0`, use the actual index or an unambiguous model-name substring.
-
-This verification must pass before the tiled runtime is trusted on the machine.
-
-Do not add `--allow-software` for hardware validation.
-
-A successful result should report:
+The canonical large job must resolve to:
 
 ```text
-status: passed
-gpu_checked: true
-software: false
+logical_particles = 4,303,355,904
+tile_particles    = 8,388,608
+tiles             = 513
+steps             = 1,000
+particle_updates  = 4,303,355,904,000
 ```
-
-Preserve the complete output.
 
 ---
 
-# 5. Prove the 2^32 boundary
+# 4. Hardware 2^32 boundary proof
 
-Run the dedicated 64-bit boundary verifier on the same hardware:
+On CUDA:
 
 ```bash
-bash scripts/run-u64.sh verify --adapter 0 | tee qbraid-u64-boundary.txt
+bash scripts/run-u64.sh verify \
+  --backend cuda \
+  --adapter 0 \
+  | tee qbraid-u64-boundary.txt
 ```
 
-The verifier is specifically intended to exercise identities around:
+The verifier exercises:
 
 ```text
 4,294,967,295
@@ -223,19 +184,24 @@ The verifier is specifically intended to exercise identities around:
 4,294,967,297
 ```
 
-The important claim is not merely that three hashes differ. The host and GPU addressing implementations must agree and the high 32-bit word must materially affect deterministic initialization.
+Success requires distinct deterministic addresses and CUDA initialization agreeing with the host reference within the documented float32 tolerance.
 
-Failure here invalidates any subsequent claim that GALAXY crossed the 32-bit particle-index boundary.
+Require:
 
-Do not proceed to the large job after a boundary-verification failure.
+```text
+status: passed
+backend: CUDA
+gpu_boundary_checked: true
+software: false
+```
+
+Failure here invalidates any subsequent claim that the CUDA runtime crossed the 32-bit particle-index boundary.
 
 ---
 
-# 6. Multi-tile smoke run
+# 5. Multi-tile CUDA smoke run
 
-Before spending meaningful GPU credits, create a small temporary job that crosses several resident tiles but completes quickly.
-
-Example:
+Create a cheap smoke job before the expensive benchmark:
 
 ```bash
 cat > /tmp/qbraid-u64-smoke.json <<'JSON'
@@ -255,23 +221,16 @@ cat > /tmp/qbraid-u64-smoke.json <<'JSON'
     "snapshot_every": 8,
     "snapshot_limit": 1024,
     "radial_kick_kms": 20.0,
-    "softening_kpc": 0.02
+    "softening_kpc": 0.02,
+    "image_size": 128
   }
 }
 JSON
-```
 
-Validate it:
-
-```bash
-bash scripts/run-u64.sh validate --job /tmp/qbraid-u64-smoke.json
-```
-
-Then execute it into a fresh output directory:
-
-```bash
+bash scripts/run-u64.sh validate --backend cuda --job /tmp/qbraid-u64-smoke.json
 OUT="runs/qbraid-u64-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
 time bash scripts/run-u64.sh run \
+  --backend cuda \
   --adapter 0 \
   --job /tmp/qbraid-u64-smoke.json \
   --output "$OUT" 2>&1 | tee qbraid-u64-smoke.log
@@ -283,78 +242,41 @@ Never reuse or overwrite an existing result directory.
 
 ---
 
-# 7. Validate the supplied beyond-u32 workload
+# 6. Full beyond-2^32 run
 
-The canonical large job is:
-
-```text
-runtime/jobs/beyond-u32.json
-```
-
-It currently specifies:
-
-```text
-logical_particles = 4,303,355,904
-tile_particles    = 8,388,608
-tiles             = 513
-steps             = 1,000
-integrator        = leapfrog
-```
-
-This is deliberately one complete 8,388,608-particle resident tile beyond `2^32`.
-
-The total requested leapfrog work is:
-
-```text
-4,303,355,904,000 particle-step updates
-```
-
-Validate before execution:
-
-```bash
-bash scripts/run-u64.sh validate \
-  --job runtime/jobs/beyond-u32.json \
-  | tee qbraid-beyond-u32-validate.txt
-```
-
-Do not modify this canonical job for the benchmark unless the user explicitly requests a different workload.
-
----
-
-# 8. Full qBraid beyond-2^32 run
-
-Only after every previous gate passes:
+Only after the host gate, hardware boundary verifier, and smoke run pass:
 
 ```bash
 OUT="runs/qbraid-beyond-u32-$(date -u +%Y%m%dT%H%M%SZ)"
-
 time bash scripts/run-u64.sh run \
+  --backend cuda \
   --adapter 0 \
   --job runtime/jobs/beyond-u32.json \
   --output "$OUT" 2>&1 | tee qbraid-beyond-u32.log
 ```
 
-Do not terminate the run simply because GPU utilization varies during tile initialization, synchronization, sampling, or output work.
+Do not terminate a valid run merely because GPU utilization varies during initialization, sampling, synchronization, or output work.
 
-If the run fails, preserve the failed output directory and receipt. Do not delete failure evidence before understanding the error.
+If it fails, preserve the failed output directory and receipt.
 
 ---
 
-# 9. Evidence to preserve
+# 7. Evidence to preserve
 
 At minimum retain:
 
 ```text
+qbraid-machine.txt
 qbraid-vulkaninfo.txt
-qbraid-devices.json
-qbraid-stable-verify.txt
+qbraid-cuda-devices.json
+qbraid-u64-host-boundary.txt
 qbraid-u64-boundary.txt
 qbraid-u64-smoke.log
 qbraid-beyond-u32-validate.txt
 qbraid-beyond-u32.log
 ```
 
-And from the full run directory retain:
+And from the completed run directory:
 
 ```text
 job.json
@@ -363,7 +285,7 @@ all generated CSV/PNG artifacts
 viewer.html
 ```
 
-Also create a machine record:
+Create the machine record:
 
 ```bash
 {
@@ -374,171 +296,108 @@ Also create a machine record:
   echo
   cat /etc/os-release || true
   echo
+  python3 --version || true
+  echo
   nvidia-smi || true
 } > qbraid-machine.txt
 ```
 
-Hash the evidence:
-
-```bash
-sha256sum \
-  qbraid-machine.txt \
-  qbraid-vulkaninfo.txt \
-  qbraid-devices.json \
-  qbraid-stable-verify.txt \
-  qbraid-u64-boundary.txt \
-  qbraid-beyond-u32-validate.txt \
-  qbraid-beyond-u32.log \
-  > qbraid-evidence.sha256
-```
-
-If additional evidence files exist, include them too.
+Hash the evidence you actually generated.
 
 ---
 
-# 10. What to report from receipt.json
+# 8. What the receipt must establish
 
-For the completed full run, extract and report at least:
+For a CUDA run, report at least:
 
-- exact GALAXY commit SHA;
-- qBraid GPU model;
-- backend and driver;
-- `software` flag;
+- exact GALAXY commit SHA recorded separately in the machine evidence;
+- GPU model;
+- backend `CUDA`;
+- `software: false`;
+- CUDA driver/runtime and compute capability;
 - logical particle count;
 - resident tile particle count;
 - tile count;
-- integrator;
-- integration steps;
+- integrator and integration steps;
 - total particle-step updates;
-- initialization wall time;
-- synchronized integration/compute wall time;
+- initialization kernel time;
+- integration kernel time;
 - total execution wall time;
 - measured particle-step throughput;
-- sample count;
-- maximum sampled angular-momentum drift if present;
 - job SHA-256;
 - runtime source SHA-256;
 - final receipt status.
 
-Prefer receipt timings over shell `time` when discussing GPU compute throughput. Shell time is still useful as end-to-end timing.
+Prefer receipt kernel timings over shell `time` when discussing GPU compute throughput. Shell time remains useful for end-to-end timing.
 
-Do not infer FLOP/s from particle-step throughput unless an explicit, reviewed operation count for the kernel is supplied.
-
----
-
-# 11. Optional performance comparison
-
-If budget permits, compare the qBraid result against the known local RTX 5060 Ti baseline using identical workload definitions.
-
-Known local evidence established approximately:
-
-```text
-RTX 5060 Ti
-8,388,608 resident particles
-10,000 leapfrog steps
-83,886,080,000 particle-step updates
-~13.85 s synchronized GPU compute
-~6.05 billion particle-step updates/s
-```
-
-Treat this as a comparison baseline, not as a qBraid acceptance threshold.
-
-Different GPUs, drivers, and transcendental implementations may produce small float32 differences.
-
-Reproducibility here means identified inputs, deterministic addressing, bounded numerical tolerance, explicit provenance, and preserved receipts. It does not imply bit-identical results across unrelated GPU architectures.
+Do not infer FLOP/s without a separately reviewed operation count.
 
 ---
 
-# 12. Cost discipline
+# 9. Vulkan versus CUDA comparisons
 
-The user is spending finite qBraid hardware credits.
+The two backends use the same logical job and address contract but are separate implementations.
+
+Do not expect bit-identical float32 trajectories across unrelated GPU architectures or math libraries. Require bounded numerical agreement and preserve the backend identity in every comparison.
+
+The CUDA leapfrog kernel may fuse multiple ordered per-particle steps inside one CUDA thread for a frame interval. This is valid for the current independent-particle fixed-potential model and is recorded in the receipt. It must be re-reviewed if future physics introduces particle coupling.
+
+---
+
+# 10. Cost discipline
+
+The user is spending finite GPU credits.
 
 Therefore:
 
-- perform all cheap validation before the full benchmark;
-- do not rebuild repeatedly without a reason;
-- reuse the Cargo build cache within the same instance;
-- do not launch duplicate monster jobs concurrently;
-- do not leave an expensive GPU instance idle after evidence has been collected;
-- do not start a second large benchmark merely for curiosity without asking the user.
+- run host checks before GPU checks;
+- bootstrap CUDA dependencies once per environment;
+- run the boundary proof before the smoke job;
+- run the smoke job before the canonical workload;
+- do not launch duplicate large jobs;
+- do not leave an expensive GPU instance idle after evidence is collected;
+- do not start extra comparison runs merely for curiosity.
 
-Scientific evidence per credit is the objective, not maximum credit consumption.
+Scientific evidence per credit is the objective.
 
 ---
 
-# 13. Failure policy
+# 11. Failure policy
 
-If any stage fails:
+If a stage fails:
 
 1. preserve the exact command and complete error output;
 2. preserve any generated receipt or partial artifacts;
-3. identify whether the failure is environment, Vulkan exposure, adapter limits, compilation, validation, numerical, or runtime-related;
+3. classify the failure as environment, dependency/bootstrap, CUDA visibility, Vulkan visibility, compilation/JIT, validation, numerical, memory, or runtime-related;
 4. prefer the smallest corrective action;
 5. rerun the failed gate before proceeding;
-6. do not weaken validation to turn a failure green.
+6. never weaken validation just to turn a failure green.
 
 Specifically prohibited shortcuts:
 
 - silently falling back to CPU;
-- passing `--allow-software` and presenting it as hardware execution;
-- reducing the logical particle count and still calling it the beyond-`2^32` benchmark;
-- changing the seed or physics without recording it;
-- using CUDA visibility alone as proof of GALAXY GPU execution;
+- presenting software Vulkan as hardware execution;
+- using `nvidia-smi` alone as proof GALAXY ran on CUDA;
+- reducing the canonical logical population and still calling it the beyond-`2^32` benchmark;
+- changing seed or physics without recording it;
+- relabelling CUDA as Vulkan or Vulkan as CUDA;
 - deleting failed receipts;
 - claiming multi-GPU execution when one adapter was used;
 - claiming N-body dynamics or self-consistent galaxy evolution.
 
 ---
 
-# 14. If qBraid exposes CUDA but not Vulkan
+## Definition of success on a CUDA-only qBraid L4
 
-Stop before the expensive run and report:
+A strong successful result is:
 
-```text
-GPU hardware is visible through CUDA/NVML, but the current GALAXY Linux runtime cannot see a hardware Vulkan adapter.
-```
-
-Collect:
-
-```bash
-nvidia-smi
-ls -la /usr/share/vulkan/icd.d/ 2>/dev/null || true
-vulkaninfo --summary 2>&1 || true
-runtime/target/release/galaxy-runtime devices 2>&1 || true
-```
-
-Do not implement a CUDA backend as an unrequested workaround.
-
-A CUDA port would be a separate engineering change requiring review and numerical equivalence testing against the existing Rust/WGSL implementation.
-
----
-
-# 15. If multiple beastly GPUs are available
-
-Choose one explicit GPU first and establish a single-device baseline.
-
-Prefer a datacenter accelerator with strong FP32 throughput and a healthy driver stack, but note that the current tile size uses only a bounded fraction of large VRAM capacities.
-
-For this workload, raw compute throughput may matter more than additional memory once the resident tile comfortably fits.
-
-Do not assume an H100/H200/B200 will automatically outperform every other option without measuring the actual GALAXY kernel.
-
-The current runtime does not automatically partition one logical job across multiple GPUs.
-
-A future multi-GPU mode should preserve the same global-ID and receipt semantics and assign disjoint tile ranges explicitly.
-
----
-
-# 16. Definition of success
-
-The strongest successful qBraid result is:
-
-1. a real qBraid hardware GPU is selected with `software: false`;
-2. stable GALAXY GPU verification passes;
-3. the dedicated `2^32` boundary verifier passes on that GPU;
-4. the multi-tile smoke job completes;
-5. `runtime/jobs/beyond-u32.json` validates unchanged;
-6. the full run completes with:
+1. `nvidia-smi` identifies the intended L4;
+2. `devices --backend cuda` reports the L4 with `backend: CUDA` and `software: false`;
+3. the host u64 contract tests pass;
+4. the CUDA `2^32` boundary verifier passes;
+5. the multi-tile smoke run completes;
+6. `runtime/jobs/beyond-u32.json` validates unchanged;
+7. the full canonical run completes with:
 
 ```text
 logical_particles = 4,303,355,904
@@ -546,14 +405,8 @@ particle_updates   = 4,303,355,904,000
 status             = complete
 ```
 
-7. the receipt and all evidence hashes are preserved.
+8. receipt and evidence hashes are preserved.
 
-Only then is it appropriate to state that the selected qBraid GPU executed GALAXY's deterministic tiled population beyond the 32-bit particle-index space.
-
----
-
-## Final instruction to the qBraid AI agent
+Only then state that the selected qBraid GPU executed GALAXY's deterministic tiled population beyond the 32-bit particle-index space.
 
 Be aggressive with the hardware, conservative with the claims, and meticulous with the evidence.
-
-The purpose of the beastly machine is not to make GALAXY look impressive. It is to find out exactly what GALAXY can do.

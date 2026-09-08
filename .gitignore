@@ -1,6 +1,7 @@
 rust/target/
 runtime/target/
 runs/
+.galaxy-cuda-python/
 __pycache__/
 _site/
 *.webm

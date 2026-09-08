@@ -16,6 +16,7 @@ fn main() {
         "src/verify.rs",
         "src/bin/galaxy-u64.rs",
         "src/bin/u64_kernels.wgsl",
+        "../scripts/run-u64.sh",
         "../rust/src/lib.rs",
         "../rust/src/physics.rs",
         "../rust/src/uff_data.rs",
