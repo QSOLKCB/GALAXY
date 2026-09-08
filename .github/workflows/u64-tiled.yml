@@ -63,6 +63,30 @@ jobs:
           python3 runtime/cuda/galaxy_u64_cuda.py validate --job runtime/jobs/beyond-u32.json
           bash -n scripts/run-u64.sh scripts/bootstrap-cuda.sh
 
+          router_tmp="$(mktemp -d)"
+          cat >"$router_tmp/python-stub" <<'SH'
+          #!/usr/bin/env bash
+          printf '%s\n' "${GALAXY_BACKEND_REQUESTED:-missing}"
+          SH
+          chmod +x "$router_tmp/python-stub"
+
+          # Cargo being present must not make an explicit stale/nonexistent ICD
+          # count as Vulkan hardware. Auto must reach CUDA and preserve `auto`.
+          GALAXY_CARGO=/bin/true \
+          GALAXY_CUDA_PYTHON="$router_tmp/python-stub" \
+          VK_DRIVER_FILES="$router_tmp/does-not-exist.json" \
+            bash scripts/run-u64.sh devices --backend auto >"$router_tmp/stale.out" 2>"$router_tmp/stale.err"
+          grep -qx auto "$router_tmp/stale.out"
+
+          cat >"$router_tmp/software.json" <<'JSON'
+          {"ICD":{"library_path":"libvulkan_lvp.so"}}
+          JSON
+          GALAXY_CARGO=/bin/true \
+          GALAXY_CUDA_PYTHON="$router_tmp/python-stub" \
+          VK_DRIVER_FILES="$router_tmp/software.json" \
+            bash scripts/run-u64.sh devices --backend auto >"$router_tmp/software.out" 2>"$router_tmp/software.err"
+          grep -qx auto "$router_tmp/software.out"
+
   software-vulkan:
     runs-on: ubuntu-24.04
     steps:
