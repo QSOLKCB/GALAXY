@@ -67,6 +67,12 @@ jobs:
           python3 runtime/cuda/galaxy_u64_cuda.py validate --job runtime/jobs/beyond-u32.json
           bash -n scripts/run-u64.sh scripts/bootstrap-cuda.sh
 
+          # The wrapper mutates Vulkan receipt provenance, so it is part of the
+          # Rust runtime source identity rather than an untracked launcher detail.
+          grep -Fq '"../scripts/run-u64.sh"' runtime/build.rs
+          grep -Fq '"backend_requested": "auto"' docs/CUDA-RUNTIME.md
+          grep -Fq 'runtime/cuda/galaxy_u64_cuda_impl.py' QBRAID.md
+
           router_tmp="$(mktemp -d)"
           cat >"$router_tmp/python-stub" <<'SH'
           #!/usr/bin/env bash
@@ -114,9 +120,10 @@ jobs:
             cat <<'JSON'
           [
             {
-              "name": "Mock Hardware Vulkan",
+              "index": 0,
+              "name": "Intel Mock Vulkan",
               "backend": "Vulkan",
-              "device_type": "DiscreteGpu",
+              "device_type": "IntegratedGpu",
               "software": false
             }
           ]
@@ -158,6 +165,15 @@ jobs:
           assert receipt["backend_requested"] == "auto", receipt
           assert receipt["backend_selected"] == "vulkan", receipt
           PY
+
+          # Adapter selection participates in auto routing. An unrelated Intel
+          # Vulkan adapter must not trap a request for an NVIDIA CUDA adapter.
+          env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES \
+            PATH="$router_tmp:$PATH" \
+            GALAXY_CARGO="$router_tmp/cargo-stub" \
+            GALAXY_CUDA_PYTHON="$router_tmp/python-stub" \
+            bash scripts/run-u64.sh verify --backend auto --adapter NVIDIA >"$router_tmp/adapter.out" 2>"$router_tmp/adapter.err"
+          grep -qx auto "$router_tmp/adapter.out"
 
           forced_out="$router_tmp/vulkan-forced-run"
           GALAXY_CARGO="$router_tmp/cargo-stub" \
