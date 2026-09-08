@@ -42,6 +42,16 @@ class CudaU64HostContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "direction must be an integer"):
             cuda.validate_job({"schema_version": 1, "task": {"direction": True}})
 
+    def test_schema_version_requires_json_integer(self):
+        for value in (True, 1.0, "1", None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "schema_version must be an integer"):
+                    cuda.validate_job({"schema_version": value, "task": {}})
+        self.assertEqual(
+            cuda.validate_job({"schema_version": 1, "task": {}})["schema_version"],
+            1,
+        )
+
     def test_snapshot_every_rejects_negative_and_out_of_u32_range(self):
         for value in (-1, 1 << 32):
             with self.subTest(value=value):
@@ -90,6 +100,33 @@ class CudaU64HostContractTests(unittest.TestCase):
         self.assertIn("circular phase kernel", cuda.cuda_kernel_schedule(circular))
         self.assertNotIn("leapfrog", cuda.cuda_kernel_schedule(circular))
         self.assertIn("repeated leapfrog steps", cuda.cuda_kernel_schedule(leapfrog))
+
+    def test_force_model_description_names_selected_physics(self):
+        for model in cuda.MODEL_IDS:
+            with self.subTest(model=model, integrator="circular"):
+                task = cuda.validate_job({
+                    "schema_version": 1,
+                    "task": {"physics": {"model": model}},
+                })["task"]
+                self.assertIn(model, cuda.force_model_description(task))
+                self.assertIn("circular speed", cuda.force_model_description(task))
+            with self.subTest(model=model, integrator="leapfrog"):
+                task = cuda.validate_job({
+                    "schema_version": 1,
+                    "task": {
+                        "physics": {"model": model},
+                        "integrator": "leapfrog",
+                    },
+                })["task"]
+                self.assertIn(model, cuda.force_model_description(task))
+                self.assertIn("radial acceleration", cuda.force_model_description(task))
+
+    def test_sample_cache_uses_packed_numpy_storage(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("host.tolist()", source)
+        self.assertIn("np.empty((len(steps), samples, 8), dtype=np.float32)", source)
+        self.assertIn("np.zeros((len(steps), samples), dtype=np.bool_)", source)
+        self.assertIn('"sample_cache_host_representation": "packed NumPy float32 array plus boolean validity bitmap"', source)
 
     def test_requested_backend_provenance_preserves_auto(self):
         with mock.patch.dict(os.environ, {"GALAXY_BACKEND_REQUESTED": "auto"}, clear=False):
