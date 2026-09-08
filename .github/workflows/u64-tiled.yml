@@ -7,6 +7,8 @@ on:
       - 'runtime/cuda/**'
       - 'runtime/build.rs'
       - 'runtime/jobs/beyond-u32.json'
+      - 'data/uff/DEMO_GALAXY.csv'
+      - 'data/uff/provenance.json'
       - 'scripts/run-u64.sh'
       - 'scripts/bootstrap-cuda.sh'
       - 'tests/test_cuda_u64.py'
@@ -21,6 +23,8 @@ on:
       - 'runtime/cuda/**'
       - 'runtime/build.rs'
       - 'runtime/jobs/beyond-u32.json'
+      - 'data/uff/DEMO_GALAXY.csv'
+      - 'data/uff/provenance.json'
       - 'scripts/run-u64.sh'
       - 'scripts/bootstrap-cuda.sh'
       - 'tests/test_cuda_u64.py'
@@ -86,6 +90,26 @@ jobs:
           VK_DRIVER_FILES="$router_tmp/software.json" \
             bash scripts/run-u64.sh devices --backend auto >"$router_tmp/software.out" 2>"$router_tmp/software.err"
           grep -qx auto "$router_tmp/software.out"
+
+          # With no explicit loader override, a failed vulkaninfo probe must be
+          # authoritative even if the image happens to contain system ICD JSON.
+          cat >"$router_tmp/vulkaninfo" <<'SH'
+          #!/usr/bin/env bash
+          exit 1
+          SH
+          chmod +x "$router_tmp/vulkaninfo"
+          env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES \
+            PATH="$router_tmp:$PATH" \
+            GALAXY_CARGO=/bin/true \
+            GALAXY_CUDA_PYTHON="$router_tmp/python-stub" \
+            bash scripts/run-u64.sh devices --backend auto >"$router_tmp/system.out" 2>"$router_tmp/system.err"
+          grep -qx auto "$router_tmp/system.out"
+          ! grep -q 'find /usr/share/vulkan/icd.d' scripts/run-u64.sh
+
+          # The bootstrap must reject a process-visible CUDA device count of zero
+          # before printing its success banner.
+          grep -Fq 'if count <= 0:' scripts/bootstrap-cuda.sh
+          grep -Fq 'no CUDA devices are visible to this process' scripts/bootstrap-cuda.sh
 
   software-vulkan:
     runs-on: ubuntu-24.04
