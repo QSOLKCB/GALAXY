@@ -2,9 +2,49 @@
 
 ## Purpose
 
-This is the execution handoff for an AI agent running GALAXY on qBraid GPU hardware.
+This file is the qBraid execution index for GALAXY.
 
-GALAXY's memory-bounded `galaxy-u64` workload now has two explicit NVIDIA-capable Linux paths:
+Choose the handoff that matches the hardware and scientific question before spending credits.
+
+### Native CPU scaling / topology discrimination
+
+For the post-PR #8 native CPU runtime experiment, read:
+
+```text
+docs/QBRAID-CPU-SCALING.md
+```
+
+Preferred qBraid target for that experiment:
+
+```text
+Nanoacademic - Medium
+96 vCPU / 384 GB RAM
+```
+
+Use it only if the image exposes a normal shell plus Git, Rust and Cargo. Its value to GALAXY is the extra worker range, not the preinstalled Nanoacademic software.
+
+The CPU handoff tests the worker ladder through:
+
+```text
+32 -> 48 -> 64 -> 96
+```
+
+against the local Ryzen 9 5950X result, where Float continued scaling through 32 workers while BAM-LUT plateaued much earlier on the largest resident sets.
+
+Cheaper fallbacks:
+
+```text
+64 vCPU / 256 GB RAM  -> tests 32 -> 64
+32 vCPU / 128 GB RAM  -> replication only; cannot answer >32 scaling
+```
+
+Do not use a GPU profile for the CPU-scaling study, and do not claim that cloud vCPUs map directly to physical cores or SMT siblings without topology evidence.
+
+### GPU / beyond-2^32 tiled runtime
+
+The remainder of this document is the existing GPU execution handoff for GALAXY's memory-bounded `galaxy-u64` workload.
+
+GALAXY has two explicit NVIDIA-capable Linux paths:
 
 - **Vulkan / Rust `wgpu`** when a real hardware Vulkan adapter and Cargo are available;
 - **CUDA / CuPy RawKernel** when the session exposes CUDA/NVML but not Vulkan or Cargo.
