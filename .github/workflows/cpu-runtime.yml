@@ -50,6 +50,12 @@ jobs:
       - name: Test native CPU runtime
         shell: sh
         run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+      - name: Verify subcommand help exits successfully
+        shell: sh
+        run: |
+          set -eu
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help >/dev/null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help >/dev/null
       - name: Verify exact u64 and parallel invariants
         shell: sh
         run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
@@ -66,6 +72,7 @@ jobs:
             --seed 303 \
             --receipt runs/cpu-runtime-ci/receipt.json
           cat runs/cpu-runtime-ci/receipt.json
+          grep -q '"repeats": 2' runs/cpu-runtime-ci/receipt.json
 
   windows-x64:
     name: Windows x86-64
@@ -81,6 +88,11 @@ jobs:
       - name: Test native CPU runtime
         shell: pwsh
         run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+      - name: Verify subcommand help exits successfully
+        shell: pwsh
+        run: |
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help | Out-Null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help | Out-Null
       - name: Verify exact u64 and parallel invariants
         shell: pwsh
         run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
@@ -89,3 +101,5 @@ jobs:
         run: |
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --logical 18446744073709551615 --resident 65536 --frames 4 --workers 4 --repeats 2 --seed 303 --receipt runs/cpu-runtime-ci/receipt.json
           Get-Content runs/cpu-runtime-ci/receipt.json
+          $receipt = Get-Content runs/cpu-runtime-ci/receipt.json -Raw | ConvertFrom-Json
+          if ($receipt.repeats -ne 2) { throw "Receipt did not preserve repeats=2" }
