@@ -34,8 +34,13 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 echo
 echo "== Shared retro deterministic vectors =="
 node tests/retro-math.mjs
-"$GALAXY_CARGO" test --manifest-path rust/Cargo.toml --locked --offline retro_math
-"$GALAXY_CARGO" run --manifest-path rust/Cargo.toml --example retro_vectors --locked --offline
+"$GALAXY_CARGO" test --manifest-path retro/Cargo.toml --locked --offline
+"$GALAXY_CARGO" run --manifest-path retro/Cargo.toml --example retro_vectors --locked --offline
+
+echo
+echo "== Production Wasm source remains reproducible =="
+bash scripts/build-wasm.sh
+git diff --exit-code -- wasm/ data/uff-demo.js rust/src/uff_data.rs
 
 echo
 echo "== Native GALAXY devices =="
