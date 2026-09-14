@@ -1,0 +1,87 @@
+name: Retro CPU portability
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retro-portability-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unix-native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+            expected_arch: x86_64
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            expected_arch: aarch64
+          - name: macOS ARM64
+            runner: macos-15
+            expected_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify native architecture
+        shell: sh
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        run: |
+          set -eu
+          actual=$(uname -m)
+          printf 'runner_arch=%s expected_arch=%s\n' "$actual" "$EXPECTED_ARCH"
+          test "$actual" = "$EXPECTED_ARCH"
+      - name: Check POSIX shell syntax
+        shell: sh
+        run: |
+          set -eu
+          sh -n scripts/test-retro-cpu.sh
+          sh -n scripts/test-retro-gpu-local.sh
+          if command -v dash >/dev/null 2>&1; then
+            dash -n scripts/test-retro-cpu.sh
+            dash -n scripts/test-retro-gpu-local.sh
+          fi
+      - name: Run deterministic parity and bounded CPU benchmark
+        shell: sh
+        env:
+          GALAXY_CPU_BENCH_SAMPLES: '65536'
+          GALAXY_CPU_BENCH_REPEATS: '2'
+        run: sh scripts/test-retro-cpu.sh
+
+  windows-x64:
+    name: Windows x86-64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify native architecture
+        shell: pwsh
+        run: |
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          Write-Host "runner_arch=$arch expected_arch=X64"
+          if ($arch -ne 'X64') { throw "Expected native X64 runner" }
+      - name: Run deterministic JavaScript and Rust parity
+        shell: pwsh
+        run: |
+          node tests/retro-math.mjs
+          cargo test --manifest-path retro/Cargo.toml --locked --offline
+          cargo run --manifest-path retro/Cargo.toml --example retro_vectors --locked --offline
+      - name: Run bounded CPU benchmark directly
+        shell: pwsh
+        env:
+          GALAXY_CPU_BENCH_SAMPLES: '65536'
+          GALAXY_CPU_BENCH_REPEATS: '2'
+        run: cargo run --manifest-path retro/Cargo.toml --release --locked --offline --example cpu_bench
