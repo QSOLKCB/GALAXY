@@ -109,7 +109,10 @@ where
     let mut checksum = 0_u64;
     for _ in 0..repeats {
         let started = Instant::now();
-        checksum ^= black_box(function());
+        // Keep the latest opaque result. XORing identical deterministic repeats
+        // would cancel to zero for even repeat counts and make the report less
+        // useful even though the optimizer barrier still preserved the work.
+        checksum = black_box(function());
         timings.push(started.elapsed().as_nanos());
     }
     timings.sort_unstable();
