@@ -7,6 +7,10 @@ license = "Apache-2.0"
 publish = false
 description = "Deterministic native CPU execution runtime for GALAXY"
 
+[[bin]]
+name = "galaxy-cpu"
+path = "src/main.rs"
+
 [dependencies]
 galaxy-retro-math = { path = "../retro" }
 galaxy-sampler = { path = "../rust" }
