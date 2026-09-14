@@ -70,6 +70,25 @@ maximum over all `2^32` BAM angles. The current diagnostic set contains 8,192
 hashed angles plus the review-discovered probe `1098892653`, which has Q2.30
 absolute error 255 against the CORDIC oracle.
 
+## Timing schedule
+
+Backend timing uses the named schedule:
+
+```text
+interleaved-alternating-v1
+```
+
+All four complete execution paths — Float scalar, Float parallel, LUT scalar,
+and LUT parallel — are warmed before timing. Each repeat then measures both
+backends rather than exhausting one backend first. Even and odd repeats reverse
+the backend/execution ordering. This makes the reported LUT-versus-Float median
+ratios substantially less sensitive to CPU ramp-up, thermal drift, or frequency
+changes across the benchmark run.
+
+The schedule does not turn a host-specific microbenchmark into a universal
+performance claim; it only removes the systematic all-Float-before-all-LUT order
+bias from the comparison.
+
 ## Parallel execution contract
 
 The runtime intentionally uses only the Rust standard library. It does not use
@@ -94,10 +113,8 @@ contiguous chunks. `std::thread::scope()` executes those chunks and results are
 combined in worker order through a wrapping additive checksum. Scalar and
 parallel checksums must match exactly.
 
-The measured worker count is resolved once per backend measurement and that exact
-count is used by every warm-up and timed parallel trial. Full scalar and parallel
-paths are both warmed before timing, and paired timing trials alternate order to
-avoid systematically giving one path the other's cache-warmed data.
+The worker count is resolved once for a benchmark run and that exact count is
+used by every warm-up and timed parallel trial.
 
 A receipt sets `effective_multicore_claim = true` only when all of these are true:
 
@@ -110,6 +127,15 @@ This is environment-specific implementation evidence, not a universal scaling
 claim and not direct hardware-counter proof of simultaneous core occupancy.
 
 ## CLI boundary
+
+The Cargo package is named `galaxy-cpu-runtime`, while the explicit binary target
+is named:
+
+```text
+galaxy-cpu
+```
+
+This matches the command shown by the built binary's help text.
 
 `verify` intentionally accepts only:
 
@@ -151,7 +177,17 @@ Run the verification suite and the default 1,048,576-resident benchmark:
 sh scripts/test-cpu-runtime.sh
 ```
 
-The script is POSIX `sh` syntax. Useful overrides include:
+The script is POSIX `sh` syntax. By default it writes to a path of the form:
+
+```text
+runs/cpu-runtime-YYYYMMDDTHHMMSSZ-PID/receipt.json
+```
+
+The timestamp plus POSIX `$$` process identifier prevents concurrent default
+invocations started in the same UTC second from targeting the same receipt file.
+`GALAXY_CPU_OUTPUT` can still be supplied to choose an explicit destination.
+
+Useful overrides include:
 
 ```sh
 GALAXY_CPU_RESIDENT=8388608 \
@@ -161,7 +197,7 @@ GALAXY_CPU_WORKERS=32 \
 sh scripts/test-cpu-runtime.sh
 ```
 
-Or invoke the binary directly:
+Or invoke the binary through Cargo:
 
 ```sh
 cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
@@ -173,6 +209,9 @@ cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --
   --repeats 5 \
   --receipt runs/cpu-runtime-local/receipt.json
 ```
+
+After a release build, the executable itself is `galaxy-cpu` (or
+`galaxy-cpu.exe` on Windows).
 
 The receipt schema is:
 
