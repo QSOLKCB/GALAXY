@@ -22,7 +22,9 @@ REPEATS=${GALAXY_CPU_REPEATS:-5}
 SEED=${GALAXY_CPU_SEED:-303}
 WORKERS=${GALAXY_CPU_WORKERS:-}
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-OUTPUT=${GALAXY_CPU_OUTPUT:-runs/cpu-runtime-${STAMP}}
+# POSIX $$ supplies a per-process identifier, preventing concurrent default
+# invocations that begin in the same UTC second from sharing a receipt path.
+OUTPUT=${GALAXY_CPU_OUTPUT:-runs/cpu-runtime-${STAMP}-$$}
 RECEIPT=$OUTPUT/receipt.json
 
 printf '%s\n' "== GALAXY native CPU runtime tests =="
