@@ -1,0 +1,141 @@
+name: Native CPU runtime
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpu-runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unix-native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+            expected_arch: x86_64
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            expected_arch: aarch64
+          - name: macOS ARM64
+            runner: macos-15
+            expected_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: sh
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        run: |
+          set -eu
+          actual=$(uname -m)
+          printf 'runner_arch=%s expected_arch=%s\n' "$actual" "$EXPECTED_ARCH"
+          test "$actual" = "$EXPECTED_ARCH"
+      - name: Check POSIX runner syntax
+        shell: sh
+        run: |
+          set -eu
+          sh -n scripts/test-cpu-runtime.sh
+          if command -v dash >/dev/null 2>&1; then
+            dash -n scripts/test-cpu-runtime.sh
+          fi
+          grep -Fq 'runs/cpu-runtime-${STAMP}-$$' scripts/test-cpu-runtime.sh
+      - name: Test native CPU runtime
+        shell: sh
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+      - name: Verify binary identity and CLI boundaries
+        shell: sh
+        run: |
+          set -eu
+          cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
+          test -x cpu-runtime/target/release/galaxy-cpu
+          cpu-runtime/target/release/galaxy-cpu --help >/dev/null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help >/dev/null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help >/dev/null
+          if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --frames 1 >/dev/null 2>&1; then
+            echo "verify unexpectedly accepted benchmark-only --frames" >&2
+            exit 1
+          fi
+      - name: Verify exact u64 and parallel invariants
+        shell: sh
+        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
+      - name: Run bounded native CPU receipt benchmark
+        shell: sh
+        run: |
+          mkdir -p runs/cpu-runtime-ci
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
+            bench \
+            --logical 18446744073709551615 \
+            --resident 65536 \
+            --frames 4 \
+            --workers 4 \
+            --repeats 2 \
+            --seed 303 \
+            --receipt runs/cpu-runtime-ci/receipt.json \
+            > runs/cpu-runtime-ci/stdout.txt
+          cat runs/cpu-runtime-ci/stdout.txt
+          cat runs/cpu-runtime-ci/receipt.json
+          grep -q '^backend_timing_schedule=interleaved-alternating-v1$' runs/cpu-runtime-ci/stdout.txt
+          grep -q '"repeats": 2' runs/cpu-runtime-ci/receipt.json
+          grep -q '"lut_error_sample_count": 8193' runs/cpu-runtime-ci/receipt.json
+          grep -q '"lut_sampled_max_abs_q30_error": 255' runs/cpu-runtime-ci/receipt.json
+          if grep -q '"lut_max_abs_q30_error"' runs/cpu-runtime-ci/receipt.json; then
+            echo "receipt retained misleading global LUT maximum field" >&2
+            exit 1
+          fi
+
+  windows-x64:
+    name: Windows x86-64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: pwsh
+        run: |
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          Write-Host "runner_arch=$arch expected_arch=X64"
+          if ($arch -ne 'X64') { throw "Expected native X64 runner" }
+      - name: Test native CPU runtime
+        shell: pwsh
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+      - name: Verify binary identity and CLI boundaries
+        shell: pwsh
+        run: |
+          cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
+          if (-not (Test-Path 'cpu-runtime/target/release/galaxy-cpu.exe')) { throw "galaxy-cpu.exe was not built" }
+          & 'cpu-runtime/target/release/galaxy-cpu.exe' --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "galaxy-cpu.exe --help failed" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "bench --help failed" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "verify --help failed" }
+          $probe = Start-Process -FilePath cargo -ArgumentList @(
+            'run', '--manifest-path', 'cpu-runtime/Cargo.toml', '--release', '--locked', '--offline',
+            '--', 'verify', '--frames', '1'
+          ) -NoNewWindow -Wait -PassThru
+          if ($probe.ExitCode -eq 0) { throw "verify unexpectedly accepted benchmark-only --frames" }
+      - name: Verify exact u64 and parallel invariants
+        shell: pwsh
+        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
+      - name: Run bounded native CPU receipt benchmark
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force runs/cpu-runtime-ci | Out-Null
+          $output = cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --logical 18446744073709551615 --resident 65536 --frames 4 --workers 4 --repeats 2 --seed 303 --receipt runs/cpu-runtime-ci/receipt.json
+          $output | Set-Content runs/cpu-runtime-ci/stdout.txt
+          $output
+          Get-Content runs/cpu-runtime-ci/receipt.json
+          if (-not ($output -contains 'backend_timing_schedule=interleaved-alternating-v1')) { throw "Benchmark did not report interleaved backend timing schedule" }
+          $receipt = Get-Content runs/cpu-runtime-ci/receipt.json -Raw | ConvertFrom-Json
+          if ($receipt.repeats -ne 2) { throw "Receipt did not preserve repeats=2" }
+          if ($receipt.lut_error_sample_count -ne 8193) { throw "Receipt did not preserve LUT sample count" }
+          if ($receipt.lut_sampled_max_abs_q30_error -ne 255) { throw "Receipt sampled LUT diagnostic changed unexpectedly" }
+          if ($null -ne $receipt.lut_max_abs_q30_error) { throw "Receipt retained misleading global LUT maximum field" }
