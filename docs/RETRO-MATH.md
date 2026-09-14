@@ -3,6 +3,8 @@
 GALAXY keeps its existing UFF/Newtonian/NFW/Burkert/MOND physics, browser renderer,
 Wasm sampler and native GPU runtimes unchanged. This layer adds a small,
 integer-only reference vocabulary for deterministic cross-backend validation.
+The Rust oracle lives in its own dependency-free `retro/` crate so adding or
+changing reference primitives cannot silently alter the production Wasm payload.
 
 It takes inspiration from three historical/research ideas without copying their
 renderers or source code:
@@ -63,8 +65,8 @@ exponentiation by squaring in O(log n).
 The historical-style recurrence repeats in the low-32 sector domain. GALAXY
 therefore **does not** use that state as the global identity. `sector_salt()`
 folds the three-word state and independently hashes both the low and high
-32-bit halves of the requested u64 sector index through GALAXY's existing
-avalanche hash. A regression deliberately proves:
+32-bit halves of the requested u64 sector index through the same avalanche
+construction used by GALAXY. A regression deliberately proves:
 
 ```text
 sector_seed(seed, 0) == sector_seed(seed, 2^32)
@@ -105,11 +107,12 @@ modern GPU's native trigonometric instructions.
 
 ## Shared golden vectors
 
-`tests/retro-vectors.txt` is consumed by both:
+`tests/retro-vectors.txt` is consumed by both independent implementations:
 
 ```bash
 node tests/retro-math.mjs
-cargo run --manifest-path rust/Cargo.toml --example retro_vectors --locked --offline
+cargo test --manifest-path retro/Cargo.toml --locked --offline
+cargo run --manifest-path retro/Cargo.toml --example retro_vectors --locked --offline
 ```
 
 The vectors include:
@@ -121,7 +124,8 @@ The vectors include:
 - Q16.16 projections;
 - multi-million and >2^32 tick exact reversal.
 
-Normal CI runs both consumers.
+Normal CI runs both consumers and then rebuilds the production Wasm, requiring
+that the committed Wasm artifacts remain byte-for-byte unchanged.
 
 ## Local NVIDIA GPU validation
 
@@ -132,10 +136,11 @@ bash scripts/test-retro-gpu-local.sh
 ```
 
 The script refuses to pretend that CI/software Vulkan is local GPU evidence. It
-requires `nvidia-smi`, runs both shared retro reference consumers, checks the
-existing native GALAXY reference suite on the selected hardware adapter, checks
-the >u32 Vulkan addressing verifier, then executes the normal `spin-local.json`
-GPU workload into a fresh timestamped directory.
+requires `nvidia-smi`, runs both shared retro reference consumers, rebuilds and
+checks the unchanged production Wasm, checks the existing native GALAXY reference
+suite on the selected hardware adapter, checks the >u32 Vulkan addressing verifier,
+then executes the normal `spin-local.json` GPU workload into a fresh timestamped
+directory.
 
 The default adapter selector is `NVIDIA`. Override it with:
 
