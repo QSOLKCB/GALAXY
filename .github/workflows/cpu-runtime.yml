@@ -1,0 +1,91 @@
+name: Native CPU runtime
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpu-runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unix-native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+            expected_arch: x86_64
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            expected_arch: aarch64
+          - name: macOS ARM64
+            runner: macos-15
+            expected_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: sh
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        run: |
+          set -eu
+          actual=$(uname -m)
+          printf 'runner_arch=%s expected_arch=%s\n' "$actual" "$EXPECTED_ARCH"
+          test "$actual" = "$EXPECTED_ARCH"
+      - name: Check POSIX runner syntax
+        shell: sh
+        run: |
+          set -eu
+          sh -n scripts/test-cpu-runtime.sh
+          if command -v dash >/dev/null 2>&1; then
+            dash -n scripts/test-cpu-runtime.sh
+          fi
+      - name: Test native CPU runtime
+        shell: sh
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+      - name: Verify exact u64 and parallel invariants
+        shell: sh
+        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
+      - name: Run bounded native CPU receipt benchmark
+        shell: sh
+        run: |
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
+            bench \
+            --logical 18446744073709551615 \
+            --resident 65536 \
+            --frames 4 \
+            --workers 4 \
+            --repeats 2 \
+            --seed 303 \
+            --receipt runs/cpu-runtime-ci/receipt.json
+          cat runs/cpu-runtime-ci/receipt.json
+
+  windows-x64:
+    name: Windows x86-64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: pwsh
+        run: |
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          Write-Host "runner_arch=$arch expected_arch=X64"
+          if ($arch -ne 'X64') { throw "Expected native X64 runner" }
+      - name: Test native CPU runtime
+        shell: pwsh
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+      - name: Verify exact u64 and parallel invariants
+        shell: pwsh
+        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
+      - name: Run bounded native CPU receipt benchmark
+        shell: pwsh
+        run: |
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --logical 18446744073709551615 --resident 65536 --frames 4 --workers 4 --repeats 2 --seed 303 --receipt runs/cpu-runtime-ci/receipt.json
+          Get-Content runs/cpu-runtime-ci/receipt.json

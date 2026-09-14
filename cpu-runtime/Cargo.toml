@@ -1,0 +1,17 @@
+[package]
+name = "galaxy-cpu-runtime"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+description = "Deterministic native CPU execution runtime for GALAXY"
+
+[dependencies]
+galaxy-retro-math = { path = "../retro" }
+galaxy-sampler = { path = "../rust" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

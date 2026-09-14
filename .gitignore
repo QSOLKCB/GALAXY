@@ -1,6 +1,7 @@
 rust/target/
 retro/target/
 runtime/target/
+cpu-runtime/target/
 runs/
 .galaxy-cuda-python/
 __pycache__/
