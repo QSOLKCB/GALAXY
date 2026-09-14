@@ -124,6 +124,10 @@ fn usage() -> &'static str {
     "Usage:\n  galaxy-cpu verify [--workers N]\n  galaxy-cpu bench [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nDefaults:\n  logical=18446744073709551615 resident=1048576 frames=8 repeats=5 seed=303\n  workers=std::thread::available_parallelism()\n"
 }
 
+fn help_requested(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--help" || arg == "-h")
+}
+
 fn parse_usize(flag: &str, value: String, maximum: usize) -> Result<usize, String> {
     let parsed = value
         .parse::<usize>()
@@ -152,9 +156,6 @@ fn parse_config(args: &[String]) -> Result<Config, String> {
     let mut index = 0;
     while index < args.len() {
         let flag = args[index].as_str();
-        if flag == "--help" || flag == "-h" {
-            return Err(usage().into());
-        }
         let value = args
             .get(index + 1)
             .ok_or_else(|| format!("{flag} requires a value"))?
@@ -449,12 +450,13 @@ fn receipt_json(
     lut: BackendEvidence,
 ) -> String {
     format!(
-        "{{\n  \"schema\": \"{RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"addressing\": \"{ADDRESSING}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"effective_workers\": {},\n  \"lut_entries\": {},\n  \"lut_max_abs_q30_error\": {},\n  \"float\": {{\n    \"scalar_median_ns\": {},\n    \"parallel_median_ns\": {},\n    \"scalar_checksum\": \"{:016x}\",\n    \"parallel_checksum\": \"{:016x}\",\n    \"checksum_match\": {},\n    \"measured_speedup\": {:.9},\n    \"effective_multicore_claim\": {}\n  }},\n  \"bam_lut\": {{\n    \"scalar_median_ns\": {},\n    \"parallel_median_ns\": {},\n    \"scalar_checksum\": \"{:016x}\",\n    \"parallel_checksum\": \"{:016x}\",\n    \"checksum_match\": {},\n    \"measured_speedup\": {:.9},\n    \"effective_multicore_claim\": {}\n  }},\n  \"claim_boundary\": \"Environment-specific deterministic implementation evidence; not a universal multicore or end-to-end rendering performance claim.\"\n}}\n",
+        "{{\n  \"schema\": \"{RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"addressing\": \"{ADDRESSING}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"effective_workers\": {},\n  \"lut_entries\": {},\n  \"lut_max_abs_q30_error\": {},\n  \"float\": {{\n    \"scalar_median_ns\": {},\n    \"parallel_median_ns\": {},\n    \"scalar_checksum\": \"{:016x}\",\n    \"parallel_checksum\": \"{:016x}\",\n    \"checksum_match\": {},\n    \"measured_speedup\": {:.9},\n    \"effective_multicore_claim\": {}\n  }},\n  \"bam_lut\": {{\n    \"scalar_median_ns\": {},\n    \"parallel_median_ns\": {},\n    \"scalar_checksum\": \"{:016x}\",\n    \"parallel_checksum\": \"{:016x}\",\n    \"checksum_match\": {},\n    \"measured_speedup\": {:.9},\n    \"effective_multicore_claim\": {}\n  }},\n  \"claim_boundary\": \"Environment-specific deterministic implementation evidence; not a universal multicore or end-to-end rendering performance claim.\"\n}}\n",
         env::consts::ARCH,
         env::consts::OS,
         config.logical,
         config.resident,
         config.frames,
+        config.repeats,
         config.seed,
         config.requested_workers,
         available,
@@ -609,7 +611,15 @@ fn run_verify(requested_workers: usize) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
+        Some("verify") if help_requested(&args[1..]) => {
+            print!("{}", usage());
+            Ok(())
+        }
         Some("verify") => parse_config(&args[1..]).and_then(|config| run_verify(config.requested_workers)),
+        Some("bench") | Some("run") if help_requested(&args[1..]) => {
+            print!("{}", usage());
+            Ok(())
+        }
         Some("bench") | Some("run") => parse_config(&args[1..]).and_then(run_bench),
         Some("--help") | Some("-h") | None => {
             print!("{}", usage());
@@ -667,5 +677,39 @@ mod tests {
             let (parallel, _, _) = execute_parallel(&particles, 3, backend, &lut, 4).unwrap();
             assert_eq!(scalar, parallel);
         }
+    }
+
+    #[test]
+    fn help_flags_are_recognized_as_control_flow() {
+        assert!(help_requested(&["--help".into()]));
+        assert!(help_requested(&["--workers".into(), "4".into(), "-h".into()]));
+        assert!(!help_requested(&["--workers".into(), "4".into()]));
+    }
+
+    #[test]
+    fn receipt_includes_repeat_count() {
+        let config = Config {
+            logical: u64::MAX,
+            resident: 65_536,
+            frames: 4,
+            requested_workers: 4,
+            repeats: 7,
+            seed: 303,
+            receipt: None,
+        };
+        let timing = Timing {
+            best_ns: 10,
+            median_ns: 12,
+            checksum: 0x1234,
+        };
+        let evidence = BackendEvidence {
+            scalar: timing,
+            parallel: timing,
+            speedup: 1.0,
+            checksum_match: true,
+            multicore_claim: false,
+        };
+        let receipt = receipt_json(&config, 4, 4, 234, evidence, evidence);
+        assert!(receipt.contains("\"repeats\": 7"));
     }
 }
