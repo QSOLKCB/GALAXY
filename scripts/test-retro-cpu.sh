@@ -49,7 +49,11 @@ uname -s
 uname -m
 printf 'node='; node --version
 printf 'cargo='; "$GALAXY_CARGO" --version
-printf 'rustc='; rustc --version
+if command -v rustc >/dev/null 2>&1; then
+  printf 'rustc='; rustc --version
+else
+  printf '%s\n' "rustc=resolved by Cargo/rustup"
+fi
 
 printf '\n%s\n' "== Shared deterministic vectors =="
 node tests/retro-math.mjs
