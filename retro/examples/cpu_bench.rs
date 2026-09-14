@@ -41,8 +41,13 @@ impl Lut {
 fn positive_env(name: &str, fallback: usize, maximum: usize) -> usize {
     match env::var(name) {
         Ok(raw) => {
-            let value = raw.parse::<usize>().unwrap_or_else(|_| panic!("{name} must be a positive integer"));
-            assert!((1..=maximum).contains(&value), "{name} must be in 1..={maximum}");
+            let value = raw
+                .parse::<usize>()
+                .unwrap_or_else(|_| panic!("{name} must be a positive integer"));
+            assert!(
+                (1..=maximum).contains(&value),
+                "{name} must be in 1..={maximum}"
+            );
             value
         }
         Err(_) => fallback,
@@ -71,8 +76,10 @@ fn float_projection(angles: &[u32], radii: &[i32]) -> u64 {
     for (&angle, &radius_q16) in angles.iter().zip(radii) {
         let radians = angle as f64 * TURN_SCALE;
         let (sin, cos) = radians.sin_cos();
-        let radius = radius_q16 as f64 / 65_536.0;
-        checksum = black_box(checksum + radius * cos - radius * sin * 0.5);
+        let radius = radius_q16 as f64;
+        let x = radius * cos;
+        let y = radius * sin;
+        checksum += x - y;
     }
     checksum.to_bits()
 }
@@ -84,7 +91,7 @@ fn cordic_projection(angles: &[u32], radii: &[i32]) -> u64 {
         let radius = radius_q16 as i64;
         let x = (radius * cos) >> 30;
         let y = (radius * sin) >> 30;
-        checksum = black_box(checksum.wrapping_add(x).wrapping_sub(y));
+        checksum = checksum.wrapping_add(x).wrapping_sub(y);
     }
     checksum as u64
 }
@@ -96,9 +103,20 @@ fn lut_projection(lut: &Lut, angles: &[u32], radii: &[i32]) -> u64 {
         let radius = radius_q16 as i64;
         let x = (radius * cos) >> 30;
         let y = (radius * sin) >> 30;
-        checksum = black_box(checksum.wrapping_add(x).wrapping_sub(y));
+        checksum = checksum.wrapping_add(x).wrapping_sub(y);
     }
     checksum as u64
+}
+
+fn median_sorted(timings: &[u128]) -> u128 {
+    let middle = timings.len() / 2;
+    if timings.len() % 2 == 0 {
+        let lower = timings[middle - 1];
+        let upper = timings[middle];
+        lower + (upper - lower) / 2
+    } else {
+        timings[middle]
+    }
 }
 
 fn measure<F>(repeats: usize, mut function: F) -> (u128, u128, u64)
@@ -106,25 +124,37 @@ where
     F: FnMut() -> u64,
 {
     let mut timings = Vec::with_capacity(repeats);
-    let mut checksum = 0_u64;
+    let mut checksum = None;
     for _ in 0..repeats {
         let started = Instant::now();
-        // Keep the latest opaque result. XORing identical deterministic repeats
-        // would cancel to zero for even repeat counts and make the report less
-        // useful even though the optimizer barrier still preserved the work.
-        checksum = black_box(function());
-        timings.push(started.elapsed().as_nanos());
+        let result = function();
+        let elapsed = started.elapsed().as_nanos();
+
+        // Keep the result observable outside the timed region without placing a
+        // compiler barrier inside the per-sample hot loop. Each repeat must
+        // produce the same deterministic checksum.
+        let result = black_box(result);
+        if let Some(expected) = checksum {
+            assert_eq!(result, expected, "benchmark checksum changed between repeats");
+        } else {
+            checksum = Some(result);
+        }
+        timings.push(elapsed);
     }
     timings.sort_unstable();
     let best = timings[0];
-    let median = timings[timings.len() / 2];
-    (best, median, checksum)
+    let median = median_sorted(&timings);
+    (best, median, checksum.expect("positive repeat count"))
 }
 
 fn report(method: &str, samples: usize, result: (u128, u128, u64)) {
     let (best, median, checksum) = result;
     let ns_per_sample = best as f64 / samples as f64;
-    let per_second = if best == 0 { f64::INFINITY } else { samples as f64 * 1e9 / best as f64 };
+    let per_second = if best == 0 {
+        f64::INFINITY
+    } else {
+        samples as f64 * 1e9 / best as f64
+    };
     println!("{method},{best},{median},{ns_per_sample:.6},{per_second:.3},{checksum:016x}");
 }
 
@@ -148,9 +178,19 @@ fn main() {
 
     // Warm each path before recording timings so one-time page/cache effects are
     // not confused with the arithmetic comparison.
-    black_box(float_projection(&angles[..angles.len().min(4096)], &radii[..radii.len().min(4096)]));
-    black_box(cordic_projection(&angles[..angles.len().min(4096)], &radii[..radii.len().min(4096)]));
-    black_box(lut_projection(&lut, &angles[..angles.len().min(4096)], &radii[..radii.len().min(4096)]));
+    black_box(float_projection(
+        &angles[..angles.len().min(4096)],
+        &radii[..radii.len().min(4096)],
+    ));
+    black_box(cordic_projection(
+        &angles[..angles.len().min(4096)],
+        &radii[..radii.len().min(4096)],
+    ));
+    black_box(lut_projection(
+        &lut,
+        &angles[..angles.len().min(4096)],
+        &radii[..radii.len().min(4096)],
+    ));
 
     println!("galaxy_retro_cpu_bench=v1");
     println!("arch={}", env::consts::ARCH);
@@ -168,7 +208,13 @@ fn main() {
     report("bam_cordic_q30", samples, cordic);
     report("bam_lut_q30", samples, table);
 
-    println!("float_over_cordic_best_ratio={:.6}", float.0 as f64 / cordic.0.max(1) as f64);
-    println!("float_over_lut_best_ratio={:.6}", float.0 as f64 / table.0.max(1) as f64);
+    println!(
+        "float_over_cordic_best_ratio={:.6}",
+        float.0 as f64 / cordic.0.max(1) as f64
+    );
+    println!(
+        "float_over_lut_best_ratio={:.6}",
+        float.0 as f64 / table.0.max(1) as f64
+    );
     println!("note=ratios above 1 mean the retro method was faster for this projection microbenchmark");
 }
