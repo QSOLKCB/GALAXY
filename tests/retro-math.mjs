@@ -57,9 +57,9 @@ for (const line of lines) {
 assert.deepEqual(Retro.eliteTwist(Retro.ELITE_GALAXY1), [0x0248, 0xb753, 0x13e5]);
 assert.notEqual(Retro.sectorSalt(303, 0n), Retro.sectorSalt(303, 1n << 32n));
 
-// JavaScript Numbers cannot represent every u64 sector exactly. Reject unsafe
-// numeric inputs before converting to BigInt so callers cannot silently address
-// the preceding/following sector. BigInt remains the exact full-u64 interface.
+// JavaScript Numbers cannot represent every u64 exactly. Reject unsafe numeric
+// inputs before converting to BigInt, and require BigInt for the exact full-u64
+// sector, jump-count and tick-count interfaces.
 assert.throws(
   () => Retro.sectorSalt(303, 9007199254740993),
   /safe integer; use bigint for full-u64 sectors/
@@ -76,5 +76,35 @@ assert.doesNotThrow(() => Retro.sectorSalt(303, 0xffffffffffffffffn));
 assert.throws(() => Retro.sectorSalt(303, 0x10000000000000000n), /fit u64/);
 assert.throws(() => Retro.sectorSalt(303, -1n), /fit u64/);
 assert.throws(() => Retro.sectorSalt(303, "1"), /bigint or safe integer number/);
+
+assert.throws(
+  () => Retro.eliteJump(Retro.ELITE_GALAXY1, 9007199254740993),
+  /safe integer; use bigint for full-u64 jump counts/
+);
+assert.notDeepEqual(
+  Retro.eliteJump(Retro.ELITE_GALAXY1, 9007199254740992n),
+  Retro.eliteJump(Retro.ELITE_GALAXY1, 9007199254740993n)
+);
+assert.doesNotThrow(() => Retro.eliteJump(Retro.ELITE_GALAXY1, 0xffffffffffffffffn));
+assert.throws(() => Retro.eliteJump(Retro.ELITE_GALAXY1, 0x10000000000000000n), /fit u64/);
+assert.throws(() => Retro.eliteJump(Retro.ELITE_GALAXY1, -1n), /fit u64/);
+assert.throws(() => Retro.eliteJump(Retro.ELITE_GALAXY1, "1"), /bigint or safe integer number/);
+
+assert.throws(
+  () => Retro.bamAdvance(0, 1, 9007199254740993),
+  /safe integer; use bigint for full-u64 tick counts/
+);
+assert.throws(
+  () => Retro.bamRetreat(0, 1, Number.MAX_SAFE_INTEGER + 1),
+  /safe integer; use bigint for full-u64 tick counts/
+);
+assert.equal(Retro.bamAdvance(0, 1, 9007199254740992n), 0);
+assert.equal(Retro.bamAdvance(0, 1, 9007199254740993n), 1);
+assert.equal(Retro.bamRetreat(1, 1, 9007199254740993n), 0);
+assert.doesNotThrow(() => Retro.bamAdvance(0, 1, 0xffffffffffffffffn));
+assert.doesNotThrow(() => Retro.bamRetreat(0, 1, 0xffffffffffffffffn));
+assert.throws(() => Retro.bamAdvance(0, 1, 0x10000000000000000n), /fit u64/);
+assert.throws(() => Retro.bamRetreat(0, 1, -1n), /fit u64/);
+assert.throws(() => Retro.bamAdvance(0, 1, "1"), /bigint or safe integer number/);
 
 console.log(`retro-math: ${lines.length} golden vectors passed`);
