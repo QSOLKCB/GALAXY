@@ -1,0 +1,12 @@
+[package]
+name = "galaxy-retro-math"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Dependency-free deterministic reference math for GALAXY validation"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
