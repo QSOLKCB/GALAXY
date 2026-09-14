@@ -300,6 +300,30 @@ done
 
 Canonical performance comparisons should remain unpinned. Affinity experiments may be added afterward as explicitly separate topology probes.
 
+For every future affinity probe, preserve the requested mask **and** capture the kernel-visible allowed CPU list from inside the constrained process before launching `galaxy-cpu`. A reproducible pattern is:
+
+```sh
+MASK='0-47'
+AFFINITY_LOG='runs/qbraid-cpu/r8388608-w48-node0-affinity.txt'
+RECEIPT='runs/qbraid-cpu/r8388608-w48-node0.json'
+
+taskset -c "$MASK" sh -c '
+  printf "requested_mask=%s\n" "$1"
+  grep "^Cpus_allowed_list:" /proc/self/status
+  taskset -pc $$ 2>/dev/null || true
+  exec cpu-runtime/target/release/galaxy-cpu bench \
+    --logical 18446744073709551615 \
+    --resident 8388608 \
+    --frames 8 \
+    --workers 48 \
+    --repeats 7 \
+    --seed 303 \
+    --receipt "$2"
+' sh "$MASK" "$RECEIPT" 2>&1 | tee "$AFFINITY_LOG"
+```
+
+Retain the affinity log beside the JSON receipt. The `Cpus_allowed_list` line is the per-run evidence that binds the benchmark process to the intended Linux affinity mask.
+
 ---
 
 ## 8. Analysis
@@ -434,11 +458,31 @@ Three 7-repeat affinity experiments then isolated topology effects:
 
 All affinity runs preserved the same deterministic backend checksums.
 
+### Affinity-mask provenance for the completed runs
+
+The exact shell commands and requested CPU masks used for these completed probes are preserved in:
+
+```text
+evidence/qbraid/EPYC7763-20260914/AFFINITY-MANIFEST.md
+```
+
+That manifest binds each affinity receipt filename to its `taskset` invocation and expanded mask:
+
+```text
+r8388608-w48-unpinned-r7.json        -> no taskset mask
+r8388608-w48-node0.json              -> taskset -c 0-47
+r8388608-w48-node1.json              -> taskset -c 48-95
+r8388608-w48-physical-pinned.json    -> taskset -c 0,2,4,...,94
+```
+
+Evidence limitation: the original `galaxy.cpu-runtime-receipt.v1` schema does not record a Linux CPU-affinity mask, and the original compressed evidence bundle did not capture `Cpus_allowed_list` from inside each constrained process. Therefore the receipt JSON files alone substantiate the timings, worker counts and checksum parity, while the exact mask-to-receipt binding is retrospective operator command provenance preserved in `AFFINITY-MANIFEST.md`. The table above should be read as **runs invoked with those masks**, not as a claim that the current receipt schema independently encoded or re-observed them.
+
 Important interpretation:
 
-- Restricting the whole process to one NUMA node retained near-baseline performance even though each node exposed only 24 cores / 48 logical CPUs.
-- Forcing one logical CPU from each exposed core across both NUMA nodes was roughly 50% slower for both backends.
-- The result strongly associates the performance loss with the cross-NUMA/topology configuration rather than with correctness or the deterministic work itself.
+- The run invoked with the node-0 mask retained near-baseline performance even though that mask covered 24 exposed cores / 48 logical CPUs.
+- The run invoked with the node-1 mask also retained near-baseline Float performance and modestly slower BAM-LUT performance.
+- The run invoked with one logical CPU from each exposed core across both NUMA nodes was roughly 50% slower for both backends.
+- The result strongly associates the performance loss with the requested cross-NUMA/topology configuration rather than with correctness or the deterministic work itself.
 - It is **consistent with** NUMA memory-locality / first-touch / remote-memory effects, but no hardware memory-traffic counters were collected, so that mechanism is not proven.
 - The unpinned 48-worker optimum must not be described simply as '48 physical cores occupied'; unpinned scheduler placement was not observed directly.
 
@@ -469,6 +513,8 @@ The bundle contains:
 - node-0 and node-1 48-worker affinity receipts;
 - one-thread-per-core cross-NUMA 48-worker affinity receipt.
 
+The repository directory also contains `AFFINITY-MANIFEST.md`, which preserves the exact commands and requested masks used for the affinity probes and documents the retrospective provenance limitation described above.
+
 ---
 
 ## 13. Claim boundary
@@ -477,6 +523,7 @@ Do not claim:
 
 - 96 vCPUs are 96 physical cores;
 - unpinned 48 workers means all 48 exposed cores were occupied;
+- the original receipt JSON independently proves the exact Linux affinity mask used by an historical affinity run;
 - BAM-LUT is proven memory-bandwidth bound;
 - the affinity result proves a specific first-touch or remote-memory mechanism without counters;
 - `u64::MAX` particles were simultaneously allocated;
@@ -490,7 +537,7 @@ Supported wording includes:
 
 > On this qBraid EPYC 7763 guest, GALAXY's 8,388,608-resident workload measured its best unpinned 32/48/64/96-worker result at 48 workers for both Float and BAM-LUT, while preserving deterministic checksums.
 
-> NUMA-local 48-thread affinity retained near-unpinned performance, whereas a one-thread-per-exposed-core mask spanning both NUMA nodes was approximately 50% slower. This is consistent with a strong topology/memory-locality effect, but the available evidence does not isolate the underlying memory-traffic mechanism.
+> According to the preserved operator command provenance, the NUMA-local 48-thread affinity runs retained near-unpinned performance, whereas the run invoked with a one-thread-per-exposed-core mask spanning both NUMA nodes was approximately 50% slower. This is consistent with a strong topology/memory-locality effect, but the historical receipt schema did not encode the affinity mask and the available evidence does not isolate the underlying memory-traffic mechanism.
 
 ---
 
@@ -504,6 +551,7 @@ A strong future result establishes:
 4. a focused profile-appropriate sweep including a one-worker baseline;
 5. actual effective workers preserved in every receipt;
 6. optional topology probes kept separate from the canonical unpinned sweep;
-7. complete hashed evidence.
+7. every affinity probe accompanied by an in-process `Cpus_allowed_list` capture and exact invocation;
+8. complete hashed evidence.
 
 Be aggressive with available CPU capacity, conservative with causal claims, and meticulous with receipts.
