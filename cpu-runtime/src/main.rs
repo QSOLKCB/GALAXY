@@ -36,6 +36,9 @@ const LUT_BITS: u32 = 14;
 const LUT_SIZE: usize = 1 << LUT_BITS;
 const LUT_SHIFT: u32 = 32 - LUT_BITS;
 const LUT_FRAC_MASK: u32 = (1_u32 << LUT_SHIFT) - 1;
+const LUT_ERROR_HASHED_SAMPLES: u32 = 8_192;
+const LUT_ERROR_KNOWN_PROBE: u32 = 1_098_892_653;
+const LUT_ERROR_SAMPLE_COUNT: u32 = LUT_ERROR_HASHED_SAMPLES + 1;
 
 #[derive(Clone, Copy, Debug)]
 struct Particle {
@@ -121,7 +124,7 @@ struct Config {
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  galaxy-cpu verify [--workers N]\n  galaxy-cpu bench [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nDefaults:\n  logical=18446744073709551615 resident=1048576 frames=8 repeats=5 seed=303\n  workers=std::thread::available_parallelism()\n"
+    "Usage:\n  galaxy-cpu verify [--workers N]\n  galaxy-cpu bench [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nDefaults:\n  logical=18446744073709551615 resident=1048576 frames=8 repeats=5 seed=303\n  workers=min(std::thread::available_parallelism(), 256)\n"
 }
 
 fn help_requested(args: &[String]) -> bool {
@@ -138,16 +141,16 @@ fn parse_usize(flag: &str, value: String, maximum: usize) -> Result<usize, Strin
     Ok(parsed)
 }
 
+fn default_requested_workers() -> usize {
+    available_parallelism().min(MAX_WORKERS)
+}
+
 fn parse_config(args: &[String]) -> Result<Config, String> {
-    let available = thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1)
-        .clamp(1, MAX_WORKERS);
     let mut config = Config {
         logical: u64::MAX,
         resident: DEFAULT_RESIDENT,
         frames: DEFAULT_FRAMES,
-        requested_workers: available,
+        requested_workers: default_requested_workers(),
         repeats: DEFAULT_REPEATS,
         seed: DEFAULT_SEED,
         receipt: None,
@@ -190,25 +193,54 @@ fn parse_config(args: &[String]) -> Result<Config, String> {
     Ok(config)
 }
 
+fn parse_verify_workers(args: &[String]) -> Result<usize, String> {
+    let mut requested_workers = default_requested_workers();
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        if flag != "--workers" {
+            return Err(format!(
+                "verify only accepts --workers N; unsupported option: {flag}"
+            ));
+        }
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| "--workers requires a value".to_string())?
+            .clone();
+        requested_workers = parse_usize("--workers", value, MAX_WORKERS)?;
+        index += 2;
+    }
+    Ok(requested_workers)
+}
+
 fn available_parallelism() -> usize {
     thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(1)
-        .clamp(1, MAX_WORKERS)
+        .max(1)
 }
 
-fn effective_workers(work_items: usize, requested_workers: usize) -> Result<(usize, usize), String> {
+fn effective_workers_for_capacity(
+    work_items: usize,
+    requested_workers: usize,
+    available: usize,
+) -> Result<usize, String> {
     if requested_workers == 0 {
         return Err("workers must be greater than zero".into());
     }
     if work_items == 0 {
-        return Ok((available_parallelism(), 0));
+        return Ok(0);
     }
-    let available = available_parallelism();
-    let effective = requested_workers
+    Ok(requested_workers
         .min(work_items)
-        .min(available)
-        .clamp(1, MAX_WORKERS);
+        .min(available.max(1))
+        .min(MAX_WORKERS)
+        .max(1))
+}
+
+fn effective_workers(work_items: usize, requested_workers: usize) -> Result<(usize, usize), String> {
+    let available = available_parallelism();
+    let effective = effective_workers_for_capacity(work_items, requested_workers, available)?;
     Ok((available, effective))
 }
 
@@ -307,21 +339,23 @@ fn execute_scalar(particles: &[Particle], frames: usize, backend: Backend, lut: 
     execute_range(particles, frames, backend, lut)
 }
 
-fn execute_parallel(
+fn execute_parallel_fixed(
     particles: &[Particle],
     frames: usize,
     backend: Backend,
     lut: &Lut,
-    workers: usize,
-) -> Result<(u64, usize, usize), String> {
-    let (available, worker_count) = effective_workers(particles.len(), workers)?;
-    if worker_count <= 1 {
-        return Ok((execute_scalar(particles, frames, backend, lut), available, worker_count));
+    worker_count: usize,
+) -> Result<u64, String> {
+    if worker_count == 0 || worker_count > MAX_WORKERS || worker_count > particles.len() {
+        return Err("invalid fixed worker count".into());
+    }
+    if worker_count == 1 {
+        return Ok(execute_scalar(particles, frames, backend, lut));
     }
 
     let base_len = particles.len() / worker_count;
     let remainder = particles.len() % worker_count;
-    let checksum = thread::scope(|scope| {
+    thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
         let mut start = 0;
         for worker_index in 0..worker_count {
@@ -339,7 +373,18 @@ fn execute_parallel(
             total = total.wrapping_add(chunk);
         }
         Ok::<u64, String>(total)
-    })?;
+    })
+}
+
+fn execute_parallel(
+    particles: &[Particle],
+    frames: usize,
+    backend: Backend,
+    lut: &Lut,
+    requested_workers: usize,
+) -> Result<(u64, usize, usize), String> {
+    let (available, worker_count) = effective_workers(particles.len(), requested_workers)?;
+    let checksum = execute_parallel_fixed(particles, frames, backend, lut, worker_count)?;
     Ok((checksum, available, worker_count))
 }
 
@@ -354,32 +399,33 @@ fn median_sorted(values: &[u128]) -> u128 {
     }
 }
 
-fn measure<F>(repeats: usize, mut function: F) -> Result<Timing, String>
-where
-    F: FnMut() -> Result<u64, String>,
-{
-    let mut timings = Vec::with_capacity(repeats);
-    let mut checksum = None;
-    for _ in 0..repeats {
-        let started = Instant::now();
-        let result = function()?;
-        let elapsed = started.elapsed().as_nanos();
-        let result = black_box(result);
-        if let Some(expected) = checksum {
-            if result != expected {
-                return Err("runtime checksum changed between repeats".into());
-            }
-        } else {
-            checksum = Some(result);
+fn record_measurement(
+    timings: &mut Vec<u128>,
+    checksum: &mut Option<u64>,
+    started: Instant,
+    result: u64,
+    label: &str,
+) -> Result<(), String> {
+    let elapsed = started.elapsed().as_nanos();
+    let result = black_box(result);
+    if let Some(expected) = *checksum {
+        if result != expected {
+            return Err(format!("{label} checksum changed between repeats"));
         }
-        timings.push(elapsed);
+    } else {
+        *checksum = Some(result);
     }
+    timings.push(elapsed);
+    Ok(())
+}
+
+fn finish_timing(mut timings: Vec<u128>, checksum: Option<u64>) -> Timing {
     timings.sort_unstable();
-    Ok(Timing {
+    Timing {
         best_ns: timings[0],
         median_ns: median_sorted(&timings),
         checksum: checksum.expect("positive repeat count"),
-    })
+    }
 }
 
 fn measure_backend(
@@ -390,19 +436,72 @@ fn measure_backend(
 ) -> Result<(BackendEvidence, usize, usize), String> {
     let (available, effective) = effective_workers(particles.len(), config.requested_workers)?;
 
-    black_box(execute_scalar(
-        &particles[..particles.len().min(4096)],
-        config.frames.min(2),
+    // Warm both complete paths before timing. The measured pairs then alternate
+    // order so neither scalar nor parallel systematically inherits the other's
+    // cache state, including when repeats=1.
+    let warm_scalar = black_box(execute_scalar(particles, config.frames, backend, lut));
+    let warm_parallel = black_box(execute_parallel_fixed(
+        particles,
+        config.frames,
         backend,
         lut,
-    ));
-    let scalar = measure(config.repeats, || {
-        Ok(execute_scalar(particles, config.frames, backend, lut))
-    })?;
-    let parallel = measure(config.repeats, || {
-        execute_parallel(particles, config.frames, backend, lut, config.requested_workers)
-            .map(|(checksum, _, _)| checksum)
-    })?;
+        effective,
+    )?);
+    if warm_scalar != warm_parallel {
+        return Err(format!("{} warm-up checksum mismatch", backend.name()));
+    }
+
+    let mut scalar_timings = Vec::with_capacity(config.repeats);
+    let mut parallel_timings = Vec::with_capacity(config.repeats);
+    let mut scalar_checksum = None;
+    let mut parallel_checksum = None;
+
+    for repeat in 0..config.repeats {
+        if repeat % 2 == 0 {
+            let started = Instant::now();
+            let result = execute_scalar(particles, config.frames, backend, lut);
+            record_measurement(
+                &mut scalar_timings,
+                &mut scalar_checksum,
+                started,
+                result,
+                "scalar",
+            )?;
+
+            let started = Instant::now();
+            let result = execute_parallel_fixed(particles, config.frames, backend, lut, effective)?;
+            record_measurement(
+                &mut parallel_timings,
+                &mut parallel_checksum,
+                started,
+                result,
+                "parallel",
+            )?;
+        } else {
+            let started = Instant::now();
+            let result = execute_parallel_fixed(particles, config.frames, backend, lut, effective)?;
+            record_measurement(
+                &mut parallel_timings,
+                &mut parallel_checksum,
+                started,
+                result,
+                "parallel",
+            )?;
+
+            let started = Instant::now();
+            let result = execute_scalar(particles, config.frames, backend, lut);
+            record_measurement(
+                &mut scalar_timings,
+                &mut scalar_checksum,
+                started,
+                result,
+                "scalar",
+            )?;
+        }
+    }
+
+    let scalar = finish_timing(scalar_timings, scalar_checksum);
+    let parallel = finish_timing(parallel_timings, parallel_checksum);
     let checksum_match = scalar.checksum == parallel.checksum;
     if !checksum_match {
         return Err(format!(
@@ -425,14 +524,19 @@ fn measure_backend(
     ))
 }
 
-fn lut_error(lut: &Lut) -> i64 {
-    let mut maximum = 0_i64;
-    for index in 0..8192_u32 {
+fn lut_error_at(lut: &Lut, angle: u32) -> i64 {
+    let (reference_cos, reference_sin) = sin_cos_q30(angle);
+    let (lut_cos, lut_sin) = lut.sin_cos(angle);
+    (reference_cos - lut_cos)
+        .abs()
+        .max((reference_sin - lut_sin).abs())
+}
+
+fn lut_sampled_error(lut: &Lut) -> i64 {
+    let mut maximum = lut_error_at(lut, LUT_ERROR_KNOWN_PROBE);
+    for index in 0..LUT_ERROR_HASHED_SAMPLES {
         let angle = hash32(index.wrapping_mul(0x9e37_79b9));
-        let (reference_cos, reference_sin) = sin_cos_q30(angle);
-        let (lut_cos, lut_sin) = lut.sin_cos(angle);
-        maximum = maximum.max((reference_cos - lut_cos).abs());
-        maximum = maximum.max((reference_sin - lut_sin).abs());
+        maximum = maximum.max(lut_error_at(lut, angle));
     }
     maximum
 }
@@ -445,12 +549,12 @@ fn receipt_json(
     config: &Config,
     available: usize,
     effective: usize,
-    lut_error_q30: i64,
+    lut_sampled_error_q30: i64,
     float: BackendEvidence,
     lut: BackendEvidence,
 ) -> String {
     format!(
-        "{{\n  \"schema\": \"{RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"addressing\": \"{ADDRESSING}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"effective_workers\": {},\n  \"lut_entries\": {},\n  \"lut_max_abs_q30_error\": {},\n  \"float\": {{\n    \"scalar_median_ns\": {},\n    \"parallel_median_ns\": {},\n    \"scalar_checksum\": \"{:016x}\",\n    \"parallel_checksum\": \"{:016x}\",\n    \"checksum_match\": {},\n    \"measured_speedup\": {:.9},\n    \"effective_multicore_claim\": {}\n  }},\n  \"bam_lut\": {{\n    \"scalar_median_ns\": {},\n    \"parallel_median_ns\": {},\n    \"scalar_checksum\": \"{:016x}\",\n    \"parallel_checksum\": \"{:016x}\",\n    \"checksum_match\": {},\n    \"measured_speedup\": {:.9},\n    \"effective_multicore_claim\": {}\n  }},\n  \"claim_boundary\": \"Environment-specific deterministic implementation evidence; not a universal multicore or end-to-end rendering performance claim.\"\n}}\n",
+        "{{\n  \"schema\": \"{RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"addressing\": \"{ADDRESSING}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"effective_workers\": {},\n  \"lut_entries\": {},\n  \"lut_error_sample_count\": {},\n  \"lut_sampled_max_abs_q30_error\": {},\n  \"float\": {{\n    \"scalar_median_ns\": {},\n    \"parallel_median_ns\": {},\n    \"scalar_checksum\": \"{:016x}\",\n    \"parallel_checksum\": \"{:016x}\",\n    \"checksum_match\": {},\n    \"measured_speedup\": {:.9},\n    \"effective_multicore_claim\": {}\n  }},\n  \"bam_lut\": {{\n    \"scalar_median_ns\": {},\n    \"parallel_median_ns\": {},\n    \"scalar_checksum\": \"{:016x}\",\n    \"parallel_checksum\": \"{:016x}\",\n    \"checksum_match\": {},\n    \"measured_speedup\": {:.9},\n    \"effective_multicore_claim\": {}\n  }},\n  \"claim_boundary\": \"Environment-specific deterministic implementation evidence; LUT error is sampled diagnostic evidence, not a proven maximum over all 2^32 BAM angles; multicore timing is not a universal performance claim.\"\n}}\n",
         env::consts::ARCH,
         env::consts::OS,
         config.logical,
@@ -462,7 +566,8 @@ fn receipt_json(
         available,
         effective,
         LUT_SIZE,
-        lut_error_q30,
+        LUT_ERROR_SAMPLE_COUNT,
+        lut_sampled_error_q30,
         float.scalar.median_ns,
         float.parallel.median_ns,
         float.scalar.checksum,
@@ -517,15 +622,16 @@ fn run_bench(config: Config) -> Result<(), String> {
     let particles = build_particles(config.logical, config.resident, config.seed)?;
     println!("resident_build_ns={}", build_started.elapsed().as_nanos());
     let lut = Lut::build();
-    let lut_error_q30 = lut_error(&lut);
+    let lut_sampled_error_q30 = lut_sampled_error(&lut);
     println!("lut_entries={LUT_SIZE}");
-    println!("lut_max_abs_q30_error={lut_error_q30}");
+    println!("lut_error_sample_count={LUT_ERROR_SAMPLE_COUNT}");
+    println!("lut_sampled_max_abs_q30_error={lut_sampled_error_q30}");
 
     let (float, available, effective) = measure_backend(&particles, &config, Backend::Float, &lut)?;
     let (lut_evidence, available_lut, effective_lut) =
         measure_backend(&particles, &config, Backend::Lut, &lut)?;
     if available != available_lut || effective != effective_lut {
-        return Err("worker capacity changed during benchmark".into());
+        return Err("worker capacity changed between backend measurements".into());
     }
 
     println!("available_parallelism={available}");
@@ -552,7 +658,7 @@ fn run_bench(config: Config) -> Result<(), String> {
         &config,
         available,
         effective,
-        lut_error_q30,
+        lut_sampled_error_q30,
         float,
         lut_evidence,
     );
@@ -581,9 +687,11 @@ fn run_verify(requested_workers: usize) -> Result<(), String> {
 
     let particles = build_particles(logical, resident, DEFAULT_SEED)?;
     let lut = Lut::build();
-    let error = lut_error(&lut);
-    if error > 512 {
-        return Err(format!("BAM LUT Q2.30 error exceeded bound: {error}"));
+    let sampled_error = lut_sampled_error(&lut);
+    if sampled_error > 512 {
+        return Err(format!(
+            "sampled BAM LUT Q2.30 diagnostic exceeded bound: {sampled_error}"
+        ));
     }
 
     for backend in [Backend::Float, Backend::Lut] {
@@ -603,7 +711,8 @@ fn run_verify(requested_workers: usize) -> Result<(), String> {
         "verify_u64_boundary={:08x},{:08x},{:08x}",
         words[0], words[1], words[2]
     );
-    println!("verify_lut_max_abs_q30_error={error}");
+    println!("verify_lut_error_sample_count={LUT_ERROR_SAMPLE_COUNT}");
+    println!("verify_lut_sampled_max_abs_q30_error={sampled_error}");
     println!("GALAXY native CPU runtime verification passed");
     Ok(())
 }
@@ -615,7 +724,7 @@ fn main() {
             print!("{}", usage());
             Ok(())
         }
-        Some("verify") => parse_config(&args[1..]).and_then(|config| run_verify(config.requested_workers)),
+        Some("verify") => parse_verify_workers(&args[1..]).and_then(run_verify),
         Some("bench") | Some("run") if help_requested(&args[1..]) => {
             print!("{}", usage());
             Ok(())
@@ -662,10 +771,15 @@ mod tests {
     #[test]
     fn worker_resolution_never_exceeds_capacity_or_work() {
         let (available, effective) = effective_workers(7, 256).unwrap();
-        assert!((1..=MAX_WORKERS).contains(&available));
+        assert!(available >= 1);
         assert!((1..=7).contains(&effective));
         assert!(effective <= available);
+        assert!(effective <= MAX_WORKERS);
         assert!(effective_workers(7, 0).is_err());
+        assert_eq!(
+            effective_workers_for_capacity(1_000, 1_000, 1_024).unwrap(),
+            256
+        );
     }
 
     #[test]
@@ -687,7 +801,32 @@ mod tests {
     }
 
     #[test]
-    fn receipt_includes_repeat_count() {
+    fn verify_parser_rejects_benchmark_options() {
+        assert_eq!(
+            parse_verify_workers(&["--workers".into(), "4".into()]).unwrap(),
+            4
+        );
+        for flag in [
+            "--frames",
+            "--seed",
+            "--receipt",
+            "--logical",
+            "--resident",
+            "--repeats",
+        ] {
+            assert!(parse_verify_workers(&[flag.into(), "1".into()]).is_err());
+        }
+    }
+
+    #[test]
+    fn sampled_lut_error_is_labeled_and_covers_known_probe() {
+        let lut = Lut::build();
+        assert_eq!(lut_error_at(&lut, LUT_ERROR_KNOWN_PROBE), 255);
+        assert!(lut_sampled_error(&lut) >= 255);
+    }
+
+    #[test]
+    fn receipt_includes_repeat_count_and_sampled_lut_metadata() {
         let config = Config {
             logical: u64::MAX,
             resident: 65_536,
@@ -709,7 +848,11 @@ mod tests {
             checksum_match: true,
             multicore_claim: false,
         };
-        let receipt = receipt_json(&config, 4, 4, 234, evidence, evidence);
+        let receipt = receipt_json(&config, 512, 4, 255, evidence, evidence);
         assert!(receipt.contains("\"repeats\": 7"));
+        assert!(receipt.contains("\"available_parallelism\": 512"));
+        assert!(receipt.contains("\"lut_error_sample_count\": 8193"));
+        assert!(receipt.contains("\"lut_sampled_max_abs_q30_error\": 255"));
+        assert!(!receipt.contains("lut_max_abs_q30_error"));
     }
 }
