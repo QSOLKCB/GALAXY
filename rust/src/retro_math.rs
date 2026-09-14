@@ -125,11 +125,11 @@ pub fn sin_cos_q30(angle: u32) -> (i64, i64) {
         if z >= 0 {
             x -= y >> i;
             y += old_x >> i;
-            z -= atan;
+            z -= *atan;
         } else {
             x += y >> i;
             y -= old_x >> i;
-            z += atan;
+            z += *atan;
         }
     }
     (x, y)
