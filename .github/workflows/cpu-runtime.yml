@@ -47,13 +47,17 @@ jobs:
           if command -v dash >/dev/null 2>&1; then
             dash -n scripts/test-cpu-runtime.sh
           fi
+          grep -Fq 'runs/cpu-runtime-${STAMP}-$$' scripts/test-cpu-runtime.sh
       - name: Test native CPU runtime
         shell: sh
         run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
-      - name: Verify CLI boundaries
+      - name: Verify binary identity and CLI boundaries
         shell: sh
         run: |
           set -eu
+          cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
+          test -x cpu-runtime/target/release/galaxy-cpu
+          cpu-runtime/target/release/galaxy-cpu --help >/dev/null
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help >/dev/null
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help >/dev/null
           if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --frames 1 >/dev/null 2>&1; then
@@ -66,6 +70,7 @@ jobs:
       - name: Run bounded native CPU receipt benchmark
         shell: sh
         run: |
+          mkdir -p runs/cpu-runtime-ci
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
             bench \
             --logical 18446744073709551615 \
@@ -74,8 +79,11 @@ jobs:
             --workers 4 \
             --repeats 2 \
             --seed 303 \
-            --receipt runs/cpu-runtime-ci/receipt.json
+            --receipt runs/cpu-runtime-ci/receipt.json \
+            > runs/cpu-runtime-ci/stdout.txt
+          cat runs/cpu-runtime-ci/stdout.txt
           cat runs/cpu-runtime-ci/receipt.json
+          grep -q '^backend_timing_schedule=interleaved-alternating-v1$' runs/cpu-runtime-ci/stdout.txt
           grep -q '"repeats": 2' runs/cpu-runtime-ci/receipt.json
           grep -q '"lut_error_sample_count": 8193' runs/cpu-runtime-ci/receipt.json
           grep -q '"lut_sampled_max_abs_q30_error": 255' runs/cpu-runtime-ci/receipt.json
@@ -98,9 +106,13 @@ jobs:
       - name: Test native CPU runtime
         shell: pwsh
         run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
-      - name: Verify CLI boundaries
+      - name: Verify binary identity and CLI boundaries
         shell: pwsh
         run: |
+          cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
+          if (-not (Test-Path 'cpu-runtime/target/release/galaxy-cpu.exe')) { throw "galaxy-cpu.exe was not built" }
+          & 'cpu-runtime/target/release/galaxy-cpu.exe' --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "galaxy-cpu.exe --help failed" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "bench --help failed" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help | Out-Null
@@ -116,8 +128,12 @@ jobs:
       - name: Run bounded native CPU receipt benchmark
         shell: pwsh
         run: |
-          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --logical 18446744073709551615 --resident 65536 --frames 4 --workers 4 --repeats 2 --seed 303 --receipt runs/cpu-runtime-ci/receipt.json
+          New-Item -ItemType Directory -Force runs/cpu-runtime-ci | Out-Null
+          $output = cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --logical 18446744073709551615 --resident 65536 --frames 4 --workers 4 --repeats 2 --seed 303 --receipt runs/cpu-runtime-ci/receipt.json
+          $output | Set-Content runs/cpu-runtime-ci/stdout.txt
+          $output
           Get-Content runs/cpu-runtime-ci/receipt.json
+          if (-not ($output -contains 'backend_timing_schedule=interleaved-alternating-v1')) { throw "Benchmark did not report interleaved backend timing schedule" }
           $receipt = Get-Content runs/cpu-runtime-ci/receipt.json -Raw | ConvertFrom-Json
           if ($receipt.repeats -ne 2) { throw "Receipt did not preserve repeats=2" }
           if ($receipt.lut_error_sample_count -ne 8193) { throw "Receipt did not preserve LUT sample count" }
