@@ -34,6 +34,21 @@
     x = Math.imul(x, 0x846ca68b) >>> 0;
     return (x ^ (x >>> 16)) >>> 0;
   }
+  function exactU64(value, label, bigintHint) {
+    let integer;
+    if (typeof value === "bigint") {
+      integer = value;
+    } else if (typeof value === "number") {
+      if (!Number.isSafeInteger(value)) {
+        throw new RangeError(`${label} number must be a safe integer; use bigint for ${bigintHint}`);
+      }
+      integer = BigInt(value);
+    } else {
+      throw new TypeError(`${label} must be a bigint or safe integer number`);
+    }
+    if (integer < 0n || integer > U64_MAX) throw new RangeError(`${label} must fit u64`);
+    return integer;
+  }
   function eliteTwist(seed) {
     if (!Array.isArray(seed) || seed.length !== 3) throw new TypeError("Elite seed must contain three words");
     const [a, b, c] = seed.map(value => Number(BigInt(value) & U16_MASK));
@@ -49,8 +64,7 @@
     return out;
   }
   function matrixPower(steps) {
-    let n = BigInt(steps);
-    if (n < 0n) throw new RangeError("Elite jump must be non-negative");
+    let n = exactU64(steps, "Elite jump count", "full-u64 jump counts");
     let result = [[1n,0n,0n],[0n,1n,0n],[0n,0n,1n]];
     let base = [[0n,1n,0n],[0n,0n,1n],[1n,1n,1n]];
     while (n) {
@@ -66,19 +80,7 @@
     return matrix.map(row => Number(row.reduce((sum, value, i) => sum + value * words[i], 0n) & U16_MASK));
   }
   function sectorIndex(sector) {
-    let index;
-    if (typeof sector === "bigint") {
-      index = sector;
-    } else if (typeof sector === "number") {
-      if (!Number.isSafeInteger(sector)) {
-        throw new RangeError("Numeric sector index must be a safe integer; use bigint for full-u64 sectors");
-      }
-      index = BigInt(sector);
-    } else {
-      throw new TypeError("Sector index must be a bigint or safe integer number");
-    }
-    if (index < 0n || index > U64_MAX) throw new RangeError("Sector index must fit u64");
-    return index;
+    return exactU64(sector, "Sector index", "full-u64 sectors");
   }
   function sectorSeed(globalSeed, sector) {
     const index = sectorIndex(sector);
@@ -101,13 +103,11 @@
   function bamAdd(angle, delta) { return u32(BigInt(u32(angle)) + BigInt(u32(delta))); }
   function bamSub(angle, delta) { return u32(BigInt(u32(angle)) - BigInt(u32(delta))); }
   function bamAdvance(angle, delta, ticks) {
-    const n = BigInt(ticks);
-    if (n < 0n) throw new RangeError("Tick count must be non-negative");
+    const n = exactU64(ticks, "BAM tick count", "full-u64 tick counts");
     return Number((BigInt(u32(angle)) + BigInt(u32(delta)) * n) & U32_MASK);
   }
   function bamRetreat(angle, delta, ticks) {
-    const n = BigInt(ticks);
-    if (n < 0n) throw new RangeError("Tick count must be non-negative");
+    const n = exactU64(ticks, "BAM tick count", "full-u64 tick counts");
     return Number((BigInt(u32(angle)) - BigInt(u32(delta)) * n) & U32_MASK);
   }
   function sinCosQ30(angle) {
