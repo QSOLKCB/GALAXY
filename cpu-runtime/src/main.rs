@@ -428,80 +428,68 @@ fn finish_timing(mut timings: Vec<u128>, checksum: Option<u64>) -> Timing {
     }
 }
 
-fn measure_backend(
+#[derive(Debug)]
+struct BackendSamples {
+    scalar_timings: Vec<u128>,
+    parallel_timings: Vec<u128>,
+    scalar_checksum: Option<u64>,
+    parallel_checksum: Option<u64>,
+}
+
+impl BackendSamples {
+    fn new(repeats: usize) -> Self {
+        Self {
+            scalar_timings: Vec::with_capacity(repeats),
+            parallel_timings: Vec::with_capacity(repeats),
+            scalar_checksum: None,
+            parallel_checksum: None,
+        }
+    }
+}
+
+fn measure_trial(
     particles: &[Particle],
     config: &Config,
     backend: Backend,
     lut: &Lut,
-) -> Result<(BackendEvidence, usize, usize), String> {
-    let (available, effective) = effective_workers(particles.len(), config.requested_workers)?;
-
-    // Warm both complete paths before timing. The measured pairs then alternate
-    // order so neither scalar nor parallel systematically inherits the other's
-    // cache state, including when repeats=1.
-    let warm_scalar = black_box(execute_scalar(particles, config.frames, backend, lut));
-    let warm_parallel = black_box(execute_parallel_fixed(
-        particles,
-        config.frames,
-        backend,
-        lut,
-        effective,
-    )?);
-    if warm_scalar != warm_parallel {
-        return Err(format!("{} warm-up checksum mismatch", backend.name()));
+    effective: usize,
+    parallel: bool,
+    samples: &mut BackendSamples,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let result = if parallel {
+        execute_parallel_fixed(particles, config.frames, backend, lut, effective)?
+    } else {
+        execute_scalar(particles, config.frames, backend, lut)
+    };
+    let label = if parallel { "parallel" } else { "scalar" };
+    if parallel {
+        record_measurement(
+            &mut samples.parallel_timings,
+            &mut samples.parallel_checksum,
+            started,
+            result,
+            &format!("{} {label}", backend.name()),
+        )
+    } else {
+        record_measurement(
+            &mut samples.scalar_timings,
+            &mut samples.scalar_checksum,
+            started,
+            result,
+            &format!("{} {label}", backend.name()),
+        )
     }
+}
 
-    let mut scalar_timings = Vec::with_capacity(config.repeats);
-    let mut parallel_timings = Vec::with_capacity(config.repeats);
-    let mut scalar_checksum = None;
-    let mut parallel_checksum = None;
-
-    for repeat in 0..config.repeats {
-        if repeat % 2 == 0 {
-            let started = Instant::now();
-            let result = execute_scalar(particles, config.frames, backend, lut);
-            record_measurement(
-                &mut scalar_timings,
-                &mut scalar_checksum,
-                started,
-                result,
-                "scalar",
-            )?;
-
-            let started = Instant::now();
-            let result = execute_parallel_fixed(particles, config.frames, backend, lut, effective)?;
-            record_measurement(
-                &mut parallel_timings,
-                &mut parallel_checksum,
-                started,
-                result,
-                "parallel",
-            )?;
-        } else {
-            let started = Instant::now();
-            let result = execute_parallel_fixed(particles, config.frames, backend, lut, effective)?;
-            record_measurement(
-                &mut parallel_timings,
-                &mut parallel_checksum,
-                started,
-                result,
-                "parallel",
-            )?;
-
-            let started = Instant::now();
-            let result = execute_scalar(particles, config.frames, backend, lut);
-            record_measurement(
-                &mut scalar_timings,
-                &mut scalar_checksum,
-                started,
-                result,
-                "scalar",
-            )?;
-        }
-    }
-
-    let scalar = finish_timing(scalar_timings, scalar_checksum);
-    let parallel = finish_timing(parallel_timings, parallel_checksum);
+fn finish_backend_evidence(
+    samples: BackendSamples,
+    backend: Backend,
+    available: usize,
+    effective: usize,
+) -> Result<BackendEvidence, String> {
+    let scalar = finish_timing(samples.scalar_timings, samples.scalar_checksum);
+    let parallel = finish_timing(samples.parallel_timings, samples.parallel_checksum);
     let checksum_match = scalar.checksum == parallel.checksum;
     if !checksum_match {
         return Err(format!(
@@ -510,18 +498,123 @@ fn measure_backend(
         ));
     }
     let speedup = scalar.median_ns as f64 / parallel.median_ns.max(1) as f64;
-    let multicore_claim = effective > 1 && available > 1 && checksum_match && speedup > 1.0;
-    Ok((
-        BackendEvidence {
-            scalar,
-            parallel,
-            speedup,
-            checksum_match,
-            multicore_claim,
-        },
-        available,
-        effective,
-    ))
+    Ok(BackendEvidence {
+        scalar,
+        parallel,
+        speedup,
+        checksum_match,
+        multicore_claim: effective > 1 && available > 1 && speedup > 1.0,
+    })
+}
+
+fn measure_backends(
+    particles: &[Particle],
+    config: &Config,
+    lut: &Lut,
+) -> Result<(BackendEvidence, BackendEvidence, usize, usize), String> {
+    let (available, effective) = effective_workers(particles.len(), config.requested_workers)?;
+
+    // Warm all four complete execution paths before timing. Timed trials are
+    // interleaved by backend and alternate their order each repeat so neither
+    // Float nor LUT systematically benefits from ramp-up, cache state, or
+    // thermal/frequency drift.
+    for backend in [Backend::Float, Backend::Lut] {
+        let warm_scalar = black_box(execute_scalar(particles, config.frames, backend, lut));
+        let warm_parallel = black_box(execute_parallel_fixed(
+            particles,
+            config.frames,
+            backend,
+            lut,
+            effective,
+        )?);
+        if warm_scalar != warm_parallel {
+            return Err(format!("{} warm-up checksum mismatch", backend.name()));
+        }
+    }
+
+    let mut float_samples = BackendSamples::new(config.repeats);
+    let mut lut_samples = BackendSamples::new(config.repeats);
+    for repeat in 0..config.repeats {
+        if repeat % 2 == 0 {
+            measure_trial(
+                particles,
+                config,
+                Backend::Float,
+                lut,
+                effective,
+                false,
+                &mut float_samples,
+            )?;
+            measure_trial(
+                particles,
+                config,
+                Backend::Lut,
+                lut,
+                effective,
+                false,
+                &mut lut_samples,
+            )?;
+            measure_trial(
+                particles,
+                config,
+                Backend::Float,
+                lut,
+                effective,
+                true,
+                &mut float_samples,
+            )?;
+            measure_trial(
+                particles,
+                config,
+                Backend::Lut,
+                lut,
+                effective,
+                true,
+                &mut lut_samples,
+            )?;
+        } else {
+            measure_trial(
+                particles,
+                config,
+                Backend::Lut,
+                lut,
+                effective,
+                true,
+                &mut lut_samples,
+            )?;
+            measure_trial(
+                particles,
+                config,
+                Backend::Float,
+                lut,
+                effective,
+                true,
+                &mut float_samples,
+            )?;
+            measure_trial(
+                particles,
+                config,
+                Backend::Lut,
+                lut,
+                effective,
+                false,
+                &mut lut_samples,
+            )?;
+            measure_trial(
+                particles,
+                config,
+                Backend::Float,
+                lut,
+                effective,
+                false,
+                &mut float_samples,
+            )?;
+        }
+    }
+
+    let float = finish_backend_evidence(float_samples, Backend::Float, available, effective)?;
+    let lut_evidence = finish_backend_evidence(lut_samples, Backend::Lut, available, effective)?;
+    Ok((float, lut_evidence, available, effective))
 }
 
 fn lut_error_at(lut: &Lut, angle: u32) -> i64 {
@@ -626,13 +719,10 @@ fn run_bench(config: Config) -> Result<(), String> {
     println!("lut_entries={LUT_SIZE}");
     println!("lut_error_sample_count={LUT_ERROR_SAMPLE_COUNT}");
     println!("lut_sampled_max_abs_q30_error={lut_sampled_error_q30}");
+    println!("backend_timing_schedule=interleaved-alternating-v1");
 
-    let (float, available, effective) = measure_backend(&particles, &config, Backend::Float, &lut)?;
-    let (lut_evidence, available_lut, effective_lut) =
-        measure_backend(&particles, &config, Backend::Lut, &lut)?;
-    if available != available_lut || effective != effective_lut {
-        return Err("worker capacity changed between backend measurements".into());
-    }
+    let (float, lut_evidence, available, effective) =
+        measure_backends(&particles, &config, &lut)?;
 
     println!("available_parallelism={available}");
     println!("effective_workers={effective}");
@@ -644,7 +734,10 @@ fn run_bench(config: Config) -> Result<(), String> {
     print_timing("bam_lut_scalar", lut_evidence.scalar, work);
     print_timing("bam_lut_parallel", lut_evidence.parallel, work);
     println!("bam_lut_parallel_speedup={:.9}", lut_evidence.speedup);
-    println!("bam_lut_effective_multicore_claim={}", lut_evidence.multicore_claim);
+    println!(
+        "bam_lut_effective_multicore_claim={}",
+        lut_evidence.multicore_claim
+    );
     println!(
         "lut_vs_float_scalar_median_ratio={:.9}",
         float.scalar.median_ns as f64 / lut_evidence.scalar.median_ns.max(1) as f64
@@ -823,6 +916,24 @@ mod tests {
         let lut = Lut::build();
         assert_eq!(lut_error_at(&lut, LUT_ERROR_KNOWN_PROBE), 255);
         assert!(lut_sampled_error(&lut) >= 255);
+    }
+
+    #[test]
+    fn interleaved_backend_measurement_preserves_parity() {
+        let particles = build_particles(1_u64 << 40, 2048, 303).unwrap();
+        let lut = Lut::build();
+        let config = Config {
+            logical: 1_u64 << 40,
+            resident: 2048,
+            frames: 2,
+            requested_workers: 2,
+            repeats: 2,
+            seed: 303,
+            receipt: None,
+        };
+        let (float, lut_evidence, _, _) = measure_backends(&particles, &config, &lut).unwrap();
+        assert!(float.checksum_match);
+        assert!(lut_evidence.checksum_match);
     }
 
     #[test]
