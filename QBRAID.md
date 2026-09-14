@@ -2,43 +2,54 @@
 
 ## Purpose
 
-This file is the qBraid execution index for GALAXY.
+This file is the qBraid execution index for GALAXY. It is optional guidance for either a human operator or an AI agent; the completed EPYC CPU experiment described below was run manually.
 
 Choose the handoff that matches the hardware and scientific question before spending credits.
 
 ### Native CPU scaling / topology discrimination
 
-For the post-PR #8 native CPU runtime experiment, read:
+Protocol and completed experiment record:
 
 ```text
 docs/QBRAID-CPU-SCALING.md
 ```
 
-Preferred qBraid target for that experiment:
+Curated raw evidence from the completed qBraid run:
+
+```text
+evidence/qbraid/EPYC7763-20260914/
+```
+
+The completed run used the Nanoacademic - Medium profile as a CPU host. The guest exposed:
+
+```text
+AMD EPYC 7763 64-Core Processor
+96 logical CPUs
+48 exposed cores / 2 threads per core
+2 NUMA nodes
+192 MiB aggregate L3 reported by lscpu
+377 GiB RAM
+```
+
+The 8,388,608-resident unpinned sweep measured 32 / 48 / 64 / 96 workers and preserved deterministic checksums throughout. The best measured point was 48 workers for both Float and BAM-LUT. Follow-up affinity tests found that 48 logical CPUs confined to either NUMA node stayed close to the unpinned result, while a one-thread-per-exposed-core mask spanning both NUMA nodes was about 50% slower for both backends.
+
+This is consistent with a strong topology / memory-locality effect, but does not prove a specific first-touch, remote-memory, cache or bandwidth mechanism without hardware memory-traffic counters.
+
+For future replication, preferred qBraid target:
 
 ```text
 Nanoacademic - Medium
 96 vCPU / 384 GB RAM
 ```
 
-Use it only if the image exposes a normal shell plus Git, Rust and Cargo. Its value to GALAXY is the extra worker range, not the preinstalled Nanoacademic software.
-
-The CPU handoff tests the worker ladder through:
-
-```text
-32 -> 48 -> 64 -> 96
-```
-
-against the local Ryzen 9 5950X result, where Float continued scaling through 32 workers while BAM-LUT plateaued much earlier on the largest resident sets.
-
 Cheaper fallbacks:
 
 ```text
-64 vCPU / 256 GB RAM  -> tests 32 -> 64
+64 vCPU / 256 GB RAM  -> tests through 64 workers
 32 vCPU / 128 GB RAM  -> replication only; cannot answer >32 scaling
 ```
 
-Do not use a GPU profile for the CPU-scaling study, and do not claim that cloud vCPUs map directly to physical cores or SMT siblings without topology evidence.
+Do not use a GPU profile for the CPU-scaling study.
 
 ### GPU / beyond-2^32 tiled runtime
 
