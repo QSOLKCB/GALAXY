@@ -2,9 +2,14 @@
 
 ## Purpose
 
-This experiment follows the merged GALAXY native CPU runtime in PR #8 and the local Ryzen 9 5950X validation. It is a cloud replication and scaling-shape experiment, not a claim that qBraid vCPUs are equivalent to physical Ryzen cores.
+This document serves two roles:
 
-The main question is whether the large-resident BAM32 LUT plateau observed locally persists when GALAXY is given substantially more than 32 cloud vCPUs, while the Float backend continues to scale.
+1. a reproducible protocol for future qBraid native-CPU scaling runs; and
+2. the scientific record of the completed qBraid EPYC 7763 experiment performed manually after GALAXY PR #8 merged.
+
+The experiment follows the merged GALAXY native CPU runtime and the local Ryzen 9 5950X validation. It is a cloud replication and scaling-shape experiment, not a claim that cloud vCPUs are equivalent to physical Ryzen cores.
+
+The central question is whether the large-resident BAM32 LUT plateau observed locally persists, moves, or disappears on a wider cloud CPU topology while the Float backend continues to scale.
 
 ### Preferred qBraid targets
 
@@ -12,23 +17,21 @@ Use CPU instances only for this experiment.
 
 1. **Preferred topology-discrimination target:** Nanoacademic - Medium — **96 vCPU / 384 GB RAM**.
    - Listed price observed by the user: **9.60 credits/minute**.
-   - This profile exists primarily for Nanoacademic nanodcal / RESCU workloads, but it is useful here only if it exposes a normal shell plus Git, Rust and Cargo.
-   - Its scientific value is the ability to test the additional worker checkpoints `48`, `64`, and `96` beyond the local 32-thread Ryzen ceiling.
+   - The image exists primarily for Nanoacademic nanodcal / RESCU workloads, but GALAXY uses it only as a CPU host.
+   - Its scientific value is the ability to test `32 -> 48 -> 64 -> 96` workers.
 2. **Cheaper fallback:** generic CPU — **64 vCPU / 256 GB RAM**.
    - Listed price observed by the user: **6.40 credits/minute**.
-   - This can test 32 -> 64 scaling, but not 64 -> 96.
+   - It can test through 64 workers.
 3. **Replication-only fallback:** generic CPU — **32 vCPU / 128 GB RAM**.
-   - This can reproduce the local worker ceiling but cannot discriminate what happens above 32 workers.
+   - It can reproduce the local worker ceiling but cannot discriminate behaviour above 32 workers.
 
 Do **not** use a GPU profile for this CPU-scaling experiment.
 
-If the Nanoacademic image does not expose the required normal Linux/Rust environment, stop after preflight and use the generic 64-vCPU CPU profile instead. Do not mutate the lab image or use privilege escalation merely to force GALAXY onto it.
-
 ---
 
-## Local reference evidence
+## Local Ryzen 9 5950X reference
 
-The reference local validation tested merge commit:
+Reference commit:
 
 ```text
 b9e61d20d0fe0fa99f302a2ed13aa1215a60c5f3
@@ -42,7 +45,7 @@ AMD Ryzen 9 5950X 16-Core Processor
 Ubuntu 26.04.1 LTS / Linux 7.0.0-31-generic x86_64
 ```
 
-The local validation reached a resident population of **16,777,216** with deterministic checksum parity. The evidence archive passed `unzip -t`, and the source repository remained clean.
+The local validation reached a resident population of **16,777,216** with deterministic checksum parity.
 
 Primary 8,388,608-resident / 32-worker / 7-repeat result:
 
@@ -59,69 +62,23 @@ Float/BAM-LUT scalar ratio:   3.216692714 x
 Float/BAM-LUT parallel ratio: 1.151507652 x
 ```
 
-The local worker matrix showed a repeatable qualitative split:
+The local matrix showed a repeatable qualitative split:
 
 - Float generally continued improving through 32 workers.
 - BAM-LUT scaled strongly at low worker counts but plateaued much earlier for the largest resident sets.
 - 32 workers versus 16 workers was workload-dependent for BAM-LUT.
 - BAM-LUT remained faster than Float at the largest tested working set.
-- The local run did not collect hardware performance counters, so the plateau is only **consistent with** cache, memory-bandwidth, NUMA or related topology pressure; its cause is not established.
-
-The qBraid experiment is intended to test whether that scaling shape survives on a different CPU topology and, on the preferred profile, through **48 / 64 / 96 workers**.
+- No hardware-counter evidence was collected, so the plateau was only **consistent with** cache, memory-bandwidth, NUMA or related topology pressure; its cause was not established.
 
 ---
 
-## 1. Cost discipline
+# Reproducible qBraid protocol
 
-qBraid credits are finite. Scientific evidence per credit is the objective.
+## 1. Environment and topology preflight — run before checkout
 
-For the 96-vCPU Nanoacademic profile at the listed 9.60 credits/minute, avoid spending time on low-value repetition. Use the staged protocol below and stop once the topology question is answered.
+The environment preflight comes first. Do not attempt the repository checkout until the shell, Git and usable Rust environment have been established or a user-local Rust bootstrap has been explicitly accepted.
 
-Do not launch duplicate instances or concurrent GALAXY benchmark processes.
-
-Use this order:
-
-1. environment and topology preflight;
-2. repository and correctness gate;
-3. focused large-resident worker sweep;
-4. full worker matrix only if scientifically useful;
-5. one high-confidence confirmation run;
-6. optional read-only counter probe if already permitted;
-7. archive evidence and terminate the instance.
-
-Do not leave the paid instance idle while writing prose or reorganizing files.
-
----
-
-## 2. Fresh checkout and provenance
-
-Clone fresh:
-
-```sh
-git clone https://github.com/QSOLKCB/GALAXY.git
-cd GALAXY
-git checkout main
-git fetch --prune origin
-git status --short --branch
-git rev-parse HEAD
-git log -1 --decorate --oneline
-```
-
-Historical PR #8 merge commit:
-
-```text
-b9e61d20d0fe0fa99f302a2ed13aa1215a60c5f3
-```
-
-If `main` has advanced, do not reset backwards. Test current `main`, record the actual SHA, and note whether later commits changed `cpu-runtime/`, `retro/`, `rust/`, `scripts/test-cpu-runtime.sh`, or this qBraid protocol.
-
-Never modify source merely to make a benchmark green.
-
----
-
-## 3. Environment and topology preflight
-
-Run this before spending meaningful credits:
+Run:
 
 ```sh
 pwd
@@ -167,17 +124,43 @@ Record:
 - process CPU affinity/cpuset;
 - CPU quota if any;
 - current system load;
-- whether the Nanoacademic image exposes Git, Rust and Cargo normally.
+- whether Git, Rust and Cargo are available normally.
 
-Do not assume `96 vCPU` means 96 physical cores, 48 cores with SMT, or any other physical topology. Treat it as an observed cloud execution contract unless the guest exposes stronger evidence.
+Do not infer physical topology from the marketed vCPU number when the guest does not expose it.
 
-Do not change affinity, NUMA policy, power governors, kernel settings, or security policy.
+If Rust is absent but a user-local installation is permitted, use the repository-pinned toolchain rather than replacing system packages. GALAXY currently pins Rust `1.85.1` in `rust-toolchain.toml`; rustup may automatically install that pinned toolchain after checkout even if the user's default toolchain is newer.
 
-If the Nanoacademic profile lacks a usable normal Rust environment, preserve the preflight result, stop that instance, and use the 64-vCPU generic CPU profile.
+Do not use sudo or change power, kernel, cgroup or security settings merely to make the benchmark run.
 
 ---
 
-## 4. Correctness gate
+## 2. Fresh checkout and provenance
+
+After preflight succeeds:
+
+```sh
+git clone https://github.com/QSOLKCB/GALAXY.git
+cd GALAXY
+git checkout main
+git fetch --prune origin
+git status --short --branch
+git rev-parse HEAD
+git log -1 --decorate --oneline
+```
+
+Historical PR #8 merge commit:
+
+```text
+b9e61d20d0fe0fa99f302a2ed13aa1215a60c5f3
+```
+
+If `main` has advanced, do not reset backwards. Test current `main`, record the actual SHA, and note whether later commits changed the runtime or benchmark protocol.
+
+Never modify source merely to make a benchmark green.
+
+---
+
+## 3. Correctness gate
 
 Run:
 
@@ -192,33 +175,29 @@ Require:
 cpu-runtime/target/release/galaxy-cpu
 ```
 
-Then run:
+Then run verification with no more workers than the selected profile exposes:
 
 ```sh
 cpu-runtime/target/release/galaxy-cpu --help
 cpu-runtime/target/release/galaxy-cpu verify --workers 96
 ```
 
-If the selected instance exposes fewer effective CPUs, the runtime must report that honestly. Do not fake 96 effective workers.
-
-Require deterministic u64 boundary evidence and scalar/parallel checksum parity.
-
-Expected sampled LUT diagnostic on the current implementation:
+For the `verify` command, the expected diagnostic keys are exactly:
 
 ```text
-lut_error_sample_count=8193
-lut_sampled_max_abs_q30_error=255
+verify_lut_error_sample_count=8193
+verify_lut_sampled_max_abs_q30_error=255
 ```
 
-This is sampled evidence, not a mathematical global bound.
+The benchmark receipts use the corresponding unprefixed JSON field names. Do not confuse the verifier output with the benchmark receipt schema.
+
+Require deterministic u64 boundary evidence and scalar/parallel checksum parity. The LUT diagnostic is sampled evidence, not a mathematical global bound.
 
 If correctness fails, stop performance interpretation.
 
 ---
 
-## 5. Focused topology-discrimination sweep
-
-On the **96-vCPU preferred profile**, start with the scientifically important large resident sets rather than immediately spending credits on the full matrix.
+## 4. Focused topology-discrimination sweep
 
 Use:
 
@@ -229,36 +208,36 @@ repeats = 5
 seed    = 303
 ```
 
-Resident populations:
+Start with scientifically useful resident populations, normally:
 
 ```text
 8,388,608
 16,777,216
 ```
 
-Worker counts:
+Every focused sweep includes a **1-worker baseline** so later speedup and efficiency calculations remain defined even if the optional full matrix is skipped.
+
+Profile-specific focused ladders:
 
 ```text
-16
-32
-48
-64
-96
+96-vCPU preferred:  1, 16, 32, 48, 64, 96
+64-vCPU fallback:   1, 16, 32, 48, 64
+32-vCPU fallback:   1, 8, 16, 32
 ```
 
-These checkpoints directly ask whether the local large-set BAM-LUT plateau moves, disappears, or persists beyond 32 workers.
+If a profile exposes fewer effective CPUs than its marketed name, truncate the ladder to the actual capacity and record that fact.
 
 Example:
 
 ```sh
 cpu-runtime/target/release/galaxy-cpu bench \
   --logical 18446744073709551615 \
-  --resident 16777216 \
+  --resident 8388608 \
   --frames 8 \
-  --workers 96 \
+  --workers 48 \
   --repeats 5 \
   --seed 303 \
-  --receipt runs/qbraid-cpu-r16777216-w96.json
+  --receipt runs/qbraid-cpu-r8388608-w48.json
 ```
 
 Run sequentially. Never benchmark multiple GALAXY processes concurrently.
@@ -269,13 +248,13 @@ Every benchmark must report:
 backend_timing_schedule=interleaved-alternating-v1
 ```
 
-Do not intentionally flush caches, add sleeps to manipulate results, or change affinity between worker counts.
+Do not intentionally flush caches, add sleeps to manipulate results, or change affinity during the canonical unpinned scaling sweep.
 
 ---
 
-## 6. Full matrix if the focused sweep is useful
+## 5. Optional full matrix
 
-If the focused sweep reveals a meaningful change around 32-96 workers, fill in the broader matrix.
+If the focused sweep exposes a scientifically useful transition, fill in the broader matrix.
 
 Resident populations:
 
@@ -285,89 +264,47 @@ Resident populations:
 16,777,216
 ```
 
-Worker counts on 96-vCPU:
+Worker ladders:
 
 ```text
-1
-2
-4
-8
-16
-32
-48
-64
-96
+96-vCPU: 1, 2, 4, 8, 16, 32, 48, 64, 96
+64-vCPU: 1, 2, 4, 8, 16, 32, 48, 64
+32-vCPU: 1, 2, 4, 8, 16, 32
 ```
-
-On the 64-vCPU fallback, stop at 64 workers. On the 32-vCPU fallback, stop at 32 workers.
 
 Use a unique receipt for every run.
 
 ---
 
-## 7. High-confidence confirmation
+## 6. High-confidence confirmation
 
-After the matrix, run one confirmation at the largest resident population and largest **useful** worker count established by the sweep.
+After the sweep, run a 7-repeat confirmation at the best-performing worker count for the important resident size.
 
-For a successful 96-vCPU experiment, the default confirmation candidate is:
-
-```text
-logical   = 18446744073709551615
-resident  = 16777216
-frames    = 8
-workers   = 96
-repeats   = 7
-seed      = 303
-```
-
-If 96 workers are slower than 64 or 32, that is a valid result. Also run a 7-repeat confirmation at the best-performing worker count if different, provided the credit budget allows it.
-
-Do not silently relabel a lower effective worker count as 96.
+If the highest worker count is slower than an earlier point, that is a valid result. Do not silently promote the highest worker count to the 'best' result.
 
 ---
 
-## 8. Optional counter and NUMA evidence
+## 7. Optional counter and NUMA evidence
 
-The local Ryzen result did not contain hardware-counter evidence. If qBraid already exposes `perf` to the unprivileged session, collect a small read-only probe without changing host configuration.
+If qBraid exposes `perf` to the unprivileged session, small read-only probes may provide context. Do not use sudo or change perf security policy.
 
-Example, if permitted:
+If multiple NUMA nodes and SMT siblings are visible, preserve:
 
 ```sh
-perf stat -e cycles,instructions,cache-references,cache-misses \
-  cpu-runtime/target/release/galaxy-cpu bench \
-  --logical 18446744073709551615 \
-  --resident 16777216 \
-  --frames 8 \
-  --workers 32 \
-  --repeats 1 \
-  --seed 303 \
-  --receipt runs/qbraid-perf-w32.json
+lscpu -e=CPU,NODE,SOCKET,CORE,ONLINE
+for f in /sys/devices/system/cpu/cpu*/topology/thread_siblings_list; do
+  printf '%s: ' "$f"
+  cat "$f"
+done
 ```
 
-If the 32-worker probe succeeds, optionally repeat at 64 and 96 workers.
-
-Treat whole-process counters as supporting context only because the process contains Float and BAM-LUT paths plus warm-ups. Do not attribute all process-level misses solely to BAM-LUT.
-
-If `perf` is unavailable or permission is denied, record that and continue. Do not use sudo or change perf security settings.
-
-If multiple NUMA nodes are visible, record the topology but do not manually pin or rebalance the process for the canonical comparison.
+Canonical performance comparisons should remain unpinned. Affinity experiments may be added afterward as explicitly separate topology probes.
 
 ---
 
-## 9. Analysis questions
+## 8. Analysis
 
-Answer from receipts and topology evidence:
-
-1. Does Float continue scaling from 32 -> 48 -> 64 -> 96 workers?
-2. Does BAM-LUT improve from 32 -> 48 -> 64 -> 96 at 8M and 16M resident particles?
-3. At what worker count does BAM-LUT achieve its best median for each resident population?
-4. Does the BAM-LUT plateau begin earlier as the resident set grows?
-5. Does the LUT-vs-Float advantage shrink as worker count rises?
-6. Does the 96-vCPU topology reproduce the qualitative local 5950X pattern?
-7. Does the 96-vCPU profile reveal another scaling regime beyond 64 workers?
-8. Is any transition correlated with reported NUMA boundaries, cache topology, CPU quota, or contention?
-
-For each resident population calculate from recorded medians:
+For each resident population with a one-worker baseline calculate:
 
 ```text
 speedup(N) = one-worker parallel median / N-worker parallel median
@@ -376,100 +313,197 @@ efficiency(N) = speedup(N) / N
 
 Do this separately for Float and BAM-LUT.
 
-Do not describe 32 -> 64 or 64 -> 96 behaviour as SMT evidence unless guest topology independently establishes SMT sibling relationships.
+If a one-worker baseline was not collected for an historical run, do **not** manufacture one from scalar timings. Report only the runtime's own measured scalar/parallel speedup and direct worker-to-worker ratios that the receipts support.
+
+When guest topology explicitly establishes SMT sibling relationships, worker-count transitions may be discussed relative to that exposed topology. Do not claim actual thread occupancy without affinity or scheduler evidence.
 
 ---
 
-## 10. Cross-host comparison with the Ryzen 9 5950X
+# Completed qBraid EPYC 7763 evidence
 
-Compare **scaling shape** first, not absolute speed.
+## 9. Source and host identity
 
-Important local reference points:
+The completed qBraid experiment was performed manually; no qBraid AI agent was required.
+
+Tested GALAXY commit:
 
 ```text
-8,388,608 resident:
-  Float:   16 workers 131,569,472 ns; 32 workers 104,221,405 ns
-  BAM-LUT: 16 workers  85,462,130 ns; 32 workers  82,951,850 ns
-
-16,777,216 resident:
-  Float:   16 workers 250,603,920 ns; 32 workers 200,677,048 ns
-  BAM-LUT:  8 workers 177,962,263 ns
-            16 workers 181,266,944 ns
-            32 workers 178,414,303 ns
+b9e61d20d0fe0fa99f302a2ed13aa1215a60c5f3
 ```
 
-Interpretation boundary:
-
-- Float retained substantial local scaling from 16 to 32 workers.
-- BAM-LUT gained little or no additional throughput beyond roughly 8-16 workers at the largest local resident sets.
-- This is consistent with cache, memory-bandwidth, NUMA or topology limits, but the local run did not isolate causation.
-
-The 96-vCPU qBraid experiment should determine whether a different cloud CPU/cache/NUMA topology shifts that plateau and whether any useful scaling remains from 64 to 96 workers.
-
----
-
-## 11. Evidence package
-
-Create a unique external report directory such as:
+Observed host:
 
 ```text
-~/GALAXY-qbraid-cpu-YYYYMMDDTHHMMSSZ-PID/
+Linux 6.8.0-1059-azure
+AMD EPYC 7763 64-Core Processor
+Microsoft full virtualization
+96 online logical CPUs
+1 socket
+48 exposed cores
+2 threads per exposed core
+2 NUMA nodes
+NUMA node 0: CPUs 0-47
+NUMA node 1: CPUs 48-95
+L2: 24 MiB total across 48 instances
+L3: 192 MiB total across 6 instances
+377 GiB RAM
+no swap
 ```
 
-Preserve:
+The guest topology explicitly reported adjacent SMT siblings:
 
-- exact tested Git SHA;
-- qBraid profile identity;
-- host/topology/cgroup information;
-- Cargo test/build logs;
-- verifier output;
-- every JSON receipt;
-- complete benchmark logs;
-- optional perf output;
-- machine-readable summary CSV;
-- worker/resident scaling table;
-- checksum-consistency table;
-- final Markdown report;
-- `SHA256SUMS.txt`.
+```text
+0-1, 2-3, 4-5, ... , 94-95
+```
 
-Create a ZIP and validate it with `unzip -t`.
+Thus this particular guest does expose 48 cores / 96 logical CPUs with two threads per core. That still does not prove which CPUs an unpinned worker occupied at any instant.
 
-Do not commit benchmark artifacts to GALAXY.
+The correctness gate passed with:
+
+```text
+available_parallelism=96
+effective_workers=96
+verify_u64_boundary=88a9cb0a,6551a647,1ec272fb
+verify_lut_error_sample_count=8193
+verify_lut_sampled_max_abs_q30_error=255
+GALAXY native CPU runtime verification passed
+```
 
 ---
 
-## 12. Claim boundary
+## 10. Unpinned 8,388,608-resident scaling
+
+Common configuration:
+
+```text
+logical population = 18446744073709551615
+resident particles = 8388608
+frames             = 8
+repeats            = 5
+seed               = 303
+schedule           = interleaved-alternating-v1
+```
+
+| Workers | Float parallel median | Float measured speedup | BAM-LUT parallel median | BAM-LUT measured speedup | Float/LUT parallel ratio |
+|---:|---:|---:|---:|---:|---:|
+| 32 | 121,016,057 ns | 20.297370257x | 45,064,074 ns | 16.647936536x | 2.6854x |
+| **48** | **77,071,937 ns** | **31.710744042x** | **31,460,778 ns** | **24.102310343x** | **2.4498x** |
+| 64 | 92,227,565 ns | 26.651559173x | 38,580,695 ns | 19.533954559x | 2.3905x |
+| 96 | 81,488,044 ns | 29.923119311x | 35,517,853 ns | 21.221956350x | 2.2943x |
+
+All four worker counts preserved identical deterministic checksums for the same workload:
+
+```text
+Float   = adf6d6e30d3ad26d
+BAM-LUT = 8d6f07bd77e2fc16
+```
+
+Observed shape:
+
+- 32 -> 48 improved Float parallel time by about 36.3% and BAM-LUT by about 30.2%.
+- 48 -> 64 regressed by about 19.7% for Float and 22.6% for BAM-LUT.
+- 48 -> 96 also remained slower by about 5.7% for Float and 12.9% for BAM-LUT.
+- 48 workers was the best measured point for both backends in this 8M unpinned sweep.
+- The LUT advantage over Float narrowed as worker count increased.
+
+These are environment-specific measurements, not universal EPYC scaling claims.
+
+---
+
+## 11. Repeat-matched 48-worker confirmation and affinity probes
+
+A 7-repeat unpinned confirmation produced:
+
+```text
+Float parallel median   = 77,223,700 ns
+Float measured speedup  = 31.825052659x
+BAM-LUT parallel median = 31,375,612 ns
+BAM-LUT measured speedup= 23.712758081x
+```
+
+This closely reproduced the 5-repeat 48-worker result.
+
+Three 7-repeat affinity experiments then isolated topology effects:
+
+| 48-worker configuration | Available CPUs seen by runtime | Float parallel | BAM-LUT parallel | Float vs unpinned | LUT vs unpinned |
+|---|---:|---:|---:|---:|---:|
+| Unpinned | 96 | **77,223,700 ns** | **31,375,612 ns** | baseline | baseline |
+| Node 0 only, CPUs `0-47` | 48 | 78,122,207 ns | 33,014,629 ns | +1.2% | +5.2% |
+| Node 1 only, CPUs `48-95` | 48 | 77,098,962 ns | 34,328,507 ns | -0.2% | +9.4% |
+| One SMT thread per exposed core across both nodes, `0,2,...,94` | 48 | 115,543,237 ns | 47,844,460 ns | **+49.6%** | **+52.5%** |
+
+All affinity runs preserved the same deterministic backend checksums.
+
+Important interpretation:
+
+- Restricting the whole process to one NUMA node retained near-baseline performance even though each node exposed only 24 cores / 48 logical CPUs.
+- Forcing one logical CPU from each exposed core across both NUMA nodes was roughly 50% slower for both backends.
+- The result strongly associates the performance loss with the cross-NUMA/topology configuration rather than with correctness or the deterministic work itself.
+- It is **consistent with** NUMA memory-locality / first-touch / remote-memory effects, but no hardware memory-traffic counters were collected, so that mechanism is not proven.
+- The unpinned 48-worker optimum must not be described simply as '48 physical cores occupied'; unpinned scheduler placement was not observed directly.
+
+This finding is relevant to future persistent-worker-pool work: topology and memory placement should be evaluated before assuming that more distinct physical cores or more threads monotonically improve the CPU runtime.
+
+---
+
+## 12. Evidence archive
+
+Curated raw evidence for this completed experiment is stored under:
+
+```text
+evidence/qbraid/EPYC7763-20260914/
+```
+
+The original compressed evidence bundle has SHA-256:
+
+```text
+5c0474b9537a0ee34493a58c22b368f4846ad12f41633430d4444a678561e87a
+```
+
+The bundle contains:
+
+- host topology capture;
+- SMT sibling mapping;
+- 32/48/64/96 unpinned receipts;
+- 7-repeat unpinned 48-worker confirmation;
+- node-0 and node-1 48-worker affinity receipts;
+- one-thread-per-core cross-NUMA 48-worker affinity receipt.
+
+---
+
+## 13. Claim boundary
 
 Do not claim:
 
 - 96 vCPUs are 96 physical cores;
-- 32/48/64/96 scaling proves SMT without topology evidence;
-- BAM-LUT is proven memory-bandwidth bound without appropriate counter evidence;
+- unpinned 48 workers means all 48 exposed cores were occupied;
+- BAM-LUT is proven memory-bandwidth bound;
+- the affinity result proves a specific first-touch or remote-memory mechanism without counters;
 - `u64::MAX` particles were simultaneously allocated;
 - this is an N-body simulation;
-- the CPU runtime beats the GPU runtime end to end;
-- qBraid performance generalizes to all Azure or cloud CPUs;
+- CPU beats GPU end to end;
+- qBraid performance generalizes to all Azure or EPYC hosts;
 - the sampled LUT diagnostic is a global error proof;
-- the Nanoacademic profile is scientifically special for GALAXY merely because Nanoacademic software is preinstalled.
+- the Nanoacademic software stack contributed to GALAXY performance merely because it was preinstalled.
 
-Allowed wording, when supported:
+Supported wording includes:
 
-> On this qBraid CPU instance, under this exact GALAXY commit and workload, backend X achieved Y measured scaling from A to B workers.
+> On this qBraid EPYC 7763 guest, GALAXY's 8,388,608-resident workload measured its best unpinned 32/48/64/96-worker result at 48 workers for both Float and BAM-LUT, while preserving deterministic checksums.
 
-> The observed BAM-LUT scaling plateau is consistent with cache, memory-bandwidth, NUMA or topology limits, but the available evidence does not isolate the cause.
+> NUMA-local 48-thread affinity retained near-unpinned performance, whereas a one-thread-per-exposed-core mask spanning both NUMA nodes was approximately 50% slower. This is consistent with a strong topology/memory-locality effect, but the available evidence does not isolate the underlying memory-traffic mechanism.
 
 ---
 
-## Definition of success
+## Definition of success for future replication
 
-A strong 96-vCPU result establishes:
+A strong future result establishes:
 
 1. exact tested source identity;
-2. observed qBraid profile, CPU/vCPU/NUMA/cache topology and quotas;
+2. observed CPU/vCPU/core/SMT/NUMA/cache topology and quotas;
 3. native CPU runtime correctness and deterministic checksum parity;
-4. successful measurements through 32, 48, 64 and 96 requested workers, with actual effective workers preserved;
-5. a direct answer to whether Float and BAM-LUT gain anything beyond 32 and beyond 64;
-6. comparison with the local Ryzen 9 5950X scaling shape without pretending the systems are equivalent;
-7. complete, hashed evidence archive.
+4. a focused profile-appropriate sweep including a one-worker baseline;
+5. actual effective workers preserved in every receipt;
+6. optional topology probes kept separate from the canonical unpinned sweep;
+7. complete hashed evidence.
 
-Be aggressive with the available CPU capacity, conservative with causal claims, and meticulous with receipts.
+Be aggressive with available CPU capacity, conservative with causal claims, and meticulous with receipts.
