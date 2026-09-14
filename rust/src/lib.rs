@@ -3,6 +3,7 @@
 //! The browser uploads this bounded float32 buffer to WebGL once per reseed.
 use std::cell::RefCell;
 pub mod physics;
+pub mod retro_math;
 mod uff_data;
 
 pub const MAX_LOGICAL: u64 = 1_u64 << 32;
