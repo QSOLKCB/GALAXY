@@ -11,6 +11,7 @@
   const BAM_HALF = 0x80000000;
   const U32_MASK = 0xffffffffn;
   const U16_MASK = 0xffffn;
+  const U64_MAX = 0xffffffffffffffffn;
   const CORDIC_K_Q30 = 652032874n;
   const CORDIC_ATAN_BAM = Object.freeze([
     536870912n, 316933406n, 167458907n, 85004756n, 42667331n, 21354465n,
@@ -64,9 +65,23 @@
     const matrix = matrixPower(steps);
     return matrix.map(row => Number(row.reduce((sum, value, i) => sum + value * words[i], 0n) & U16_MASK));
   }
+  function sectorIndex(sector) {
+    let index;
+    if (typeof sector === "bigint") {
+      index = sector;
+    } else if (typeof sector === "number") {
+      if (!Number.isSafeInteger(sector)) {
+        throw new RangeError("Numeric sector index must be a safe integer; use bigint for full-u64 sectors");
+      }
+      index = BigInt(sector);
+    } else {
+      throw new TypeError("Sector index must be a bigint or safe integer number");
+    }
+    if (index < 0n || index > U64_MAX) throw new RangeError("Sector index must fit u64");
+    return index;
+  }
   function sectorSeed(globalSeed, sector) {
-    const index = BigInt(sector);
-    if (index < 0n || index > 0xffffffffffffffffn) throw new RangeError("Sector index must fit u64");
+    const index = sectorIndex(sector);
     const gs = u32(globalSeed);
     const base = [
       ELITE_GALAXY1[0] ^ (gs & 0xffff),
@@ -76,8 +91,7 @@
     return eliteJump(base, index & U32_MASK);
   }
   function sectorSalt(globalSeed, sector) {
-    const index = BigInt(sector);
-    if (index < 0n || index > 0xffffffffffffffffn) throw new RangeError("Sector index must fit u64");
+    const index = sectorIndex(sector);
     const state = sectorSeed(globalSeed, index);
     const folded = ((((state[0] << 16) | state[1]) >>> 0) ^ rol32(state[2], 11)) >>> 0;
     const lo = Number(index & U32_MASK);
