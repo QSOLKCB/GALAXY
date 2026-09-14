@@ -1,4 +1,5 @@
 rust/target/
+retro/target/
 runtime/target/
 runs/
 .galaxy-cuda-python/
