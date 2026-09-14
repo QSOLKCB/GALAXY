@@ -1,188 +1,394 @@
 # GALAXY
 
-An offline spinning galaxy instrument built from the VORTEX 2.1.0 particle lab,
-now driven by rotation-curve models and demonstration data from
-[QSOL UFF](https://github.com/QSOLKCB/UFF). Change the mass model and watch the
-orbital speeds and rotation curve respond, with the original visual mode still
-available for comparison.
+[![Release](https://img.shields.io/badge/release-v0.4.0-2f81f7)](https://github.com/QSOLKCB/GALAXY/releases/tag/v0.4.0)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22756969.svg)](https://doi.org/10.5281/zenodo.22756969)
 
-Open **`index.html`** directly in a modern browser. No install, server, CDN or
-network connection is needed, including for the bundled Rust/WebAssembly engine.
+**GALAXY is an offline deterministic galaxy-dynamics instrument with browser, native CPU, and native GPU execution paths.**
 
-**GitHub Pages:** <https://qsolkcb.github.io/GALAXY/> — updates after changes merge
-and the Pages workflow deploys. In the repository's Pages settings, choose
-**GitHub Actions** as the source if it is not already set.
+It began as an adaptation of the VORTEX 2.1.0 particle lab and now combines:
 
-## Native GPU runtime v0.3
+- interactive rotation-curve visualization;
+- UFF, Newtonian, NFW, Burkert, MOND/RAR, and authored visual rotation laws;
+- deterministic Rust/WebAssembly sampling in the browser;
+- native Rust CPU execution with Float/libm and BAM32/Q2.30 LUT backends;
+- Vulkan/`wgpu` and NVIDIA CUDA compute paths;
+- memory-bounded exact-u64 logical addressing;
+- reproducible benchmark receipts, topology evidence, and archived scaling studies.
 
-[`runtime/`](runtime/) runs headless Rust compute jobs on local or cloud GPUs,
-including Vulkan-capable NVIDIA instances on Vast.ai. It evolves actual resident
-particle states and supports circular spin, perturbed leapfrog orbits, UFF
-rotation-curve sweeps and compact-object diagnostics. Jobs produce PNG/CSV output,
-an offline snapshot viewer and a run receipt identifying the adapter and inputs.
+The current formal baseline is **v0.4.0**, archived at Zenodo as:
+
+> Slade, T. (2026). *GALAXY v0.4.0: Deterministic Native CPU Runtime and Scaling Evidence* (Version v0.4.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22756969
+
+**GitHub Pages:** <https://qsolkcb.github.io/GALAXY/>
+
+---
+
+## Project status
+
+| Layer | Current state |
+| --- | --- |
+| Browser instrument | Offline HTML/CSS/JS + bundled Rust/Wasm; no server or CDN required |
+| Browser logical population | Up to `2^32 = 4,294,967,296` logical stars on the Rust/Wasm path |
+| Browser rendered sample | Up to 65,536 stars per frame on Rust/Wasm + WebGL |
+| Native CPU runtime | Exact positive-u64 logical population, bounded resident sample up to 16,777,216 particles |
+| CPU projection backends | `float-libm` and `bam-lut-q30` |
+| Native GPU runtime | Rust/`wgpu`/Vulkan plus NVIDIA CUDA/CuPy RawKernel |
+| Wide logical addressing | `split-u64-hash32-avalanche-v1` across CPU and wide-address GPU paths |
+| Formal release | Immutable `v0.4.0`, commit `6f17a734b9241359d36a9bf3d208b8527a456327` |
+| Archival record | Zenodo DOI `10.5281/zenodo.22756969` |
+| Next CPU phase | Persistent workers, topology-aware scheduling, NUMA-aware placement, stronger receipt-native affinity provenance |
+
+v0.4.0 is deliberately frozen as the **before-state** for that next CPU-runtime architecture phase.
+
+---
+
+## 1. Browser instrument
+
+Open **`index.html`** directly in a modern browser. No install, local server, CDN, or network connection is required, including for the bundled Rust/WebAssembly engine.
+
+The browser instrument lets you change morphology, mass model, viewing geometry, and time while watching the galaxy and its rotation curve respond together.
+
+### Rotation laws
+
+| Mode | Contribution and controls |
+| --- | --- |
+| UFF empirical v4 + baryons | UFF velocity scale, core radius, and bounded shape β |
+| Newtonian baryons | Signed gas contribution, disc and bulge mass-to-light ratios |
+| NFW halo + baryons | Halo mass M₂₀₀ and concentration |
+| Burkert halo + baryons | Central halo density and core radius |
+| MOND / RAR | UFF exponential acceleration relation and adjustable a₀ |
+| Original visual rotation | Authored visual rotation law and manual shear |
+
+An optional weak-field central mass applies to all physical models. Defaults use the UFF demonstration parameters; **no fitting is performed**.
+
+The bundled `data/uff/DEMO_GALAXY.csv` is demonstration input, not an identified observational catalogue. See [UFF dynamics](docs/UFF-DYNAMICS.md) for equations, units, provenance, and interpolation choices.
+
+### Browser capacity
+
+Logical population and rendered population are separate quantities. Increasing the logical count does **not** allocate one object per logical star.
+
+| Active engine | Maximum logical stars | Maximum rendered stars per frame |
+| --- | ---: | ---: |
+| JavaScript + Canvas or WebGL | `2^24 = 16,777,216` | 1,024 |
+| Rust/Wasm + Canvas fallback | `2^32 = 4,294,967,296` | 1,024 |
+| Rust/Wasm + WebGL | `2^32 = 4,294,967,296` | 65,536 |
+
+The accelerated browser path defaults to **16,384 rendered stars**. The largest rendered sample uses about **2.25 MiB** for the core star-property and orbital-rate buffers, excluding Wasm allocator, framebuffer, transient, browser, and GPU-copy overhead.
+
+See [engine notes](docs/ENGINE.md) for the browser execution contract.
+
+---
+
+## 2. Native CPU runtime
+
+[`cpu-runtime/`](cpu-runtime/) is a separate headless Rust execution path. It is not a browser fallback and it does not replace the GPU runtime.
+
+The CPU runtime separates:
+
+```text
+exact positive-u64 logical population
+              |
+              v
+bounded resident particle sample
+              |
+              v
+GALAXY physical angular rates
+              |
+       +------+------+
+       |             |
+  float/libm     BAM32 + Q2.30 LUT
+       |             |
+       +------+------+
+              |
+              v
+deterministic scalar / parallel checksum stream
+```
+
+The logical population may span the complete positive `u64` range:
+
+```text
+18,446,744,073,709,551,615
+```
+
+while the resident sample is bounded to **16,777,216** particles in v0.4.0. The full logical population is never allocated.
+
+Logical IDs use exact host-side proportional mapping and the named identity contract:
+
+```text
+split-u64-hash32-avalanche-v1
+```
+
+Both halves of the 64-bit logical ID participate in the mixer, including across the `2^32 - 1`, `2^32`, and `2^32 + 1` boundary.
+
+### CPU projection backends
+
+- **`float-libm`** — native `f64::sin_cos()` projection.
+- **`bam-lut-q30`** — BAM32 phase accumulation with a 16,384-entry interpolated Q2.30 lookup table generated from the integer CORDIC reference path.
+
+The current deterministic LUT diagnostic evaluates 8,193 angles and reports a sampled maximum absolute Q30 error of **255**. That is a sampled implementation diagnostic, not a proven global bound over all `2^32` BAM angles.
+
+### Parallel execution contract
+
+v0.4.0 intentionally uses Rust standard-library scoped threads rather than Rayon or a persistent worker framework.
+
+```text
+effective_workers = min(requested_workers,
+                        resident_particles,
+                        available_parallelism,
+                        256)
+```
+
+Resident slices are divided into stable contiguous chunks, results are combined deterministically in worker order, and scalar/parallel checksums must match exactly.
+
+Backend timing uses the named schedule:
+
+```text
+interleaved-alternating-v1
+```
+
+which alternates complete Float/LUT and scalar/parallel paths across repeats to reduce systematic ordering bias.
+
+### CPU quick start
+
+```sh
+cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
+
+cpu-runtime/target/release/galaxy-cpu verify --workers 32
+
+cpu-runtime/target/release/galaxy-cpu bench \
+  --logical 18446744073709551615 \
+  --resident 8388608 \
+  --frames 8 \
+  --workers 32 \
+  --repeats 5 \
+  --seed 303 \
+  --receipt runs/cpu-runtime-local/receipt.json
+```
+
+See [native CPU runtime](docs/CPU-RUNTIME.md), [CPU portability](docs/CPU-PORTABILITY.md), and [retro integer math](docs/RETRO-MATH.md).
+
+---
+
+## 3. Native GPU runtime
+
+[`runtime/`](runtime/) runs headless compute jobs on local or cloud GPUs. It evolves actual resident particle state and supports circular spin, perturbed leapfrog orbits, model comparisons, UFF rotation-curve sweeps, compact-object diagnostics, and memory-bounded wide-address workloads.
+
+Two NVIDIA-capable Linux paths are maintained:
+
+- **Vulkan / Rust `wgpu`** when a real hardware Vulkan adapter is available;
+- **CUDA / CuPy RawKernel** when CUDA/NVML is available, including managed environments where Vulkan is not exposed.
+
+Basic local flow:
 
 ```bash
 bash scripts/run-gpu.sh devices
 bash scripts/run-gpu.sh verify
-bash scripts/run-gpu.sh run --job runtime/jobs/spin-local.json --output runs/local-spin
+bash scripts/run-gpu.sh run \
+  --job runtime/jobs/spin-local.json \
+  --output runs/local-spin
 ```
 
-The local preset uses 262,144 actual particles; the cloud preset uses 1,048,576.
-The runtime cap is 8,388,608, subject to the adapter's storage-buffer limits.
-See **[GPU runtime and Vast.ai runner instructions](docs/GPU-RUNTIME.md)** for
-setup, Docker, SSH submission, example jobs, precision and validation details.
-The browser engine's logical/sample counts below describe its separate path.
+The wide-address tiled runtime can represent logical populations beyond `2^32` without allocating the full logical population at once. Tiling is valid for the current independent-particle fixed-potential workload because there are no cross-particle forces between tiles.
 
-## UFF dynamics in v0.2
+See:
 
-Select a **Rotation law** to drive each star's orbital rate from `V(R)/R`:
+- [GPU runtime](docs/GPU-RUNTIME.md)
+- [CUDA runtime](docs/CUDA-RUNTIME.md)
+- [u64 tiled runtime](docs/U64-TILED-RUNTIME.md)
+- [qBraid CPU/GPU execution index](QBRAID.md)
 
-| Mode | Contribution and controls |
-| --- | --- |
-| UFF empirical v4 + baryons | UFF velocity scale, core radius and bounded shape β |
-| Newtonian baryons | Signed gas contribution, disc and bulge mass-to-light ratios |
-| NFW halo + baryons | Halo mass M₂₀₀ and concentration |
-| Burkert halo + baryons | Central halo density and core radius |
-| MOND / RAR | UFF's exponential acceleration relation and adjustable a₀ |
-| Original visual rotation | The v0.1 authored rotation law and manual shear |
+---
 
-An optional weak-field central mass applies to all physical models, with the
-MOND boost acting on the combined Newtonian input as in UFF. Defaults use UFF's
-initial parameters; **no fitting is performed**. The initial mode is UFF empirical.
+## 4. v0.4.0 reproducibility milestone
 
-The live plot shows the selected total circular speed, baryons alone, and UFF's
-six demo rows with their supplied error bars. Readouts show circular speed at
-8 kpc, the corresponding orbital period, and model time. Inclination changes
-the viewing angle; it does not change the deprojected rotation curve.
+v0.4.0 formalizes the first archived native-CPU performance baseline for GALAXY.
 
-The full UFF `DEMO_GALAXY.csv` is bundled unchanged and identified by a pinned
-source commit and SHA-256 receipt. It is demonstration input, not an identified
-observational catalogue. See [UFF physics notes](docs/UFF-DYNAMICS.md) for
-equations, units, source links and interpolation choices.
+### Ryzen 9 5950X local validation
 
-## Capacity
+The local validation reached the **16,777,216-particle resident cap** with deterministic scalar/parallel checksum parity.
 
-The logical population and rendered sample are separate quantities, as in VORTEX.
-Increasing the logical count never allocates one object per logical star.
+A primary 8,388,608-resident / 32-worker result measured:
 
-| Active engine | Maximum logical stars | Maximum rendered stars per frame |
+| Backend | Scalar median | Parallel median | Measured speedup |
+| --- | ---: | ---: | ---: |
+| Float | 1.623 s | 97.37 ms | 16.67× |
+| BAM-LUT | 504.6 ms | 84.56 ms | 5.97× |
+
+The local matrix showed Float continuing to benefit through 32 workers while BAM-LUT plateaued substantially earlier at the larger resident sizes. That observation motivated the wider cloud replication.
+
+### qBraid / Azure EPYC 7763 replication
+
+The completed qBraid experiment ran on an Azure-hosted guest exposing:
+
+```text
+AMD EPYC 7763 64-Core Processor
+96 online logical CPUs
+48 exposed cores
+2 SMT threads per exposed core
+2 NUMA nodes
+192 MiB aggregate L3 reported by lscpu
+~377 GiB RAM
+```
+
+For an 8,388,608-resident workload with 8 frames, 5 repeats, and seed 303, the canonical unpinned sweep produced:
+
+| Workers | Float parallel | Float speedup | BAM-LUT parallel | BAM-LUT speedup |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 121.02 ms | 20.30× | 45.06 ms | 16.65× |
+| **48** | **77.07 ms** | **31.71×** | **31.46 ms** | **24.10×** |
+| 64 | 92.23 ms | 26.65× | 38.58 ms | 19.53× |
+| 96 | 81.49 ms | 29.92× | 35.52 ms | 21.22× |
+
+**48 workers was the best measured unpinned point for both backends.** Scaling was not monotonic beyond that point, and all tested worker counts preserved deterministic backend checksums.
+
+### Topology / affinity probe
+
+A repeat-matched 48-worker study then compared the unrestricted run with explicit affinity configurations:
+
+| 48-worker configuration | Float parallel | BAM-LUT parallel |
 | --- | ---: | ---: |
-| JavaScript + Canvas or WebGL | 2²⁴ = 16,777,216 | 1,024 |
-| Rust/Wasm + Canvas fallback | 2³² = 4,294,967,296 | 1,024 |
-| Rust/Wasm + WebGL | 2³² = 4,294,967,296 | 65,536 |
+| Unpinned | **77.22 ms** | **31.38 ms** |
+| NUMA node 0 only | 78.12 ms | 33.01 ms |
+| NUMA node 1 only | 77.10 ms | 34.33 ms |
+| One SMT thread per exposed core across both NUMA nodes | 115.54 ms | 47.84 ms |
 
-The accelerated path defaults to **16,384 rendered stars**. **PUSH IT TO THE
-LIMIT** selects the maximum population and sample supported by the active engine.
-You can still select VORTEX's 256/512/1,024-particle budgets independently.
+The cross-NUMA one-thread-per-core run was roughly **50% slower** for both backends, while node-local 48-thread runs remained close to the unpinned baseline.
 
-The largest sample contains **2 MiB of float32 star properties plus 256 KiB of
-orbital rates: 2.25 MiB total**. WebGL holds GPU copies; Wasm allocator memory,
-transient rebuild buffers, framebuffer memory, and browser overhead are additional.
-The interface reports the two particle buffers, not total application memory.
+This is strong evidence that the workload is **topology-sensitive in that environment**. It is consistent with NUMA locality, first-touch placement, remote-memory traffic, cache effects, or bandwidth interactions, but the experiment did not collect hardware memory-traffic counters and therefore does **not** isolate the underlying mechanism.
 
-Rust generates a deterministic sample with exact 64-bit intermediate indexing.
-Orbital rates are recalculated when the mass model, stellar population or
-sample changes. WebGL uploads these bounded buffers, then evolves every rendered
-star in a vertex shader using one point draw call per frame. Neither
-language choice nor logical indexing alone makes billions of stars visible.
-The 2²⁴ JavaScript ceiling preserves the supplied VORTEX contract; it is not a
-fundamental JavaScript integer limit. See [the engine notes](docs/ENGINE.md).
+The historical `galaxy.cpu-runtime-receipt.v1` schema does not encode Linux affinity. Exact mask-to-receipt provenance for the completed runs is preserved separately in [`AFFINITY-MANIFEST.md`](evidence/qbraid/EPYC7763-20260914/AFFINITY-MANIFEST.md). Future affinity runs are required to capture the kernel-visible `Cpus_allowed_list` inside the constrained process.
 
-## Use the instrument
+### Archived evidence
 
-- Choose **Grand design**, **Pinwheel**, **Flocculent**, or **Edge-on** morphology.
-- Adjust spiral arms, pitch, spread, bulge and thickness.
-- In physical modes, the selected `V(R)/R` sets differential rotation. In
-  **Original visual rotation**, the **Differential shear** slider controls
-  winding; set it to zero for a stable rotating spiral pattern.
-- Pause or reverse without resetting accumulated motion. **Reset time/phase**
-  returns to the original spiral. Changing a mass model, mass parameter or bulge
-  population restarts the clock so a fresh comparison starts from that spiral.
-- **Timeless phase slice** freezes the animation clock and uses the offset
-  slider. Physical modes display time in Myr; visual mode displays phase degrees.
-- Drag to adjust inclination and position angle; scroll to zoom. The same
-  adjustments have labelled keyboard-accessible controls. Double-click resets
-  the view; Space pauses when a form control does not have focus.
-- Save a PNG, record up to 30 seconds of WebM when the browser supports it, or
-  save/load JSON settings including seed, population, clock, mass parameters and
-  UFF source identity. v0.1 files load with their original visual rotation law.
-- Reduced-motion preferences start the simulation paused. Hidden tabs do not
-  accumulate a jump in animation time.
+The qBraid evidence is preserved in:
 
-## Model boundary
-
-This is a **deterministic circular-orbit visualization**. In UFF modes, physical
-rotation curves set the angular speeds in kpc, km/s and Myr. Stars stay at fixed
-radii; the distribution and vertical structure remain authored. The morphology
-sliders control display geometry independently from the mass-to-light sliders.
-It is not a self-consistent N-body evolution, a fit to an observed galaxy, or a
-gas/stellar-formation solver. The empirical UFF and MOND options retain the model
-definitions and scope documented by UFF.
-
-Logical indices describe the population from which representative particles are
-sampled. Only the **rendered** count is evaluated and drawn each frame. The FPS
-display measures the active renderer on the current device. No frame-rate
-guarantee is inferred from the source archive or sample-generation benchmarks.
-
-## Development and checks
-
-The complete Rust crate is included in [`rust/`](rust/), alongside the standalone
-compiled [`wasm/galaxy_sampler.wasm`](wasm/galaxy_sampler.wasm) module and its
-offline browser wrapper. You can test the sampler natively from the repository
-root without starting a browser:
-
-```bash
-cargo test --manifest-path rust/Cargo.toml --locked --offline
-cargo run --manifest-path rust/Cargo.toml --example sample --release --locked --offline -- 32 65536 303
-cargo run --manifest-path rust/Cargo.toml --example rotation_curve --release --locked --offline
+```text
+evidence/qbraid/EPYC7763-20260914/
 ```
 
-The example arguments are **logical exponent**, **sample count**, and **seed**.
-The command above exercises 2³² logical stars and a 65,536-star sample. It prints
-the actual buffer size, final logical ID and native generation time. Use
-`24 1024 303` to compare with the legacy VORTEX budget.
-The `rotation_curve` example prints all five physical models in km/s at the
-six demo radii using the same Rust code as the browser module.
+The original compressed evidence bundle SHA-256 is:
 
-The generated Wasm payloads are committed so downloaded copies work offline.
-To change the Rust sampler, install Rust with the pinned toolchain in
-`rust-toolchain.toml`, then run:
+```text
+5c0474b9537a0ee34493a58c22b368f4846ad12f41633430d4444a678561e87a
+```
+
+The immutable GitHub release is:
+
+<https://github.com/QSOLKCB/GALAXY/releases/tag/v0.4.0>
+
+The formal software record is:
+
+<https://doi.org/10.5281/zenodo.22756969>
+
+---
+
+## 5. Scientific boundary
+
+GALAXY is a **deterministic galaxy dynamics and visualization instrument**, not a self-consistent N-body code.
+
+The browser instrument and native runtimes use prescribed rotation laws / gravitational potentials. The native runtimes evolve independent test particles. GALAXY does **not** currently implement:
+
+- pairwise stellar forces;
+- evolving self-gravity;
+- hydrodynamics;
+- gas evolution;
+- star formation;
+- a self-consistent evolving density field;
+- cross-particle force coupling.
+
+Large logical populations are deterministic address spaces from which bounded resident populations are sampled or tiled. A logical population of `u64::MAX` does **not** mean that 18.4 quintillion particles are simultaneously resident in memory.
+
+Performance claims are similarly bounded: benchmark receipts establish behavior for the recorded source, workload, and environment. They do not establish universal Ryzen, EPYC, cloud, CPU-vs-GPU, NUMA, or memory-bandwidth claims.
+
+---
+
+## 6. Development and verification
+
+The repository contains four main validation surfaces:
+
+```text
+browser / Wasm          -> JS application + physics + packaging checks
+retro integer math      -> Rust + JS portability / vector checks
+native CPU runtime      -> Linux / macOS / Windows correctness and receipts
+native GPU / u64        -> Vulkan/CUDA host contracts and tiled-runtime checks
+```
+
+Useful local checks include:
 
 ```bash
+# Browser / Wasm
 cargo test --manifest-path rust/Cargo.toml --locked --offline
 bash scripts/build-wasm.sh
 node tests/smoke.mjs
 node tests/physics.mjs
 node tests/app.mjs
 node tests/benchmark.mjs
-node scripts/build-site.mjs
+
+# Native CPU
+sh scripts/test-cpu-runtime.sh
+
+# Retro CPU portability
+sh scripts/test-retro-cpu.sh
+
+# CUDA host-side tests
+python3 tests/test_cuda_u64.py
 ```
 
-The packaged binary exposes the sampling API plus `configure_dynamics`,
-`orbit_ptr`, `orbit_len`, and `circular_velocity` under ABI version 2. The browser
-wrapper contains the same binary, encoded for direct `file://` use.
+The root Rust toolchain is pinned in `rust-toolchain.toml`. Generated Wasm payloads are committed so the browser application remains directly usable offline.
 
-The crate has no third-party dependencies. Installing the Rust toolchain and its
-Wasm standard library for the first time needs a connection; building thereafter
-uses `--offline`. Running the already-packaged application does not need Rust.
+---
 
-CI regenerates the CSV tables, rebuilds with the pinned compiler, checks the
-shipped payloads for drift, and tests **195 predictions generated by the original
-UFF Python implementation** against JS and compiled Wasm. It also checks maximum
-sample size, orbital units, settings migration, controls and fallbacks.
-The application suite uses DOM/renderer adapters;
-it does not assert browser shader compilation, video-encoder behavior or GPU FPS.
-`tests/benchmark.mjs` measures **Wasm sample and orbital-rate generation only**.
+## 7. Documentation map
 
-An optional local server can serve the same files:
+| Document | Purpose |
+| --- | --- |
+| [ENGINE.md](docs/ENGINE.md) | Browser engine, logical/rendered population separation, Wasm/WebGL path |
+| [UFF-DYNAMICS.md](docs/UFF-DYNAMICS.md) | Rotation-law physics, units, demonstration-data provenance |
+| [GPU-RUNTIME.md](docs/GPU-RUNTIME.md) | Native Rust/`wgpu` runtime and GPU execution |
+| [CUDA-RUNTIME.md](docs/CUDA-RUNTIME.md) | CUDA backend, bootstrap, validation and claim boundaries |
+| [U64-TILED-RUNTIME.md](docs/U64-TILED-RUNTIME.md) | Memory-bounded logical populations beyond 32-bit indexing |
+| [CPU-RUNTIME.md](docs/CPU-RUNTIME.md) | Native CPU architecture, timing, receipts, correctness contract |
+| [CPU-PORTABILITY.md](docs/CPU-PORTABILITY.md) | Cross-platform CPU validation and portability evidence |
+| [RETRO-MATH.md](docs/RETRO-MATH.md) | BAM32, CORDIC, fixed-point and retro-computing reference math |
+| [QBRAID-CPU-SCALING.md](docs/QBRAID-CPU-SCALING.md) | qBraid protocol plus completed EPYC 7763 scaling study |
+| [QBRAID.md](QBRAID.md) | qBraid execution index for CPU and GPU studies |
+| [NOTICE.md](NOTICE.md) | Attribution, provenance, and file-level licensing |
 
-```bash
-python3 -m http.server 8000
-```
+---
 
-## Provenance and licensing
+## 8. Roadmap from the v0.4.0 baseline
 
-Adapted browser files retain VORTEX's **MPL-2.0** licence. The new Rust sampler
-and build tooling use this repository's existing **Apache-2.0** licence.
-See [NOTICE.md](NOTICE.md) for the file-level distinction and source attribution.
-VORTEX reference images and historical performance reports are not redistributed.
+The next native-CPU phase is intentionally architectural rather than another uncontrolled worker-count increase.
+
+Planned investigation areas are:
+
+1. **persistent worker pools** — remove repeated worker construction from timed CPU execution;
+2. **topology-aware scheduling** — make placement policy explicit rather than inferred from worker count;
+3. **NUMA-aware placement** — test memory locality without assuming one universal affinity strategy;
+4. **receipt-native affinity evidence** — record allowed CPU sets and topology evidence with the run itself;
+5. **before/after validation** — compare against the frozen v0.4.0 Ryzen and EPYC baseline while requiring deterministic checksum parity.
+
+The default scheduling policy should remain conservative until those alternatives are measured. The qBraid result shows that “more distinct physical cores” is not automatically equivalent to “faster” for this workload.
+
+---
+
+## 9. Provenance and licensing
+
+GALAXY has file-level licensing rather than one blanket licence for every source file.
+
+- Adapted VORTEX browser sources retain **MPL-2.0** notices.
+- New Rust sampler, native CPU/GPU runtimes, build tooling, and associated Apache-licensed project code use **Apache-2.0**.
+- QSOL UFF-derived implementation/data provenance is pinned and documented in [`data/uff/provenance.json`](data/uff/provenance.json) and [NOTICE.md](NOTICE.md).
+
+The VORTEX reference photographs, artwork, and historical stress-test reports are not redistributed. Historical VORTEX measurements are not GALAXY benchmark evidence.
+
+Copyright 2025–2026 Trent Slade / QSOL-IMC.
+
+---
+
+## Citation
+
+If you use the v0.4.0 software/evidence baseline, cite:
+
+> Slade, T. (2026). *GALAXY v0.4.0: Deterministic Native CPU Runtime and Scaling Evidence* (Version v0.4.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22756969
