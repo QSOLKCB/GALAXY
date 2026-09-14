@@ -24,7 +24,8 @@ jobs:
       - name: Verify shared retro deterministic vectors
         run: |
           node tests/retro-math.mjs
-          cargo run --manifest-path rust/Cargo.toml --example retro_vectors --locked --offline
+          cargo test --manifest-path retro/Cargo.toml --locked --offline
+          cargo run --manifest-path retro/Cargo.toml --example retro_vectors --locked --offline
       - name: Rebuild the pinned Rust WebAssembly
         run: bash scripts/build-wasm.sh
       - name: Verify the shipped module matches its source
