@@ -56,4 +56,25 @@ for (const line of lines) {
 
 assert.deepEqual(Retro.eliteTwist(Retro.ELITE_GALAXY1), [0x0248, 0xb753, 0x13e5]);
 assert.notEqual(Retro.sectorSalt(303, 0n), Retro.sectorSalt(303, 1n << 32n));
+
+// JavaScript Numbers cannot represent every u64 sector exactly. Reject unsafe
+// numeric inputs before converting to BigInt so callers cannot silently address
+// the preceding/following sector. BigInt remains the exact full-u64 interface.
+assert.throws(
+  () => Retro.sectorSalt(303, 9007199254740993),
+  /safe integer; use bigint for full-u64 sectors/
+);
+assert.throws(
+  () => Retro.sectorSeed(303, Number.MAX_SAFE_INTEGER + 1),
+  /safe integer; use bigint for full-u64 sectors/
+);
+assert.notEqual(
+  Retro.sectorSalt(303, 9007199254740992n),
+  Retro.sectorSalt(303, 9007199254740993n)
+);
+assert.doesNotThrow(() => Retro.sectorSalt(303, 0xffffffffffffffffn));
+assert.throws(() => Retro.sectorSalt(303, 0x10000000000000000n), /fit u64/);
+assert.throws(() => Retro.sectorSalt(303, -1n), /fit u64/);
+assert.throws(() => Retro.sectorSalt(303, "1"), /bigint or safe integer number/);
+
 console.log(`retro-math: ${lines.length} golden vectors passed`);
