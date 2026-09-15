@@ -29,4 +29,5 @@ fn main() {
     emit("src/main.rs", "legacy_runtime.inc.rs");
     emit("src/bin/worker_soa_probe.rs", "worker_soa_probe.inc.rs");
     emit("src/bin/persistent_soa.rs", "persistent_soa.inc.rs");
+    emit("src/bin/auto_tune.rs", "auto_tune.inc.rs");
 }

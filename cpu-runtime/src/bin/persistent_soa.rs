@@ -69,6 +69,36 @@ struct PersistentSoaPool {
     worker_count: usize,
 }
 
+fn first_touch_compact_tile_buffers(tile: &mut CompactTile, capacity: usize) {
+    // Vec::with_capacity reserves address space but does not guarantee that the
+    // backing pages have been physically committed. Resize every worker-local
+    // vector before the startup acknowledgement so pool_startup_ns includes the
+    // same memory commitment/page-fault work that would otherwise be hidden in
+    // the first untimed dispatch. Clear keeps the committed capacity reusable.
+    tile.id_lo.resize(capacity, 0);
+    tile.id_hi.resize(capacity, 0);
+    tile.radius_q16.resize(capacity, 0);
+    tile.initial_bam.resize(capacity, 0);
+    tile.delta_bam.resize(capacity, 0);
+    tile.x_word.resize(capacity, 0);
+    tile.y_word.resize(capacity, 0);
+    tile.contributions.resize(capacity, 0);
+
+    // Keep the initialization observable to the optimizer; this is a deliberate
+    // memory-commit boundary, not data needed by the numerical result.
+    std::hint::black_box((
+        tile.id_lo.as_slice(),
+        tile.id_hi.as_slice(),
+        tile.radius_q16.as_slice(),
+        tile.initial_bam.as_slice(),
+        tile.delta_bam.as_slice(),
+        tile.x_word.as_slice(),
+        tile.y_word.as_slice(),
+        tile.contributions.as_slice(),
+    ));
+    tile.clear();
+}
+
 impl PersistentSoaPool {
     fn new(config: Arc<Config>, lut: Arc<Lut>, worker_count: usize) -> Result<Self, String> {
         if worker_count == 0 || worker_count > config.resident || worker_count > MAX_WORKERS {
@@ -94,6 +124,7 @@ impl PersistentSoaPool {
                     .min(end.saturating_sub(start))
                     .max(1);
                 let mut tile = CompactTile::new(capacity);
+                first_touch_compact_tile_buffers(&mut tile, capacity);
                 if worker_ready_tx.send(worker_index).is_err() {
                     return;
                 }
@@ -474,7 +505,7 @@ fn pooled_receipt_json(
         .saturating_mul(worker_tile_capacity_particles);
     let fell_back = schedule == SchedulePolicy::PhysicalFirst && topology.physical_cores.is_none();
     format!(
-        "{{\n  \"schema\": \"{POOLED_RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"execution_mode\": \"worker-local-soa-persistent\",\n  \"guarded_opt_in\": true,\n  \"canonical_oracle\": \"bench\",\n  \"spawned_soa_fallback\": \"bench-soa\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"addressing\": \"{ADDRESSING}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"detected_physical_cores\": {},\n  \"topology_source\": \"{}\",\n  \"schedule_policy\": \"{}\",\n  \"schedule_fell_back_to_logical\": {},\n  \"effective_pool_workers\": {},\n  \"tile_particles\": {},\n  \"soa_worker_tile_capacity_bytes\": {},\n  \"pool_thread_spawns\": {},\n  \"pool_dispatches\": {},\n  \"pool_startup_ns\": {},\n  \"worker_threads_persistent_across_trials\": true,\n  \"worker_thread_creation_in_timed_region\": false,\n  \"worker_local_tile_buffers_reused\": true,\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"checksum\": \"{:016x}\",\n  \"peak_rss_kib\": {},\n  \"resident_generation_in_timed_region\": true,\n  \"timing_scope\": \"persistent-pool-dispatch-plus-resident-generation-plus-bam-lut-projection-plus-contribution-plus-deterministic-worker-reduction\",\n  \"claim_boundary\": \"Guarded opt-in persistent worker-pool evidence. Physical-core detection is best-effort and physical-first falls back to logical scheduling when unavailable. Performance is host-specific; checksum disagreement is a correctness failure.\"\n}}\n",
+        "{{\n  \"schema\": \"{POOLED_RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"execution_mode\": \"worker-local-soa-persistent\",\n  \"guarded_opt_in\": true,\n  \"canonical_oracle\": \"bench\",\n  \"spawned_soa_fallback\": \"bench-soa\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"addressing\": \"{ADDRESSING}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"detected_physical_cores\": {},\n  \"topology_source\": \"{}\",\n  \"schedule_policy\": \"{}\",\n  \"schedule_fell_back_to_logical\": {},\n  \"effective_pool_workers\": {},\n  \"tile_particles\": {},\n  \"soa_worker_tile_capacity_bytes\": {},\n  \"pool_thread_spawns\": {},\n  \"pool_dispatches\": {},\n  \"pool_startup_ns\": {},\n  \"worker_threads_persistent_across_trials\": true,\n  \"worker_thread_creation_in_timed_region\": false,\n  \"worker_local_tile_buffers_reused\": true,\n  \"worker_local_tile_buffers_first_touched_before_ready\": true,\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"checksum\": \"{:016x}\",\n  \"peak_rss_kib\": {},\n  \"resident_generation_in_timed_region\": true,\n  \"timing_scope\": \"persistent-pool-dispatch-plus-resident-generation-plus-bam-lut-projection-plus-contribution-plus-deterministic-worker-reduction\",\n  \"claim_boundary\": \"Guarded opt-in persistent worker-pool evidence. Pool startup includes worker creation, worker-local tile allocation, and explicit buffer first-touch before readiness. Physical-core detection is best-effort and physical-first falls back to logical scheduling when unavailable. Performance is host-specific; checksum disagreement is a correctness failure.\"\n}}\n",
         std::env::consts::ARCH,
         std::env::consts::OS,
         config.logical,
@@ -502,7 +533,7 @@ fn pooled_receipt_json(
 }
 
 pub fn usage_text() -> &'static str {
-    "Usage:\n  galaxy-cpu verify-soa-pool [--workers N] [--tile N] [--schedule physical-first|logical]\n  galaxy-cpu bench-soa-pool [--logical U64] [--resident N] [--frames N] [--workers N] [--tile N] [--schedule physical-first|logical] [--repeats N] [--seed U32] [--receipt PATH]\n\nPersistent SoA defaults:\n  tile=1024 schedule=physical-first\n\n`physical-first` caps the persistent pool at the detected physical-core count when reliable topology is available; otherwise it records the fallback and uses logical availability. `logical` permits SMT workers explicitly.\n"
+    "Usage:\n  galaxy-cpu verify-soa-pool [--workers N] [--tile N] [--schedule physical-first|logical]\n  galaxy-cpu bench-soa-pool [--logical U64] [--resident N] [--frames N] [--workers N] [--tile N] [--schedule physical-first|logical] [--repeats N] [--seed U32] [--receipt PATH]\n\nPersistent SoA defaults:\n  tile=1024 schedule=physical-first\n\n`physical-first` caps the persistent pool at the detected physical-core count when reliable topology is available; otherwise it records the fallback and uses logical availability. `logical` permits SMT workers explicitly. Pool startup includes worker-local tile allocation and explicit buffer first-touch before workers report ready.\n"
 }
 
 pub fn run_pooled_bench(args: &[String]) -> Result<(), String> {
@@ -534,6 +565,7 @@ pub fn run_pooled_bench(args: &[String]) -> Result<(), String> {
     println!("pool_thread_spawns={}", evidence.pool_thread_spawns);
     println!("pool_dispatches={}", evidence.pool_dispatches);
     println!("pool_startup_ns={}", evidence.pool_startup_ns);
+    println!("worker_local_tile_buffers_first_touched_before_ready=true");
     println!("best_ns={}", evidence.measurement.timing.best_ns);
     println!("median_ns={}", evidence.measurement.timing.median_ns);
     println!("checksum={:016x}", evidence.measurement.timing.checksum);
@@ -609,6 +641,29 @@ mod pooled_tests {
         assert_eq!(parse_cpu_list("0-3,8,10-11").unwrap(), vec![0, 1, 2, 3, 8, 10, 11]);
         assert!(parse_cpu_list("3-1").is_err());
         assert!(parse_cpu_list("").is_err());
+    }
+
+    #[test]
+    fn first_touch_primes_full_capacity_and_preserves_reuse_shape() {
+        let capacity = 257;
+        let mut tile = CompactTile::new(capacity);
+        first_touch_compact_tile_buffers(&mut tile, capacity);
+        assert!(tile.id_lo.is_empty());
+        assert!(tile.id_hi.is_empty());
+        assert!(tile.radius_q16.is_empty());
+        assert!(tile.initial_bam.is_empty());
+        assert!(tile.delta_bam.is_empty());
+        assert!(tile.x_word.is_empty());
+        assert!(tile.y_word.is_empty());
+        assert!(tile.contributions.is_empty());
+        assert!(tile.id_lo.capacity() >= capacity);
+        assert!(tile.id_hi.capacity() >= capacity);
+        assert!(tile.radius_q16.capacity() >= capacity);
+        assert!(tile.initial_bam.capacity() >= capacity);
+        assert!(tile.delta_bam.capacity() >= capacity);
+        assert!(tile.x_word.capacity() >= capacity);
+        assert!(tile.y_word.capacity() >= capacity);
+        assert!(tile.contributions.capacity() >= capacity);
     }
 
     #[test]
