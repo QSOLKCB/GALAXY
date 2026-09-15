@@ -103,12 +103,13 @@ build_variant() {
   target_dir=$2
   rustflags=$3
   printf '%s\n' "== GALAXY SIMD probe: $label build ($rustflags) =="
-  # CLI --target pins Cargo to the selected rustc's host triple, overriding any
-  # inherited CARGO_BUILD_TARGET or [build] target configuration. RUSTC is set
-  # explicitly so the compiler used for provenance is also the compiler Cargo
-  # invokes for both binaries.
+  # CLI --target pins Cargo to the selected rustc's host triple. Explicit RUSTC
+  # aligns compiler provenance with the compiler Cargo actually invokes. This
+  # probe also requires its exported inspection symbol to survive release
+  # linking, so override caller/config stripping for this evidence-only build.
   env -u CARGO_BUILD_TARGET -u CARGO_ENCODED_RUSTFLAGS \
     CARGO_TARGET_DIR="$target_dir" \
+    CARGO_PROFILE_RELEASE_STRIP=false \
     RUSTC="$GALAXY_RUSTC" \
     RUSTFLAGS="$rustflags" \
     "$GALAXY_CARGO" build --manifest-path cpu-runtime/Cargo.toml \
@@ -131,9 +132,15 @@ summarize_isa() {
   asm=$OUTPUT/${variant}-galaxy_hash_batch.asm
   decoded_asm=$OUTPUT/${variant}-galaxy_hash_batch.decoded.asm
   evidence=$OUTPUT/${variant}-isa-evidence.txt
+  mnemonics=$OUTPUT/${variant}-decoded-mnemonics.txt
 
   if ! command -v objdump >/dev/null 2>&1; then
-    printf '%s\n' "objdump not found; decoded ISA evidence skipped for $variant." > "$evidence"
+    {
+      printf 'variant=%s\n' "$variant"
+      printf 'symbol=galaxy_hash_batch\n'
+      printf 'evidence_available=false\n'
+      printf 'reason=objdump-not-found\n'
+    } > "$evidence"
     return
   fi
 
@@ -142,17 +149,18 @@ summarize_isa() {
   elif objdump -d --disassemble=galaxy_hash_batch "$binary" > "$asm" 2>/dev/null; then
     :
   else
-    printf '%s\n' "objdump could not disassemble galaxy_hash_batch for $variant." > "$evidence"
+    {
+      printf 'variant=%s\n' "$variant"
+      printf 'symbol=galaxy_hash_batch\n'
+      printf 'evidence_available=false\n'
+      printf 'reason=objdump-disassembly-failed\n'
+    } > "$evidence"
     rm -f "$asm"
     return
   fi
 
-  mnemonics=$OUTPUT/${variant}-decoded-mnemonics.txt
   if objdump -d -M intel --no-show-raw-insn --disassemble=galaxy_hash_batch "$binary" > "$decoded_asm" 2>/dev/null \
     || objdump -d --no-show-raw-insn --disassemble=galaxy_hash_batch "$binary" > "$decoded_asm" 2>/dev/null; then
-    # With raw bytes suppressed, the first token after the address is the
-    # decoded mnemonic. This avoids confusing hexadecimal bytes such as c4/ec/f8
-    # with instruction names.
     awk '
       /^[[:space:]]*[0-9A-Fa-f]+:/ {
         line = $0
@@ -163,9 +171,6 @@ summarize_isa() {
     ' "$decoded_asm" > "$mnemonics"
   else
     rm -f "$decoded_asm"
-    # Fallback for objdump implementations without --no-show-raw-insn: strip
-    # the address, skip each two-digit raw byte token, then take the first
-    # mnemonic-shaped field.
     awk '
       /^[[:space:]]*[0-9A-Fa-f]+:/ {
         line = $0
@@ -180,6 +185,20 @@ summarize_isa() {
         }
       }
     ' "$asm" > "$mnemonics"
+  fi
+
+  # GNU objdump may return status 0 for --disassemble=<symbol> even when the
+  # symbol is absent (for example after release stripping), emitting only
+  # headers. Never turn that into a misleading zero-vectorization result.
+  if [ ! -s "$mnemonics" ]; then
+    {
+      printf 'variant=%s\n' "$variant"
+      printf 'symbol=galaxy_hash_batch\n'
+      printf 'evidence_available=false\n'
+      printf 'reason=probe-symbol-body-not-decoded\n'
+    } > "$evidence"
+    rm -f "$decoded_asm" "$mnemonics"
+    return
   fi
 
   evex_mnemonics=$OUTPUT/${variant}-evex-mnemonics.txt
@@ -214,8 +233,6 @@ summarize_isa() {
     }
   ' "$asm" > "$vex_mnemonics"
 
-  # Count only prefix-matched rows for which a decoded mnemonic was found.
-  # Wrapped raw-byte continuation rows therefore cannot inflate ISA evidence.
   evex_lines=$(sed '/^$/d' "$evex_mnemonics" | wc -l | tr -d ' ')
   vex_lines=$(sed '/^$/d' "$vex_mnemonics" | wc -l | tr -d ' ')
   packed_mnemonic_re='^(vp(add|sub|xor|mul|sr|sl|or|and)|p(add|sub|xor|mul|sr|sl|or|and))'
@@ -225,19 +242,19 @@ summarize_isa() {
   {
     printf 'variant=%s\n' "$variant"
     printf 'symbol=galaxy_hash_batch\n'
+    printf 'evidence_available=true\n'
     printf 'evex_encoded_instruction_lines=%s\n' "$evex_lines"
     printf 'decoded_evex_mnemonic_count=%s\n' "$decoded_evex_count"
     printf 'vex_encoded_instruction_lines=%s\n' "$vex_lines"
     printf 'decoded_packed_integer_vector_instruction_count=%s\n' "$packed_count"
     printf '%s\n' 'decoded_packed_integer_vector_mnemonics:'
-    grep -E "$packed_mnemonic_re" "$mnemonics" \
-      | sort | uniq -c || true
+    grep -E "$packed_mnemonic_re" "$mnemonics" | sort | uniq -c || true
     printf '%s\n' 'decoded_evex_mnemonics:'
     sort "$evex_mnemonics" | uniq -c || true
     printf '%s\n' 'interpretation:'
-    printf '%s\n' '- EVEX-encoded instruction lines are direct evidence of EVEX/AVX-512-family code generation; only prefix-matched rows with decoded mnemonics are counted, excluding wrapped byte continuations.'
-    printf '%s\n' '- Packed-integer counts remain a narrower hash-kernel diagnostic and include both legacy p... and VEX/EVEX vp... arithmetic/shift families.'
-    printf '%s\n' '- VEX prefix counts alone are not a vectorization claim; inspect decoded mnemonics.'
+    printf '%s\n' '- EVEX counts include only prefix-matched rows with decoded mnemonics; wrapped byte continuations are excluded.'
+    printf '%s\n' '- Packed-integer counts include legacy p... and VEX/EVEX vp... arithmetic/shift families.'
+    printf '%s\n' '- Missing symbol/body evidence is reported as unavailable, never as zero vectorization.'
     printf '%s\n' '- Register names alone are intentionally not used as ISA evidence.'
   } > "$evidence"
 }
