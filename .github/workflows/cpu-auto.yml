@@ -50,9 +50,13 @@ jobs:
           top_help=$(cpu-runtime/target/release/galaxy-cpu --help)
           printf '%s\n' "$top_help" | grep -q 'bench-auto'
           printf '%s\n' "$top_help" | grep -q 'expands resident work when needed so every advertised tile is measured'
+          printf '%s\n' "$top_help" | grep -q 'preserves the requested frame depth during calibration'
+          printf '%s\n' "$top_help" | grep -q 'includes topology detection in tuning_ns'
           auto_help=$(cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help)
           printf '%s\n' "$auto_help" | grep -q 'projects every calibration median to requested particle-frame work'
           printf '%s\n' "$auto_help" | grep -q 'expands resident work when needed so every advertised tile is measured'
+          printf '%s\n' "$auto_help" | grep -q 'preserves the requested frame depth during calibration'
+          printf '%s\n' "$auto_help" | grep -q 'including worker-local buffer first-touch'
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --help >/dev/null
           for flag in --path --tile --schedule; do
             if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto "$flag" 1 >/dev/null 2>&1; then
@@ -86,6 +90,9 @@ jobs:
           grep -q '^selection_policy=calibrated-host-auto-v1$' runs/cpu-auto-ci/stdout.txt
           grep -q '^score_projection=linear-particle-frame-v1$' runs/cpu-auto-ci/stdout.txt
           grep -q '^tile_shape_policy=expand-resident-for-effective-tile-v1$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^frame_calibration_policy=preserve-requested-depth-v1$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^persistent_startup_includes_buffer_first_touch=true$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^topology_detection_ns=' runs/cpu-auto-ci/stdout.txt
           grep -q '^calibration_oracle_ns=' runs/cpu-auto-ci/stdout.txt
           grep -q '"schema": "galaxy.cpu-runtime-auto-receipt.v1"' runs/cpu-auto-ci/receipt.json
           grep -q '"runtime": "galaxy-cpu"' runs/cpu-auto-ci/receipt.json
@@ -96,6 +103,9 @@ jobs:
           grep -q '"promotion_margin_basis_points": 500' runs/cpu-auto-ci/receipt.json
           grep -q '"score_projection": "linear-particle-frame-v1"' runs/cpu-auto-ci/receipt.json
           grep -q '"tile_shape_policy": "expand-resident-for-effective-tile-v1"' runs/cpu-auto-ci/receipt.json
+          grep -q '"frame_calibration_policy": "preserve-requested-depth-v1"' runs/cpu-auto-ci/receipt.json
+          grep -q '"persistent_startup_includes_buffer_first_touch": true' runs/cpu-auto-ci/receipt.json
+          grep -q '"topology_detection_ns":' runs/cpu-auto-ci/receipt.json
           grep -q '"calibration_work_units":' runs/cpu-auto-ci/receipt.json
           grep -q '"requested_work_units":' runs/cpu-auto-ci/receipt.json
           grep -q '"calibration_oracle_ns":' runs/cpu-auto-ci/receipt.json
@@ -107,10 +117,17 @@ jobs:
           with open('runs/cpu-auto-ci/receipt.json', encoding='utf-8') as handle:
               receipt = json.load(handle)
           assert receipt['tile_shape_policy'] == 'expand-resident-for-effective-tile-v1'
+          assert receipt['frame_calibration_policy'] == 'preserve-requested-depth-v1'
+          assert receipt['calibration_frames'] == receipt['frames']
+          assert receipt['persistent_startup_includes_buffer_first_touch'] is True
+          assert receipt['topology_detection_ns'] >= 0
+          assert receipt['tuning_ns'] >= receipt['topology_detection_ns'] + receipt['calibration_oracle_ns']
           for candidate in receipt['calibration_candidates']:
               if candidate['tile_particles'] is not None:
                   assert candidate['tile_shape_match'] is True
                   assert candidate['calibration_effective_tile_particles'] == candidate['requested_effective_tile_particles']
+              if candidate['effective_schedule'] is not None:
+                  assert candidate['startup_includes_buffer_first_touch'] is True
           PY
           selected=$(sed -n 's/.*"selected_checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-auto-ci/receipt.json)
           oracle=$(sed -n 's/.*"oracle_checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-auto-ci/receipt.json)
@@ -137,10 +154,14 @@ jobs:
           $help = & 'cpu-runtime/target/release/galaxy-cpu.exe' --help
           if (-not ($help -match 'bench-auto')) { throw "galaxy-cpu help omitted bench-auto" }
           if (-not ($help -match 'expands resident work when needed so every advertised tile is measured')) { throw "top-level help omitted live tile-shape policy" }
+          if (-not ($help -match 'preserves the requested frame depth during calibration')) { throw "top-level help omitted frame-depth policy" }
+          if (-not ($help -match 'includes topology detection in tuning_ns')) { throw "top-level help omitted topology timing policy" }
           $autoHelp = cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help
           if ($LASTEXITCODE -ne 0) { throw "bench-auto --help failed" }
           if (-not ($autoHelp -match 'projects every calibration median to requested particle-frame work')) { throw "bench-auto help omitted score projection" }
           if (-not ($autoHelp -match 'expands resident work when needed so every advertised tile is measured')) { throw "bench-auto help omitted tile-shape policy" }
+          if (-not ($autoHelp -match 'preserves the requested frame depth during calibration')) { throw "bench-auto help omitted frame-depth policy" }
+          if (-not ($autoHelp -match 'including worker-local buffer first-touch')) { throw "bench-auto help omitted first-touch startup policy" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "verify-auto --help failed" }
           foreach ($flag in @('--path','--tile','--schedule')) {
@@ -170,13 +191,20 @@ jobs:
           if ($receipt.promotion_margin_basis_points -ne 500) { throw "auto promotion margin changed" }
           if ($receipt.score_projection -ne 'linear-particle-frame-v1') { throw "auto score projection changed" }
           if ($receipt.tile_shape_policy -ne 'expand-resident-for-effective-tile-v1') { throw "auto tile-shape policy changed" }
+          if ($receipt.frame_calibration_policy -ne 'preserve-requested-depth-v1') { throw "auto frame policy changed" }
+          if ($receipt.calibration_frames -ne $receipt.frames) { throw "calibration did not preserve requested frame depth" }
+          if (-not $receipt.persistent_startup_includes_buffer_first_touch) { throw "persistent first-touch startup marker missing" }
+          if ($receipt.topology_detection_ns -lt 0) { throw "topology timing missing" }
           if ($receipt.calibration_oracle_ns -le 0) { throw "calibration oracle timing was not recorded" }
-          if ($receipt.tuning_ns -lt $receipt.calibration_oracle_ns) { throw "tuning time excluded calibration oracle" }
+          if ($receipt.tuning_ns -lt ($receipt.topology_detection_ns + $receipt.calibration_oracle_ns)) { throw "tuning time excluded topology or calibration oracle" }
           if (-not $receipt.selected_tile_shape_match) { throw "selected tile shape did not match requested execution" }
           foreach ($candidate in @($receipt.calibration_candidates)) {
             if ($null -ne $candidate.tile_particles) {
               if (-not $candidate.tile_shape_match) { throw "candidate tile shape did not match requested execution" }
               if ($candidate.calibration_effective_tile_particles -ne $candidate.requested_effective_tile_particles) { throw "candidate effective tile fields diverged" }
+            }
+            if ($null -ne $candidate.effective_schedule -and -not $candidate.startup_includes_buffer_first_touch) {
+              throw "persistent candidate omitted first-touch startup evidence"
             }
           }
           if (-not $receipt.checksum_match) { throw "auto selected checksum did not match oracle" }
