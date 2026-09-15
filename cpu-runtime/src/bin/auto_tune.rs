@@ -699,8 +699,8 @@ pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
         calibrate_auto(&full, &topology)?;
     let tuning_ns = tuning_started.elapsed().as_nanos();
 
-    let oracle_lut = Lut::build();
     let oracle_started = std::time::Instant::now();
+    let oracle_lut = Lut::build();
     let oracle_checksum = streaming_oracle_checksum(&full, &oracle_lut)?;
     let oracle_ns = oracle_started.elapsed().as_nanos();
 
