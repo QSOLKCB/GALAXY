@@ -59,10 +59,11 @@ struct AutoCandidate {
     calibration_median_ns: u128,
     projected_median_ns: u128,
     calibration_startup_ns: u128,
-    // Persistent candidates use an observed startup for the full requested pool.
-    // Non-persistent candidates keep this at zero because their normal setup is
-    // already included in the measured execution median projected below.
+    // Persistent candidates use observed lifecycle costs for the full requested
+    // pool. Non-persistent candidates keep both at zero because their normal
+    // setup/cleanup is already included in the measured execution median below.
     startup_ns: u128,
+    teardown_ns: u128,
     score_ns: u128,
     checksum: u64,
 }
@@ -74,7 +75,7 @@ struct AutoRunEvidence {
 }
 
 pub fn auto_usage_text() -> &'static str {
-    "Usage:\n  galaxy-cpu verify-auto [--workers N]\n  galaxy-cpu bench-auto [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nPE #14 auto policy:\n  - calibrates canonical, spawned SoA, and persistent physical/logical candidates\n  - tunes over the evidence-backed tile set {1024,4096,16384,65536}\n  - starts from a 65536-particle calibration base and expands resident work when needed so every advertised tile is measured at the same effective per-worker size it will have on the requested workload\n  - preserves the requested frame depth during calibration so per-particle setup versus per-frame work keeps the requested cost mix\n  - projects every calibration median to requested particle-frame work\n  - includes topology detection in tuning_ns\n  - scores persistent candidates with observed full-requested-pool startup, including worker-local buffer first-touch\n  - reports Linux VmHWM only as the whole auto invocation high-water mark; an isolated selected-run peak is not available in-process\n  - requires at least a 5% projected win before promoting away from canonical\n  - verifies every calibration candidate against an independent streaming canonical BAM-LUT oracle\n  - verifies the selected full-workload result against the same full-workload oracle\n\nManual control remains available through `bench`, `bench-soa`, and `bench-soa-pool`. `bench-auto` therefore rejects --path, --tile, and --schedule.\n"
+    "Usage:\n  galaxy-cpu verify-auto [--workers N]\n  galaxy-cpu bench-auto [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nPE #14 auto policy:\n  - calibrates canonical, spawned SoA, and persistent physical/logical candidates\n  - tunes over the evidence-backed tile set {1024,4096,16384,65536}\n  - starts from a 65536-particle calibration base and expands resident work when needed so every advertised tile is measured at the same effective per-worker size it will have on the requested workload\n  - preserves the requested frame depth during calibration so per-particle setup versus per-frame work keeps the requested cost mix\n  - projects every calibration median to requested particle-frame work\n  - includes topology detection in tuning_ns\n  - scores persistent candidates with observed full-requested-pool startup plus teardown; startup includes worker-local buffer first-touch\n  - reports Linux VmHWM only as the whole auto invocation high-water mark; an isolated selected-run peak is not available in-process\n  - requires at least a 5% projected win before promoting away from canonical\n  - verifies every calibration candidate against an independent streaming canonical BAM-LUT oracle\n  - verifies the selected full-workload result against the same full-workload oracle\n\nManual control remains available through `bench`, `bench-soa`, and `bench-soa-pool`. `bench-auto` therefore rejects --path, --tile, and --schedule.\n"
 }
 
 fn filter_auto_args(args: &[String]) -> Result<Vec<String>, String> {
@@ -209,8 +210,14 @@ fn streaming_oracle_checksum(config: &Config, lut: &Lut) -> Result<u64, String> 
     Ok(checksum)
 }
 
-fn candidate_score(projected_median_ns: u128, startup_ns: u128, amortization_repeats: usize) -> u128 {
-    projected_median_ns.saturating_add(startup_ns / amortization_repeats.max(1) as u128)
+fn candidate_score(
+    projected_median_ns: u128,
+    startup_ns: u128,
+    teardown_ns: u128,
+    amortization_repeats: usize,
+) -> u128 {
+    let lifecycle_ns = startup_ns.saturating_add(teardown_ns);
+    projected_median_ns.saturating_add(lifecycle_ns / amortization_repeats.max(1) as u128)
 }
 
 fn effective_schedule(requested: SchedulePolicy, topology: &TopologyInfo) -> SchedulePolicy {
@@ -308,17 +315,18 @@ fn calibrate_non_persistent(
         projected_median_ns,
         calibration_startup_ns: 0,
         startup_ns: 0,
+        teardown_ns: 0,
         score_ns: projected_median_ns,
         checksum: measurement.timing.checksum,
     })
 }
 
-fn measure_full_pool_startup(
+fn measure_full_pool_lifecycle(
     full: &Config,
     topology: &TopologyInfo,
     schedule: SchedulePolicy,
     tile: usize,
-) -> Result<(usize, u128), String> {
+) -> Result<(usize, u128, u128), String> {
     let mut config = full.clone();
     config.path = ExecutionPath::WorkerSoa;
     config.tile_particles = tile.min(config.resident.max(1));
@@ -333,13 +341,16 @@ fn measure_full_pool_startup(
     // Match measure_pooled's startup boundary: LUT construction is setup shared by
     // the engine and intentionally outside the pool-startup timer. Pool::new now
     // includes worker creation, full requested tile allocation, and explicit
-    // worker-local buffer first-touch before readiness.
+    // worker-local buffer first-touch before readiness. Teardown is measured
+    // separately because Drop shuts down and joins every worker and frees buffers.
     let lut = Arc::new(Lut::build());
     let started = std::time::Instant::now();
     let pool = PersistentSoaPool::new(Arc::new(config), lut, worker_count)?;
     let startup_ns = started.elapsed().as_nanos();
+    let teardown_started = std::time::Instant::now();
     drop(pool);
-    Ok((worker_count, startup_ns))
+    let teardown_ns = teardown_started.elapsed().as_nanos();
+    Ok((worker_count, startup_ns, teardown_ns))
 }
 
 fn calibrate_persistent(
@@ -371,10 +382,11 @@ fn calibrate_persistent(
 
     // The calibration resident shape is expanded when necessary so the nominal
     // tile maps to the same effective per-worker tile as the requested workload.
-    // Full pool startup is still observed separately because allocation/thread
-    // creation/first-touch cost depends on the complete requested execution shape.
-    let (full_worker_count, full_pool_startup_ns) =
-        measure_full_pool_startup(full, topology, requested_schedule, tile)?;
+    // Full pool lifecycle is observed separately because allocation/thread
+    // creation/first-touch and shutdown/join/deallocation costs depend on the
+    // complete requested execution shape.
+    let (full_worker_count, full_pool_startup_ns, full_pool_teardown_ns) =
+        measure_full_pool_lifecycle(full, topology, requested_schedule, tile)?;
     let effective_schedule = effective_schedule(requested_schedule, topology);
     let engine = engine_for_schedule(effective_schedule);
     let (calibration_effective_tile_particles, requested_effective_tile_particles) =
@@ -403,7 +415,13 @@ fn calibrate_persistent(
         projected_median_ns,
         calibration_startup_ns: evidence.pool_startup_ns,
         startup_ns: full_pool_startup_ns,
-        score_ns: candidate_score(projected_median_ns, full_pool_startup_ns, amortization_repeats),
+        teardown_ns: full_pool_teardown_ns,
+        score_ns: candidate_score(
+            projected_median_ns,
+            full_pool_startup_ns,
+            full_pool_teardown_ns,
+            amortization_repeats,
+        ),
         checksum: evidence.measurement.timing.checksum,
     })
 }
@@ -431,7 +449,7 @@ fn choose_candidate(candidates: &[AutoCandidate]) -> Result<AutoCandidate, Strin
 
     // Every candidate score is expressed in projected full-requested-workload
     // units before the 5% promotion margin is applied. Persistent candidates then
-    // add the observed full-pool startup amortized over requested repeats.
+    // add observed full-pool startup + teardown amortized over requested repeats.
     let lhs = best_optimized.score_ns.saturating_mul(10_000);
     let rhs = canonical
         .score_ns
@@ -582,13 +600,14 @@ fn json_bool_auto(value: bool) -> &'static str {
 
 fn candidate_json(candidate: AutoCandidate) -> String {
     let persistent = candidate.effective_schedule.is_some();
-    let startup_scope = if persistent {
+    let lifecycle_scope = if persistent {
         "\"full-requested-pool\""
     } else {
         "null"
     };
+    let lifecycle_ns = candidate.startup_ns.saturating_add(candidate.teardown_ns);
     format!(
-        "{{\"engine\":\"{}\",\"schedule\":{},\"requested_schedule\":{},\"effective_schedule\":{},\"schedule_fell_back_to_logical\":{},\"tile_particles\":{},\"calibration_workers\":{},\"effective_workers\":{},\"calibration_effective_tile_particles\":{},\"requested_effective_tile_particles\":{},\"tile_shape_match\":{},\"calibration_median_ns\":{},\"projected_median_ns\":{},\"calibration_startup_ns\":{},\"startup_ns\":{},\"startup_scope\":{},\"startup_includes_buffer_first_touch\":{},\"score_ns\":{},\"checksum\":\"{:016x}\"}}",
+        "{{\"engine\":\"{}\",\"schedule\":{},\"requested_schedule\":{},\"effective_schedule\":{},\"schedule_fell_back_to_logical\":{},\"tile_particles\":{},\"calibration_workers\":{},\"effective_workers\":{},\"calibration_effective_tile_particles\":{},\"requested_effective_tile_particles\":{},\"tile_shape_match\":{},\"calibration_median_ns\":{},\"projected_median_ns\":{},\"calibration_startup_ns\":{},\"startup_ns\":{},\"startup_scope\":{},\"startup_includes_buffer_first_touch\":{},\"teardown_ns\":{},\"teardown_scope\":{},\"lifecycle_ns\":{},\"score_ns\":{},\"checksum\":\"{:016x}\"}}",
         candidate.engine.name(),
         optional_schedule_json(candidate.effective_schedule),
         optional_schedule_json(candidate.requested_schedule),
@@ -607,8 +626,11 @@ fn candidate_json(candidate: AutoCandidate) -> String {
         candidate.projected_median_ns,
         candidate.calibration_startup_ns,
         candidate.startup_ns,
-        startup_scope,
+        lifecycle_scope,
         json_bool_auto(persistent),
+        candidate.teardown_ns,
+        lifecycle_scope,
+        lifecycle_ns,
         candidate.score_ns,
         candidate.checksum,
     )
@@ -633,8 +655,9 @@ fn auto_receipt_json(
         .map(candidate_json)
         .collect::<Vec<_>>()
         .join(",");
+    let selected_lifecycle_ns = selected.startup_ns.saturating_add(selected.teardown_ns);
     format!(
-        "{{\n  \"schema\": \"{AUTO_RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"execution_mode\": \"host-auto\",\n  \"selection_policy\": \"{AUTO_POLICY}\",\n  \"canonical_oracle\": \"{AUTO_ORACLE}\",\n  \"parity_fail_closed\": true,\n  \"promotion_margin_basis_points\": {AUTO_PROMOTION_MARGIN_BPS},\n  \"score_projection\": \"{AUTO_SCORE_PROJECTION}\",\n  \"tile_shape_policy\": \"{AUTO_TILE_SHAPE_POLICY}\",\n  \"frame_calibration_policy\": \"{AUTO_FRAME_POLICY}\",\n  \"calibration_base_resident_particles\": {AUTO_CALIBRATION_BASE_RESIDENT},\n  \"persistent_startup_score_scope\": \"full-requested-pool\",\n  \"persistent_startup_includes_buffer_first_touch\": true,\n  \"rss_metric\": \"{AUTO_RSS_METRIC}\",\n  \"rss_scope\": \"{AUTO_RSS_SCOPE}\",\n  \"selected_run_peak_rss_available\": false,\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"detected_physical_cores\": {},\n  \"topology_source\": \"{}\",\n  \"topology_detection_ns\": {},\n  \"calibration_resident_particles\": {},\n  \"calibration_frames\": {},\n  \"calibration_repeats\": {},\n  \"calibration_work_units\": {},\n  \"requested_work_units\": {},\n  \"calibration_oracle_ns\": {},\n  \"calibration_candidate_count\": {},\n  \"calibration_candidates\": [{}],\n  \"tuning_ns\": {},\n  \"selected_engine\": \"{}\",\n  \"selected_schedule\": {},\n  \"selected_requested_schedule\": {},\n  \"selected_schedule_fell_back_to_logical\": {},\n  \"selected_tile_particles\": {},\n  \"selected_calibration_effective_tile_particles\": {},\n  \"selected_requested_effective_tile_particles\": {},\n  \"selected_tile_shape_match\": {},\n  \"selected_effective_workers\": {},\n  \"selected_calibration_median_ns\": {},\n  \"selected_projected_median_ns\": {},\n  \"selected_score_ns\": {},\n  \"selected_calibration_pool_startup_ns\": {},\n  \"selected_scored_full_pool_startup_ns\": {},\n  \"selected_pool_startup_ns\": {},\n  \"full_oracle_ns\": {},\n  \"oracle_checksum\": \"{:016x}\",\n  \"selected_checksum\": \"{:016x}\",\n  \"checksum_match\": true,\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"auto_invocation_peak_rss_kib\": {},\n  \"selected_run_peak_rss_kib\": null,\n  \"claim_boundary\": \"Host-aware selection begins with a bounded deterministic calibration base but expands calibration resident work when needed so each advertised tile is measured at the same effective per-worker tile size as the requested workload. Calibration preserves the requested frame depth so candidate ranking retains the requested per-particle versus per-frame cost mix. Candidate medians are projected to requested particle-frame work before the 5% promotion margin. Persistent candidates additionally include observed full-requested-pool startup, including worker-local buffer first-touch, amortized over requested repeats. Topology detection is included in tuning_ns. Linux VmHWM is process-wide and monotonic, so RSS is reported only as the whole auto invocation high-water mark; this in-process tuner does not claim an isolated selected-run peak RSS. Physical-first fallback is reported explicitly. Every calibration candidate and the selected full-workload result must match the independent streaming canonical BAM-LUT oracle or execution fails closed.\"\n}}\n",
+        "{{\n  \"schema\": \"{AUTO_RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"execution_mode\": \"host-auto\",\n  \"selection_policy\": \"{AUTO_POLICY}\",\n  \"canonical_oracle\": \"{AUTO_ORACLE}\",\n  \"parity_fail_closed\": true,\n  \"promotion_margin_basis_points\": {AUTO_PROMOTION_MARGIN_BPS},\n  \"score_projection\": \"{AUTO_SCORE_PROJECTION}\",\n  \"tile_shape_policy\": \"{AUTO_TILE_SHAPE_POLICY}\",\n  \"frame_calibration_policy\": \"{AUTO_FRAME_POLICY}\",\n  \"calibration_base_resident_particles\": {AUTO_CALIBRATION_BASE_RESIDENT},\n  \"persistent_startup_score_scope\": \"full-requested-pool\",\n  \"persistent_teardown_score_scope\": \"full-requested-pool\",\n  \"persistent_startup_includes_buffer_first_touch\": true,\n  \"rss_metric\": \"{AUTO_RSS_METRIC}\",\n  \"rss_scope\": \"{AUTO_RSS_SCOPE}\",\n  \"selected_run_peak_rss_available\": false,\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"detected_physical_cores\": {},\n  \"topology_source\": \"{}\",\n  \"topology_detection_ns\": {},\n  \"calibration_resident_particles\": {},\n  \"calibration_frames\": {},\n  \"calibration_repeats\": {},\n  \"calibration_work_units\": {},\n  \"requested_work_units\": {},\n  \"calibration_oracle_ns\": {},\n  \"calibration_candidate_count\": {},\n  \"calibration_candidates\": [{}],\n  \"tuning_ns\": {},\n  \"selected_engine\": \"{}\",\n  \"selected_schedule\": {},\n  \"selected_requested_schedule\": {},\n  \"selected_schedule_fell_back_to_logical\": {},\n  \"selected_tile_particles\": {},\n  \"selected_calibration_effective_tile_particles\": {},\n  \"selected_requested_effective_tile_particles\": {},\n  \"selected_tile_shape_match\": {},\n  \"selected_effective_workers\": {},\n  \"selected_calibration_median_ns\": {},\n  \"selected_projected_median_ns\": {},\n  \"selected_score_ns\": {},\n  \"selected_calibration_pool_startup_ns\": {},\n  \"selected_scored_full_pool_startup_ns\": {},\n  \"selected_scored_full_pool_teardown_ns\": {},\n  \"selected_scored_full_pool_lifecycle_ns\": {},\n  \"selected_pool_startup_ns\": {},\n  \"full_oracle_ns\": {},\n  \"oracle_checksum\": \"{:016x}\",\n  \"selected_checksum\": \"{:016x}\",\n  \"checksum_match\": true,\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"auto_invocation_peak_rss_kib\": {},\n  \"selected_run_peak_rss_kib\": null,\n  \"claim_boundary\": \"Host-aware selection begins with a bounded deterministic calibration base but expands calibration resident work when needed so each advertised tile is measured at the same effective per-worker tile size as the requested workload. Calibration preserves the requested frame depth so candidate ranking retains the requested per-particle versus per-frame cost mix. Candidate medians are projected to requested particle-frame work before the 5% promotion margin. Persistent candidates additionally include observed full-requested-pool startup, including worker-local buffer first-touch, plus observed shutdown/join/deallocation teardown, amortized together over requested repeats. Topology detection is included in tuning_ns. Linux VmHWM is process-wide and monotonic, so RSS is reported only as the whole auto invocation high-water mark; this in-process tuner does not claim an isolated selected-run peak RSS. Physical-first fallback is reported explicitly. Every calibration candidate and the selected full-workload result must match the independent streaming canonical BAM-LUT oracle or execution fails closed.\"\n}}\n",
         std::env::consts::ARCH,
         std::env::consts::OS,
         full.logical,
@@ -673,6 +696,8 @@ fn auto_receipt_json(
         selected.score_ns,
         selected.calibration_startup_ns,
         selected.startup_ns,
+        selected.teardown_ns,
+        selected_lifecycle_ns,
         optional_u128_json(evidence.pool_startup_ns),
         oracle_ns,
         oracle_checksum,
@@ -722,6 +747,7 @@ pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
     println!("frame_calibration_policy={AUTO_FRAME_POLICY}");
     println!("calibration_base_resident_particles={AUTO_CALIBRATION_BASE_RESIDENT}");
     println!("persistent_startup_score_scope=full-requested-pool");
+    println!("persistent_teardown_score_scope=full-requested-pool");
     println!("persistent_startup_includes_buffer_first_touch=true");
     println!("rss_metric={AUTO_RSS_METRIC}");
     println!("rss_scope={AUTO_RSS_SCOPE}");
@@ -779,6 +805,11 @@ pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
         selected.calibration_startup_ns
     );
     println!("selected_scored_full_pool_startup_ns={}", selected.startup_ns);
+    println!("selected_scored_full_pool_teardown_ns={}", selected.teardown_ns);
+    println!(
+        "selected_scored_full_pool_lifecycle_ns={}",
+        selected.startup_ns.saturating_add(selected.teardown_ns)
+    );
     println!("full_oracle_ns={oracle_ns}");
     println!("checksum={:016x}", evidence.measurement.timing.checksum);
     println!("best_ns={}", evidence.measurement.timing.best_ns);
@@ -870,6 +901,7 @@ mod auto_tests {
             projected_median_ns,
             calibration_startup_ns: 0,
             startup_ns,
+            teardown_ns: 0,
             score_ns,
             checksum: 1,
         }
@@ -1001,7 +1033,7 @@ mod auto_tests {
             800,
             16_000,
             300,
-            candidate_score(16_000, 300, 1),
+            candidate_score(16_000, 300, 0, 1),
         );
         assert_eq!(choose_candidate(&[canonical, fast]).unwrap().engine, AutoEngine::PersistentPhysical);
     }
@@ -1014,12 +1046,30 @@ mod auto_tests {
             800,
             800,
             300,
-            candidate_score(800, 300, 1),
+            candidate_score(800, 300, 0, 1),
         );
         assert_eq!(
             choose_candidate(&[canonical, misleading]).unwrap().engine,
             AutoEngine::Canonical
         );
+    }
+
+    #[test]
+    fn full_pool_teardown_can_block_persistent_promotion() {
+        let canonical = candidate(AutoEngine::Canonical, 1000, 1000, 0, 1000);
+        let mut misleading = candidate(AutoEngine::PersistentPhysical, 800, 800, 50, 0);
+        misleading.teardown_ns = 250;
+        misleading.score_ns = candidate_score(800, 50, 250, 1);
+        assert_eq!(misleading.score_ns, 1_100);
+        assert_eq!(
+            choose_candidate(&[canonical, misleading]).unwrap().engine,
+            AutoEngine::Canonical
+        );
+    }
+
+    #[test]
+    fn lifecycle_cost_is_amortized_together() {
+        assert_eq!(candidate_score(800, 100, 100, 2), 900);
     }
 
     #[test]
