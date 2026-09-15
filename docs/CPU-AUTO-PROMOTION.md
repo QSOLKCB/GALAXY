@@ -91,7 +91,7 @@ This means a deep requested run is ranked at the same frame depth rather than ex
 
 ## Full-requested-workload score projection
 
-Promotion compares like with like. A calibration median is **not** compared directly with a full-requested-pool startup cost.
+Promotion compares like with like. A calibration median is **not** compared directly with a full-requested-pool lifecycle cost.
 
 Every candidate's calibration median is projected to the requested particle-frame work using:
 
@@ -114,27 +114,44 @@ score_projection = linear-particle-frame-v1
 
 The projection is an explicit host/workload tuning heuristic, not a theorem that runtime is perfectly linear. The selected full workload is still executed and checked against the independent oracle after selection.
 
-Canonical and spawned-SoA candidates use the projected median directly as their score. Their normal per-execution setup is already included in the measured calibration median and is therefore carried by the same projection.
+Canonical and spawned-SoA candidates use the projected median directly as their score. Their normal per-execution setup and cleanup are already included in the measured calibration median and are therefore carried by the same projection.
 
-Persistent candidates add one extra term:
+Persistent candidates add one lifecycle term:
 
 - steady-state median is measured on the tile-faithful, frame-faithful calibration shape and projected to requested particle-frame work;
 - pool startup is measured separately with the **full requested resident count, worker policy, and candidate tile size**;
 - persistent worker-local buffers are allocated and explicitly first-touched before workers report ready;
-- that observed full-pool startup is amortized across the requested repeat count.
+- pool teardown is measured separately beginning immediately before `drop(pool)` and includes shutdown signalling, worker joins, and worker-local buffer destruction/deallocation;
+- the observed full-pool startup and teardown are summed and amortized together across the requested repeat count.
 
 Thus:
 
 ```text
-persistent_score = projected_median + full_pool_startup / requested_repeats
+full_pool_lifecycle = full_pool_startup + full_pool_teardown
+
+persistent_score = projected_median
+                 + full_pool_lifecycle / requested_repeats
 ```
 
-The full-pool probe constructs the actual persistent worker set and waits until every worker has allocated and first-touched its requested worker-local tile capacity and reported ready. LUT construction remains outside that startup timer, matching the established persistent runtime timing boundary.
+The full-pool lifecycle probe constructs the actual persistent worker set and waits until every worker has allocated and first-touched its requested worker-local tile capacity and reported ready. It then measures teardown beginning immediately before `drop(pool)`. LUT construction remains outside the startup/teardown lifecycle timers, matching the established persistent runtime timing boundary.
 
-The receipt preserves both the calibration-pool startup and the scored full-requested-pool startup for audit and records:
+The receipt preserves the calibration-pool startup plus the scored full-requested-pool startup, teardown, and lifecycle total for audit. Persistent candidates record:
 
 ```text
-persistent_startup_includes_buffer_first_touch = true
+startup_ns
+teardown_ns
+lifecycle_ns = startup_ns + teardown_ns
+startup_scope = full-requested-pool
+teardown_scope = full-requested-pool
+startup_includes_buffer_first_touch = true
+```
+
+Top-level selected-candidate evidence also records:
+
+```text
+selected_scored_full_pool_startup_ns
+selected_scored_full_pool_teardown_ns
+selected_scored_full_pool_lifecycle_ns
 ```
 
 ## Scheduling evidence and fallback
@@ -197,11 +214,11 @@ The calibration-oracle portion is also recorded separately as:
 calibration_oracle_ns
 ```
 
-Both are included inside `tuning_ns`. The later full-workload oracle remains separate as `full_oracle_ns` because it validates the selected execution rather than choosing the candidate.
+Both are included inside `tuning_ns`. The later full-workload oracle remains separate as `full_oracle_ns` because it validates the selected execution rather than choosing the candidate. `full_oracle_ns` includes both LUT construction and the streaming checksum/validation loop, matching the calibration-oracle timing scope.
 
 ## RSS evidence scope
 
-Linux RSS evidence comes from `/proc/self/status` `VmHWM`. That value is a **process-wide monotonic high-water mark**: once an earlier calibration candidate or full-pool startup probe raises it, it cannot later be interpreted as the isolated peak of the selected engine.
+Linux RSS evidence comes from `/proc/self/status` `VmHWM`. That value is a **process-wide monotonic high-water mark**: once an earlier calibration candidate or full-pool lifecycle probe raises it, it cannot later be interpreted as the isolated peak of the selected engine.
 
 The auto receipt therefore does not expose the ambiguous generic `peak_rss_kib` field. Instead it records:
 
@@ -213,7 +230,7 @@ selected_run_peak_rss_available = false
 selected_run_peak_rss_kib = null
 ```
 
-This value may include memory used by topology-driven calibration, candidate execution, full-pool startup probes, the full oracle, and the selected run. It is valid as the high-water mark of the **entire `bench-auto` process invocation**, not as selected-engine memory evidence.
+This value may include memory used by topology-driven calibration, candidate execution, full-pool lifecycle probes, the full oracle, and the selected run. It is valid as the high-water mark of the **entire `bench-auto` process invocation**, not as selected-engine memory evidence.
 
 Selected-engine memory comparisons must therefore use an isolated/manual execution surface such as `bench`, `bench-soa`, or `bench-soa-pool`, or a future subprocess/isolation mechanism that can obtain an independent high-water mark.
 
@@ -232,6 +249,7 @@ score_projection = linear-particle-frame-v1
 tile_shape_policy = expand-resident-for-effective-tile-v1
 frame_calibration_policy = preserve-requested-depth-v1
 persistent_startup_score_scope = full-requested-pool
+persistent_teardown_score_scope = full-requested-pool
 persistent_startup_includes_buffer_first_touch = true
 rss_scope = whole-auto-invocation
 selected_run_peak_rss_available = false
@@ -252,6 +270,8 @@ The receipt records:
 - candidate checksum and projected score;
 - calibration-pool startup for persistent candidates;
 - full-requested-pool startup used for persistent scoring, including explicit buffer first-touch;
+- full-requested-pool teardown used for persistent scoring, including shutdown, joins, and buffer destruction/deallocation;
+- full-requested-pool lifecycle total, equal to startup plus teardown;
 - promotion margin;
 - selected engine, effective scheduling mode, requested scheduling mode, tile and worker count;
 - selected effective tile-shape evidence;
@@ -263,7 +283,7 @@ The receipt records:
 
 ## Claim boundary
 
-The selected configuration is host- and workload-specific evidence derived from a deterministic tile-faithful and frame-faithful calibration shape, an explicit particle-frame score projection, and—where applicable—an observed full-requested-pool startup probe that includes worker-local buffer first-touch. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
+The selected configuration is host- and workload-specific evidence derived from a deterministic tile-faithful and frame-faithful calibration shape, an explicit particle-frame score projection, and—where applicable—an observed full-requested-pool lifecycle probe. Persistent lifecycle scoring includes both worker creation/allocation/first-touch startup and shutdown/join/deallocation teardown. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
 
 Auto RSS is likewise invocation-scoped evidence. Because Linux `VmHWM` is process-wide and monotonic, PE #14 does not claim an isolated memory footprint for the selected engine from the in-process tuning run.
 
@@ -278,13 +298,14 @@ PE #14 passes only if:
 3. every tiled candidate is measured at the same effective per-worker tile size it will have on the requested workload;
 4. calibration preserves the requested frame depth;
 5. every candidate score is expressed on the same requested particle-frame scale before promotion;
-6. persistent promotion accounts for observed startup of the full requested pool shape **including worker-local buffer first-touch**;
-7. physical-first fallback is reported as logical execution when physical topology is unavailable;
-8. tuning time starts before topology detection and separately records topology and calibration-oracle components;
-9. the selected full workload matches the full oracle exactly;
-10. near-ties remain canonical because of the 5% promotion margin;
-11. material measured/projected wins may promote to spawned or persistent SoA;
-12. auto RSS is labeled as whole-invocation high-water evidence and never presented as an isolated selected-run peak;
-13. public auto help is sourced from the live policy text rather than a duplicate dispatcher string;
-14. existing canonical and manual optimized commands remain unchanged;
-15. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
+6. persistent promotion accounts for the observed full requested pool lifecycle: startup **including worker-local buffer first-touch** plus teardown **including shutdown, worker joins, and buffer destruction/deallocation**;
+7. persistent receipts satisfy `lifecycle_ns = startup_ns + teardown_ns` and scoring amortizes that lifecycle total across requested repeats;
+8. physical-first fallback is reported as logical execution when physical topology is unavailable;
+9. tuning time starts before topology detection and separately records topology and calibration-oracle components;
+10. the selected full workload matches the full oracle exactly;
+11. near-ties remain canonical because of the 5% promotion margin;
+12. material measured/projected wins may promote to spawned or persistent SoA;
+13. auto RSS is labeled as whole-invocation high-water evidence and never presented as an isolated selected-run peak;
+14. public auto help is sourced from the live policy text rather than a duplicate dispatcher string;
+15. existing canonical and manual optimized commands remain unchanged;
+16. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
