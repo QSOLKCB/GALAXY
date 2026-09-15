@@ -307,7 +307,12 @@ fn radians_to_bam(radians: f64) -> u32 {
     scaled as u32
 }
 
-fn particle_fields(index: usize, resident: usize, logical: u64, seed: u32) -> Result<(u64, i32, u32, u32, f64, f64), String> {
+fn particle_fields(
+    index: usize,
+    resident: usize,
+    logical: u64,
+    seed: u32,
+) -> Result<(u64, i32, u32, u32, f64, f64), String> {
     let id = logical_id(index, resident, logical);
     let u = unit24(address_word(id, seed, 0));
     let kind = unit24(address_word(id, seed, 4));
@@ -319,7 +324,14 @@ fn particle_fields(index: usize, resident: usize, logical: u64, seed: u32) -> Re
     let initial_rad = initial_bam as f64 * TURN_SCALE;
     let delta_rad = rate * PHASE_STEP;
     let delta_bam = radians_to_bam(delta_rad);
-    Ok((id, radius_q16, initial_bam, delta_bam, initial_rad, delta_rad))
+    Ok((
+        id,
+        radius_q16,
+        initial_bam,
+        delta_bam,
+        initial_rad,
+        delta_rad,
+    ))
 }
 
 fn build_reference_particles(config: &Config) -> Result<Vec<ReferenceParticle>, String> {
@@ -501,6 +513,17 @@ fn partition(total: usize, worker_count: usize, worker_index: usize) -> (usize, 
     (start, start + len)
 }
 
+fn soa_worker_tile_capacity_particles(
+    resident: usize,
+    worker_count: usize,
+    tile_particles: usize,
+) -> usize {
+    (0..worker_count).fold(0_usize, |total, worker_index| {
+        let (start, end) = partition(resident, worker_count, worker_index);
+        total.saturating_add(tile_particles.min(end.saturating_sub(start)))
+    })
+}
+
 fn execute_soa(config: &Config, lut: &Lut, worker_count: usize) -> Result<u64, String> {
     if worker_count == 1 {
         return execute_soa_worker(0, config.resident, config, lut);
@@ -595,9 +618,16 @@ fn json_optional_u64(value: Option<u64>) -> String {
 fn receipt_json(config: &Config, measurement: Measurement) -> String {
     let compact_field_bytes = 5 * size_of::<u32>();
     let scratch_bytes = 2 * size_of::<u32>() + size_of::<u64>();
+    let worker_tile_capacity_particles = match config.path {
+        ExecutionPath::Reference => 0,
+        ExecutionPath::WorkerSoa => soa_worker_tile_capacity_particles(
+            config.resident,
+            measurement.effective_workers,
+            config.tile_particles,
+        ),
+    };
     let worker_tile_capacity_bytes = (compact_field_bytes + scratch_bytes)
-        .saturating_mul(config.tile_particles)
-        .saturating_mul(measurement.effective_workers);
+        .saturating_mul(worker_tile_capacity_particles);
     format!(
         "{{\n  \"schema\": \"{RECEIPT_SCHEMA}\",\n  \"runtime\": \"worker-soa-prototype\",\n  \"execution_path\": \"{}\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"addressing\": \"{ADDRESSING}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"effective_workers\": {},\n  \"tile_particles\": {},\n  \"reference_particle_bytes\": {},\n  \"soa_compact_field_bytes_per_particle\": {},\n  \"soa_scratch_bytes_per_particle\": {},\n  \"soa_worker_tile_capacity_bytes\": {},\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"checksum\": \"{:016x}\",\n  \"peak_rss_kib\": {},\n  \"resident_generation_in_timed_region\": true,\n  \"timing_scope\": \"resident-generation-plus-bam-lut-projection-plus-contribution-plus-worker-reduction\",\n  \"claim_boundary\": \"Experimental end-to-end BAM-LUT path evidence. This receipt does not replace galaxy-cpu and does not establish a universal production speedup. RSS is Linux VmHWM when available, otherwise null.\"\n}}\n",
         config.path.name(),
@@ -683,7 +713,12 @@ fn run_verify(requested_workers: usize, requested_tile: usize) -> Result<(), Str
     let reference_particles = build_reference_particles(&config)?;
     let reference = execute_reference_range(&reference_particles, config.frames, &lut);
 
-    let mut tiles = vec![1_usize, 7, 127, requested_tile.min(config.resident).max(1)];
+    let mut tiles = vec![
+        1_usize,
+        7,
+        127,
+        requested_tile.min(config.resident).max(1),
+    ];
     tiles.sort_unstable();
     tiles.dedup();
     for tile in tiles {
@@ -716,7 +751,11 @@ fn run_verify(requested_workers: usize, requested_tile: usize) -> Result<(), Str
         id_hi.push((id >> 32) as u32);
         x.push(xv);
         y.push(yv);
-        expected.push(contribution_reference(id, xv as i32 as i64, yv as i32 as i64));
+        expected.push(contribution_reference(
+            id,
+            xv as i32 as i64,
+            yv as i32 as i64,
+        ));
     }
     let mut actual = vec![0_u64; ids.len()];
     galaxy_worker_soa_hash_batch(&id_lo, &id_hi, &x, &y, &mut actual);
@@ -724,7 +763,10 @@ fn run_verify(requested_workers: usize, requested_tile: usize) -> Result<(), Str
         return Err("SIMD batch contribution diverged from canonical contribution".into());
     }
 
-    println!("verify_reference_particle_bytes={}", size_of::<ReferenceParticle>());
+    println!(
+        "verify_reference_particle_bytes={}",
+        size_of::<ReferenceParticle>()
+    );
     println!("verify_effective_workers={effective}");
     println!("verify_checksum={reference:016x}");
     println!("GALAXY worker-local SoA prototype verification passed");
@@ -742,7 +784,9 @@ fn main() {
             print!("{}", usage());
             Ok(())
         }
-        Some("verify") => parse_verify(&args[1..]).and_then(|(workers, tile)| run_verify(workers, tile)),
+        Some("verify") => {
+            parse_verify(&args[1..]).and_then(|(workers, tile)| run_verify(workers, tile))
+        }
         Some("bench") if help_requested(&args[1..]) => {
             print!("{}", usage());
             Ok(())
@@ -798,6 +842,13 @@ mod tests {
     }
 
     #[test]
+    fn soa_tile_capacity_matches_actual_worker_allocations() {
+        assert_eq!(soa_worker_tile_capacity_particles(1, 1, MAX_TILE), 1);
+        assert_eq!(soa_worker_tile_capacity_particles(10, 4, 8), 10);
+        assert_eq!(soa_worker_tile_capacity_particles(100, 4, 8), 32);
+    }
+
+    #[test]
     fn soa_matches_reference_across_tiles_and_workers() {
         let lut = Lut::build();
         for workers in [1_usize, 2, 4] {
@@ -839,6 +890,27 @@ mod tests {
                 contribution_reference(id, x[index] as i32 as i64, y[index] as i32 as i64)
             );
         }
+    }
+
+    #[test]
+    fn receipt_reports_actual_soa_capacity_and_zero_for_reference() {
+        let measurement = Measurement {
+            timing: Timing {
+                best_ns: 10,
+                median_ns: 12,
+                checksum: 0x1234,
+            },
+            available_parallelism: 32,
+            effective_workers: 1,
+            peak_rss_kib: Some(4096),
+        };
+        let soa_config = config(ExecutionPath::WorkerSoa, 1, 1, MAX_TILE);
+        let soa_receipt = receipt_json(&soa_config, measurement);
+        assert!(soa_receipt.contains("\"soa_worker_tile_capacity_bytes\": 36"));
+
+        let reference_config = config(ExecutionPath::Reference, 1, 1, MAX_TILE);
+        let reference_receipt = receipt_json(&reference_config, measurement);
+        assert!(reference_receipt.contains("\"soa_worker_tile_capacity_bytes\": 0"));
     }
 
     #[test]
