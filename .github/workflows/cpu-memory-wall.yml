@@ -1,0 +1,69 @@
+name: CPU memory-wall probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cpu-runtime/**'
+      - 'retro/**'
+      - 'rust/**'
+      - 'scripts/bench-cpu-memory-wall.sh'
+      - 'docs/CPU-MEMORY-WALL.md'
+      - 'ROADMAP.md'
+      - '.github/workflows/cpu-memory-wall.yml'
+  pull_request:
+    paths:
+      - 'cpu-runtime/**'
+      - 'retro/**'
+      - 'rust/**'
+      - 'scripts/bench-cpu-memory-wall.sh'
+      - 'docs/CPU-MEMORY-WALL.md'
+      - 'ROADMAP.md'
+      - '.github/workflows/cpu-memory-wall.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-memory-wall:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.85.0'
+      - name: Unit tests
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline --bin memory_wall_probe
+      - name: Exact memory-wall parity matrix
+        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin memory_wall_probe -- verify --workers 4
+      - name: Bounded fused quarter-LUT receipt
+        shell: bash
+        run: |
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin memory_wall_probe -- \
+            bench \
+            --reduce fused \
+            --lut quarter \
+            --logical 18446744073709551615 \
+            --resident 32768 \
+            --frames 3 \
+            --workers 4 \
+            --tile 128 \
+            --repeats 2 \
+            --seed 303 \
+            --receipt memory-wall.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('memory-wall.json', encoding='utf-8'))
+          assert d['schema'] == 'galaxy.cpu-memory-wall-probe.v1'
+          assert d['reduction_mode'] == 'fused-hash-reduce'
+          assert d['materializes_contribution_array'] is False
+          assert d['lut_mode'] == 'quarter-cosine-plus-exact-correction-palette-v1'
+          assert d['lut_exact_sample_parity'] is True
+          assert d['working_bytes_per_tiled_particle'] == 28
+          assert d['lut_storage_bytes'] < 131072
+          assert d['microtile_particles'] == 128
+          PY
