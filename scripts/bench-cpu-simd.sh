@@ -156,7 +156,8 @@ summarize_isa() {
 
   evex_lines=$(grep -Ec '^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]+62([[:space:]]|$)' "$asm" || true)
   vex_lines=$(grep -Ec '^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]+(c4|c5)([[:space:]]|$)' "$asm" || true)
-  packed_count=$(grep -E '^(vp(add|sub|xor|mul|sr|sl|or|and)|p(add|sub|xor|mul|sr|sl|or|and))' "$mnemonics" | wc -l | tr -d ' ' || true)
+  packed_mnemonic_re='^(vp(add|sub|xor|mul|sr|sl|or|and)|p(add|sub|xor|mul|sr|sl|or|and))'
+  packed_count=$(grep -E "$packed_mnemonic_re" "$mnemonics" | wc -l | tr -d ' ' || true)
 
   {
     printf 'variant=%s\n' "$variant"
@@ -165,7 +166,7 @@ summarize_isa() {
     printf 'vex_encoded_instruction_lines=%s\n' "$vex_lines"
     printf 'decoded_packed_integer_vector_instruction_count=%s\n' "$packed_count"
     printf '%s\n' 'decoded_vector_mnemonics:'
-    grep -E '^(v|p)(p(add|sub|xor|mul|sr|sl|or|and)|movd|movq)' "$mnemonics" \
+    grep -E "$packed_mnemonic_re" "$mnemonics" \
       | sort | uniq -c || true
     printf '%s\n' 'interpretation:'
     printf '%s\n' '- EVEX-encoded instructions are direct evidence of EVEX/AVX-512-family code generation.'
