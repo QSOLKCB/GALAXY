@@ -52,11 +52,13 @@ jobs:
           printf '%s\n' "$top_help" | grep -q 'expands resident work when needed so every advertised tile is measured'
           printf '%s\n' "$top_help" | grep -q 'preserves the requested frame depth during calibration'
           printf '%s\n' "$top_help" | grep -q 'includes topology detection in tuning_ns'
+          printf '%s\n' "$top_help" | grep -q 'whole auto invocation high-water mark'
           auto_help=$(cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help)
           printf '%s\n' "$auto_help" | grep -q 'projects every calibration median to requested particle-frame work'
           printf '%s\n' "$auto_help" | grep -q 'expands resident work when needed so every advertised tile is measured'
           printf '%s\n' "$auto_help" | grep -q 'preserves the requested frame depth during calibration'
           printf '%s\n' "$auto_help" | grep -q 'including worker-local buffer first-touch'
+          printf '%s\n' "$auto_help" | grep -q 'whole auto invocation high-water mark'
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --help >/dev/null
           for flag in --path --tile --schedule; do
             if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto "$flag" 1 >/dev/null 2>&1; then
@@ -92,6 +94,10 @@ jobs:
           grep -q '^tile_shape_policy=expand-resident-for-effective-tile-v1$' runs/cpu-auto-ci/stdout.txt
           grep -q '^frame_calibration_policy=preserve-requested-depth-v1$' runs/cpu-auto-ci/stdout.txt
           grep -q '^persistent_startup_includes_buffer_first_touch=true$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^rss_scope=whole-auto-invocation$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^selected_run_peak_rss_available=false$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^selected_run_peak_rss_kib=unavailable$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^auto_invocation_peak_rss_kib=' runs/cpu-auto-ci/stdout.txt
           grep -q '^topology_detection_ns=' runs/cpu-auto-ci/stdout.txt
           grep -q '^calibration_oracle_ns=' runs/cpu-auto-ci/stdout.txt
           grep -q '"schema": "galaxy.cpu-runtime-auto-receipt.v1"' runs/cpu-auto-ci/receipt.json
@@ -105,6 +111,10 @@ jobs:
           grep -q '"tile_shape_policy": "expand-resident-for-effective-tile-v1"' runs/cpu-auto-ci/receipt.json
           grep -q '"frame_calibration_policy": "preserve-requested-depth-v1"' runs/cpu-auto-ci/receipt.json
           grep -q '"persistent_startup_includes_buffer_first_touch": true' runs/cpu-auto-ci/receipt.json
+          grep -q '"rss_scope": "whole-auto-invocation"' runs/cpu-auto-ci/receipt.json
+          grep -q '"selected_run_peak_rss_available": false' runs/cpu-auto-ci/receipt.json
+          grep -q '"selected_run_peak_rss_kib": null' runs/cpu-auto-ci/receipt.json
+          grep -q '"auto_invocation_peak_rss_kib":' runs/cpu-auto-ci/receipt.json
           grep -q '"topology_detection_ns":' runs/cpu-auto-ci/receipt.json
           grep -q '"calibration_work_units":' runs/cpu-auto-ci/receipt.json
           grep -q '"requested_work_units":' runs/cpu-auto-ci/receipt.json
@@ -120,6 +130,12 @@ jobs:
           assert receipt['frame_calibration_policy'] == 'preserve-requested-depth-v1'
           assert receipt['calibration_frames'] == receipt['frames']
           assert receipt['persistent_startup_includes_buffer_first_touch'] is True
+          assert receipt['rss_metric'] == 'linux-vmhwm-process-high-water-mark-when-available'
+          assert receipt['rss_scope'] == 'whole-auto-invocation'
+          assert receipt['selected_run_peak_rss_available'] is False
+          assert receipt['selected_run_peak_rss_kib'] is None
+          assert 'auto_invocation_peak_rss_kib' in receipt
+          assert 'peak_rss_kib' not in receipt
           assert receipt['topology_detection_ns'] >= 0
           assert receipt['tuning_ns'] >= receipt['topology_detection_ns'] + receipt['calibration_oracle_ns']
           for candidate in receipt['calibration_candidates']:
@@ -156,12 +172,14 @@ jobs:
           if (-not ($help -match 'expands resident work when needed so every advertised tile is measured')) { throw "top-level help omitted live tile-shape policy" }
           if (-not ($help -match 'preserves the requested frame depth during calibration')) { throw "top-level help omitted frame-depth policy" }
           if (-not ($help -match 'includes topology detection in tuning_ns')) { throw "top-level help omitted topology timing policy" }
+          if (-not ($help -match 'whole auto invocation high-water mark')) { throw "top-level help omitted RSS scope" }
           $autoHelp = cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help
           if ($LASTEXITCODE -ne 0) { throw "bench-auto --help failed" }
           if (-not ($autoHelp -match 'projects every calibration median to requested particle-frame work')) { throw "bench-auto help omitted score projection" }
           if (-not ($autoHelp -match 'expands resident work when needed so every advertised tile is measured')) { throw "bench-auto help omitted tile-shape policy" }
           if (-not ($autoHelp -match 'preserves the requested frame depth during calibration')) { throw "bench-auto help omitted frame-depth policy" }
           if (-not ($autoHelp -match 'including worker-local buffer first-touch')) { throw "bench-auto help omitted first-touch startup policy" }
+          if (-not ($autoHelp -match 'whole auto invocation high-water mark')) { throw "bench-auto help omitted RSS scope" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "verify-auto --help failed" }
           foreach ($flag in @('--path','--tile','--schedule')) {
@@ -194,6 +212,12 @@ jobs:
           if ($receipt.frame_calibration_policy -ne 'preserve-requested-depth-v1') { throw "auto frame policy changed" }
           if ($receipt.calibration_frames -ne $receipt.frames) { throw "calibration did not preserve requested frame depth" }
           if (-not $receipt.persistent_startup_includes_buffer_first_touch) { throw "persistent first-touch startup marker missing" }
+          if ($receipt.rss_metric -ne 'linux-vmhwm-process-high-water-mark-when-available') { throw "auto RSS metric changed" }
+          if ($receipt.rss_scope -ne 'whole-auto-invocation') { throw "auto RSS scope changed" }
+          if ($receipt.selected_run_peak_rss_available) { throw "auto receipt falsely claimed isolated selected-run RSS" }
+          if ($null -ne $receipt.selected_run_peak_rss_kib) { throw "selected-run peak RSS should be null" }
+          if ($receipt.PSObject.Properties.Name -notcontains 'auto_invocation_peak_rss_kib') { throw "auto invocation RSS field missing" }
+          if ($receipt.PSObject.Properties.Name -contains 'peak_rss_kib') { throw "ambiguous peak_rss_kib field returned" }
           if ($receipt.topology_detection_ns -lt 0) { throw "topology timing missing" }
           if ($receipt.calibration_oracle_ns -le 0) { throw "calibration oracle timing was not recorded" }
           if ($receipt.tuning_ns -lt ($receipt.topology_detection_ns + $receipt.calibration_oracle_ns)) { throw "tuning time excluded topology or calibration oracle" }
