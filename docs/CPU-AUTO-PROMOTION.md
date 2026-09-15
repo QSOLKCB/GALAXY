@@ -199,6 +199,24 @@ calibration_oracle_ns
 
 Both are included inside `tuning_ns`. The later full-workload oracle remains separate as `full_oracle_ns` because it validates the selected execution rather than choosing the candidate.
 
+## RSS evidence scope
+
+Linux RSS evidence comes from `/proc/self/status` `VmHWM`. That value is a **process-wide monotonic high-water mark**: once an earlier calibration candidate or full-pool startup probe raises it, it cannot later be interpreted as the isolated peak of the selected engine.
+
+The auto receipt therefore does not expose the ambiguous generic `peak_rss_kib` field. Instead it records:
+
+```text
+rss_metric = linux-vmhwm-process-high-water-mark-when-available
+rss_scope = whole-auto-invocation
+auto_invocation_peak_rss_kib = <VmHWM or null>
+selected_run_peak_rss_available = false
+selected_run_peak_rss_kib = null
+```
+
+This value may include memory used by topology-driven calibration, candidate execution, full-pool startup probes, the full oracle, and the selected run. It is valid as the high-water mark of the **entire `bench-auto` process invocation**, not as selected-engine memory evidence.
+
+Selected-engine memory comparisons must therefore use an isolated/manual execution surface such as `bench`, `bench-soa`, or `bench-soa-pool`, or a future subprocess/isolation mechanism that can obtain an independent high-water mark.
+
 ## Receipt
 
 Auto receipts use:
@@ -215,6 +233,8 @@ tile_shape_policy = expand-resident-for-effective-tile-v1
 frame_calibration_policy = preserve-requested-depth-v1
 persistent_startup_score_scope = full-requested-pool
 persistent_startup_includes_buffer_first_touch = true
+rss_scope = whole-auto-invocation
+selected_run_peak_rss_available = false
 ```
 
 The receipt records:
@@ -238,11 +258,14 @@ The receipt records:
 - actual selected full-run pool startup when applicable;
 - full oracle time and checksum;
 - selected checksum and exact parity marker;
-- final best/median timing and RSS evidence.
+- final best/median timing;
+- whole-auto-invocation `VmHWM` when available, explicitly **not** an isolated selected-run peak RSS.
 
 ## Claim boundary
 
 The selected configuration is host- and workload-specific evidence derived from a deterministic tile-faithful and frame-faithful calibration shape, an explicit particle-frame score projection, and—where applicable—an observed full-requested-pool startup probe that includes worker-local buffer first-touch. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
+
+Auto RSS is likewise invocation-scoped evidence. Because Linux `VmHWM` is process-wide and monotonic, PE #14 does not claim an isolated memory footprint for the selected engine from the in-process tuning run.
 
 PE #14 deliberately avoids model-name heuristics and preserves all manual execution commands so the automatic policy can be audited against explicit alternatives.
 
@@ -261,6 +284,7 @@ PE #14 passes only if:
 9. the selected full workload matches the full oracle exactly;
 10. near-ties remain canonical because of the 5% promotion margin;
 11. material measured/projected wins may promote to spawned or persistent SoA;
-12. public auto help is sourced from the live policy text rather than a duplicate dispatcher string;
-13. existing canonical and manual optimized commands remain unchanged;
-14. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
+12. auto RSS is labeled as whole-invocation high-water evidence and never presented as an isolated selected-run peak;
+13. public auto help is sourced from the live policy text rather than a duplicate dispatcher string;
+14. existing canonical and manual optimized commands remain unchanged;
+15. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
