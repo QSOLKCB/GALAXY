@@ -55,6 +55,10 @@ struct AutoCandidate {
     tile_particles: Option<usize>,
     effective_workers: usize,
     median_ns: u128,
+    calibration_startup_ns: u128,
+    // For persistent candidates this is an observed startup of the full requested
+    // pool shape, not the bounded calibration pool. It is the startup term used
+    // by score_ns so low-repeat promotion cannot hide full-size allocation cost.
     startup_ns: u128,
     score_ns: u128,
     checksum: u64,
@@ -66,8 +70,8 @@ struct AutoRunEvidence {
     pool_startup_ns: Option<u128>,
 }
 
-fn auto_usage_text() -> &'static str {
-    "Usage:\n  galaxy-cpu verify-auto [--workers N]\n  galaxy-cpu bench-auto [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nPE #14 auto policy:\n  - calibrates canonical, spawned SoA, and persistent physical/logical candidates\n  - tunes over the evidence-backed tile set {1024,4096,16384,65536}\n  - requires at least a 5% calibrated win before promoting away from canonical\n  - verifies every calibration candidate against an independent streaming canonical BAM-LUT oracle\n  - verifies the selected full-workload result against the same full-workload oracle\n\nManual control remains available through `bench`, `bench-soa`, and `bench-soa-pool`. `bench-auto` therefore rejects --path, --tile, and --schedule.\n"
+pub fn auto_usage_text() -> &'static str {
+    "Usage:\n  galaxy-cpu verify-auto [--workers N]\n  galaxy-cpu bench-auto [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nPE #14 auto policy:\n  - calibrates canonical, spawned SoA, and persistent physical/logical candidates\n  - tunes over the evidence-backed tile set {1024,4096,16384,65536}\n  - scores persistent steady-state timing with an observed full-requested-pool startup probe\n  - requires at least a 5% calibrated win before promoting away from canonical\n  - verifies every calibration candidate against an independent streaming canonical BAM-LUT oracle\n  - verifies the selected full-workload result against the same full-workload oracle\n\nManual control remains available through `bench`, `bench-soa`, and `bench-soa-pool`. `bench-auto` therefore rejects --path, --tile, and --schedule.\n"
 }
 
 fn filter_auto_args(args: &[String]) -> Result<Vec<String>, String> {
@@ -184,14 +188,45 @@ fn calibrate_non_persistent(
         tile_particles: tile,
         effective_workers: measurement.effective_workers,
         median_ns: measurement.timing.median_ns,
+        calibration_startup_ns: 0,
         startup_ns: 0,
         score_ns: measurement.timing.median_ns,
         checksum: measurement.timing.checksum,
     })
 }
 
+fn measure_full_pool_startup(
+    full: &Config,
+    topology: &TopologyInfo,
+    schedule: SchedulePolicy,
+    tile: usize,
+) -> Result<(usize, u128), String> {
+    let mut config = full.clone();
+    config.path = ExecutionPath::WorkerSoa;
+    config.tile_particles = tile.min(config.resident.max(1));
+    config.receipt = None;
+    let worker_count = resolve_pool_workers(
+        config.resident,
+        config.requested_workers,
+        topology,
+        schedule,
+    );
+
+    // Match measure_pooled's startup boundary: LUT construction is setup shared by
+    // the engine and is intentionally outside the pool-startup timer. Pool::new
+    // does include full worker creation and every worker's full requested tile
+    // capacity allocation before its ready acknowledgement is returned.
+    let lut = Arc::new(Lut::build());
+    let started = std::time::Instant::now();
+    let pool = PersistentSoaPool::new(Arc::new(config), lut, worker_count)?;
+    let startup_ns = started.elapsed().as_nanos();
+    drop(pool);
+    Ok((worker_count, startup_ns))
+}
+
 fn calibrate_persistent(
     base: &Config,
+    full: &Config,
     topology: &TopologyInfo,
     schedule: SchedulePolicy,
     tile: usize,
@@ -201,32 +236,41 @@ fn calibrate_persistent(
     let mut config = base.clone();
     config.path = ExecutionPath::WorkerSoa;
     config.tile_particles = tile;
-    let worker_count = resolve_pool_workers(
+    let calibration_worker_count = resolve_pool_workers(
         config.resident,
         config.requested_workers,
         topology,
         schedule,
     );
     let lut = Arc::new(Lut::build());
-    let evidence = measure_pooled(Arc::new(config), lut, worker_count)?;
+    let evidence = measure_pooled(Arc::new(config), lut, calibration_worker_count)?;
     if evidence.measurement.timing.checksum != oracle {
         return Err(format!(
             "auto calibration fail-closed: persistent {} checksum {:016x} != oracle {oracle:016x}",
             schedule.name(), evidence.measurement.timing.checksum
         ));
     }
+
+    // The bounded calibration pool can allocate far less worker-local capacity
+    // than the actual requested workload. Observe the full pool startup before
+    // promotion so tile allocation/thread creation costs cannot be hidden by the
+    // 65,536-particle calibration cap.
+    let (full_worker_count, full_pool_startup_ns) =
+        measure_full_pool_startup(full, topology, schedule, tile)?;
+
     Ok(AutoCandidate {
         engine: match schedule {
             SchedulePolicy::PhysicalFirst => AutoEngine::PersistentPhysical,
             SchedulePolicy::Logical => AutoEngine::PersistentLogical,
         },
         tile_particles: Some(tile),
-        effective_workers: worker_count,
+        effective_workers: full_worker_count,
         median_ns: evidence.measurement.timing.median_ns,
-        startup_ns: evidence.pool_startup_ns,
+        calibration_startup_ns: evidence.pool_startup_ns,
+        startup_ns: full_pool_startup_ns,
         score_ns: candidate_score(
             evidence.measurement.timing.median_ns,
-            evidence.pool_startup_ns,
+            full_pool_startup_ns,
             amortization_repeats,
         ),
         checksum: evidence.measurement.timing.checksum,
@@ -254,8 +298,9 @@ fn choose_candidate(candidates: &[AutoCandidate]) -> Result<AutoCandidate, Strin
         return Ok(canonical);
     };
 
-    // Require an explicit 5% calibrated advantage before promotion. This makes
-    // noisy near-ties resolve to the correctness-first canonical path.
+    // Require an explicit 5% calibrated advantage before promotion. Persistent
+    // candidates include the observed full-requested-pool startup amortized over
+    // the requested repeat count, rather than the smaller calibration-pool startup.
     let lhs = best_optimized.score_ns.saturating_mul(10_000);
     let rhs = canonical
         .score_ns
@@ -310,6 +355,7 @@ fn calibrate_auto(
     for &tile in &tiles {
         candidates.push(calibrate_persistent(
             &calibration,
+            full,
             topology,
             SchedulePolicy::PhysicalFirst,
             tile,
@@ -321,6 +367,7 @@ fn calibrate_auto(
         for &tile in &tiles {
             candidates.push(calibrate_persistent(
                 &calibration,
+                full,
                 topology,
                 SchedulePolicy::Logical,
                 tile,
@@ -393,14 +440,21 @@ fn candidate_json(candidate: AutoCandidate) -> String {
         .engine
         .schedule()
         .map_or("null".to_string(), |schedule| format!("\"{}\"", schedule.name()));
+    let startup_scope = if candidate.engine.schedule().is_some() {
+        "\"full-requested-pool\""
+    } else {
+        "null"
+    };
     format!(
-        "{{\"engine\":\"{}\",\"schedule\":{},\"tile_particles\":{},\"effective_workers\":{},\"median_ns\":{},\"startup_ns\":{},\"score_ns\":{},\"checksum\":\"{:016x}\"}}",
+        "{{\"engine\":\"{}\",\"schedule\":{},\"tile_particles\":{},\"effective_workers\":{},\"median_ns\":{},\"calibration_startup_ns\":{},\"startup_ns\":{},\"startup_scope\":{},\"score_ns\":{},\"checksum\":\"{:016x}\"}}",
         candidate.engine.name(),
         schedule,
         optional_tile_json(candidate.tile_particles),
         candidate.effective_workers,
         candidate.median_ns,
+        candidate.calibration_startup_ns,
         candidate.startup_ns,
+        startup_scope,
         candidate.score_ns,
         candidate.checksum,
     )
@@ -428,7 +482,7 @@ fn auto_receipt_json(
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\n  \"schema\": \"{AUTO_RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"execution_mode\": \"host-auto\",\n  \"selection_policy\": \"{AUTO_POLICY}\",\n  \"canonical_oracle\": \"{AUTO_ORACLE}\",\n  \"parity_fail_closed\": true,\n  \"promotion_margin_basis_points\": {AUTO_PROMOTION_MARGIN_BPS},\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"detected_physical_cores\": {},\n  \"topology_source\": \"{}\",\n  \"calibration_resident_particles\": {},\n  \"calibration_frames\": {},\n  \"calibration_repeats\": {},\n  \"calibration_candidate_count\": {},\n  \"calibration_candidates\": [{}],\n  \"tuning_ns\": {},\n  \"selected_engine\": \"{}\",\n  \"selected_schedule\": {},\n  \"selected_tile_particles\": {},\n  \"selected_effective_workers\": {},\n  \"selected_calibration_score_ns\": {},\n  \"selected_pool_startup_ns\": {},\n  \"full_oracle_ns\": {},\n  \"oracle_checksum\": \"{:016x}\",\n  \"selected_checksum\": \"{:016x}\",\n  \"checksum_match\": true,\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"peak_rss_kib\": {},\n  \"claim_boundary\": \"Host-aware selection is calibrated on a bounded deterministic slice and is not a universal hardware ranking. Promotion requires a 5% calibrated win over canonical. Every calibration candidate and the selected full-workload result must match the independent streaming canonical BAM-LUT oracle or execution fails closed.\"\n}}\n",
+        "{{\n  \"schema\": \"{AUTO_RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"execution_mode\": \"host-auto\",\n  \"selection_policy\": \"{AUTO_POLICY}\",\n  \"canonical_oracle\": \"{AUTO_ORACLE}\",\n  \"parity_fail_closed\": true,\n  \"promotion_margin_basis_points\": {AUTO_PROMOTION_MARGIN_BPS},\n  \"persistent_startup_score_scope\": \"full-requested-pool\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"detected_physical_cores\": {},\n  \"topology_source\": \"{}\",\n  \"calibration_resident_particles\": {},\n  \"calibration_frames\": {},\n  \"calibration_repeats\": {},\n  \"calibration_candidate_count\": {},\n  \"calibration_candidates\": [{}],\n  \"tuning_ns\": {},\n  \"selected_engine\": \"{}\",\n  \"selected_schedule\": {},\n  \"selected_tile_particles\": {},\n  \"selected_effective_workers\": {},\n  \"selected_calibration_score_ns\": {},\n  \"selected_calibration_pool_startup_ns\": {},\n  \"selected_scored_full_pool_startup_ns\": {},\n  \"selected_pool_startup_ns\": {},\n  \"full_oracle_ns\": {},\n  \"oracle_checksum\": \"{:016x}\",\n  \"selected_checksum\": \"{:016x}\",\n  \"checksum_match\": true,\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"peak_rss_kib\": {},\n  \"claim_boundary\": \"Host-aware selection is calibrated on a bounded deterministic slice and is not a universal hardware ranking. Promotion requires a 5% calibrated win over canonical. Persistent promotion scores steady-state calibration timing with an observed full-requested-pool startup cost amortized over the requested repeats. Every calibration candidate and the selected full-workload result must match the independent streaming canonical BAM-LUT oracle or execution fails closed.\"\n}}\n",
         std::env::consts::ARCH,
         std::env::consts::OS,
         full.logical,
@@ -451,6 +505,8 @@ fn auto_receipt_json(
         optional_tile_json(selected.tile_particles),
         evidence.measurement.effective_workers,
         selected.score_ns,
+        selected.calibration_startup_ns,
+        selected.startup_ns,
         optional_u128_json(evidence.pool_startup_ns),
         oracle_ns,
         oracle_checksum,
@@ -487,6 +543,7 @@ pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
     println!("selection_policy={AUTO_POLICY}");
     println!("canonical_oracle={AUTO_ORACLE}");
     println!("promotion_margin_basis_points={AUTO_PROMOTION_MARGIN_BPS}");
+    println!("persistent_startup_score_scope=full-requested-pool");
     println!("available_parallelism={}", topology.logical_cpus);
     match topology.physical_cores {
         Some(value) => println!("detected_physical_cores={value}"),
@@ -506,6 +563,11 @@ pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
     }
     println!("selected_effective_workers={}", evidence.measurement.effective_workers);
     println!("selected_calibration_score_ns={}", selected.score_ns);
+    println!(
+        "selected_calibration_pool_startup_ns={}",
+        selected.calibration_startup_ns
+    );
+    println!("selected_scored_full_pool_startup_ns={}", selected.startup_ns);
     println!("full_oracle_ns={oracle_ns}");
     println!("checksum={:016x}", evidence.measurement.timing.checksum);
     println!("best_ns={}", evidence.measurement.timing.best_ns);
@@ -568,50 +630,64 @@ pub fn run_auto_verify(args: &[String]) -> Result<(), String> {
 mod auto_tests {
     use super::*;
 
+    fn candidate(
+        engine: AutoEngine,
+        tile_particles: Option<usize>,
+        median_ns: u128,
+        calibration_startup_ns: u128,
+        startup_ns: u128,
+        score_ns: u128,
+    ) -> AutoCandidate {
+        AutoCandidate {
+            engine,
+            tile_particles,
+            effective_workers: 8,
+            median_ns,
+            calibration_startup_ns,
+            startup_ns,
+            score_ns,
+            checksum: 1,
+        }
+    }
+
     #[test]
     fn promotion_margin_keeps_near_ties_canonical() {
-        let canonical = AutoCandidate {
-            engine: AutoEngine::Canonical,
-            tile_particles: None,
-            effective_workers: 8,
-            median_ns: 1000,
-            startup_ns: 0,
-            score_ns: 1000,
-            checksum: 1,
-        };
-        let near = AutoCandidate {
-            engine: AutoEngine::SpawnedSoa,
-            tile_particles: Some(1024),
-            effective_workers: 8,
-            median_ns: 960,
-            startup_ns: 0,
-            score_ns: 960,
-            checksum: 1,
-        };
+        let canonical = candidate(AutoEngine::Canonical, None, 1000, 0, 0, 1000);
+        let near = candidate(AutoEngine::SpawnedSoa, Some(1024), 960, 0, 0, 960);
         assert_eq!(choose_candidate(&[canonical, near]).unwrap().engine, AutoEngine::Canonical);
     }
 
     #[test]
     fn promotion_margin_allows_material_win() {
-        let canonical = AutoCandidate {
-            engine: AutoEngine::Canonical,
-            tile_particles: None,
-            effective_workers: 8,
-            median_ns: 1000,
-            startup_ns: 0,
-            score_ns: 1000,
-            checksum: 1,
-        };
-        let fast = AutoCandidate {
-            engine: AutoEngine::PersistentPhysical,
-            tile_particles: Some(1024),
-            effective_workers: 8,
-            median_ns: 800,
-            startup_ns: 0,
-            score_ns: 800,
-            checksum: 1,
-        };
+        let canonical = candidate(AutoEngine::Canonical, None, 1000, 0, 0, 1000);
+        let fast = candidate(
+            AutoEngine::PersistentPhysical,
+            Some(1024),
+            800,
+            10,
+            50,
+            candidate_score(800, 50, 1),
+        );
         assert_eq!(choose_candidate(&[canonical, fast]).unwrap().engine, AutoEngine::PersistentPhysical);
+    }
+
+    #[test]
+    fn full_pool_startup_can_block_persistent_promotion() {
+        let canonical = candidate(AutoEngine::Canonical, None, 1000, 0, 0, 1000);
+        // The calibration pool looked cheap, but the actual requested pool startup
+        // is large enough that a one-repeat workload no longer clears the 5% gate.
+        let misleading = candidate(
+            AutoEngine::PersistentPhysical,
+            Some(65_536),
+            800,
+            10,
+            300,
+            candidate_score(800, 300, 1),
+        );
+        assert_eq!(
+            choose_candidate(&[canonical, misleading]).unwrap().engine,
+            AutoEngine::Canonical
+        );
     }
 
     #[test]
