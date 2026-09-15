@@ -8,9 +8,9 @@
 use std::env;
 
 mod legacy {
-    include!("../main.rs");
+    include!(concat!(env!("OUT_DIR"), "/legacy_runtime.inc.rs"));
 
-    pub fn run() {
+    pub fn run_legacy() {
         main();
     }
 
@@ -20,7 +20,7 @@ mod legacy {
 }
 
 mod integrated_soa {
-    include!("worker_soa_probe.rs");
+    include!(concat!(env!("OUT_DIR"), "/worker_soa_probe.inc.rs"));
 
     const INTEGRATED_RECEIPT_SCHEMA: &str = "galaxy.cpu-runtime-soa-receipt.v1";
     const INTEGRATED_DEFAULT_TILE: usize = 1_024;
@@ -83,7 +83,7 @@ mod integrated_soa {
         )
     }
 
-    pub fn run_bench(args: &[String]) -> Result<(), String> {
+    pub fn run_integrated_bench(args: &[String]) -> Result<(), String> {
         let filtered = integrated_args(args)?;
         let mut config = parse_config(&filtered)?;
         config.path = ExecutionPath::WorkerSoa;
@@ -114,7 +114,7 @@ mod integrated_soa {
         Ok(())
     }
 
-    pub fn run_verify(args: &[String]) -> Result<(), String> {
+    pub fn run_integrated_verify(args: &[String]) -> Result<(), String> {
         let filtered = integrated_verify_args(args);
         let (workers, tile) = parse_verify(&filtered)?;
         run_verify(workers, tile)?;
@@ -138,18 +138,18 @@ fn main() {
             print!("{}", integrated_soa::usage_text());
             Ok(())
         }
-        Some("bench-soa") | Some("run-soa") => integrated_soa::run_bench(&args[1..]),
+        Some("bench-soa") | Some("run-soa") => integrated_soa::run_integrated_bench(&args[1..]),
         Some("verify-soa") if args[1..].iter().any(|arg| arg == "--help" || arg == "-h") => {
             print!("{}", integrated_soa::usage_text());
             Ok(())
         }
-        Some("verify-soa") => integrated_soa::run_verify(&args[1..]),
+        Some("verify-soa") => integrated_soa::run_integrated_verify(&args[1..]),
         Some("--help") | Some("-h") | None => {
             print!("{}", combined_usage());
             Ok(())
         }
         _ => {
-            legacy::run();
+            legacy::run_legacy();
             return;
         }
     };
