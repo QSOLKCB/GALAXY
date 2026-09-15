@@ -7,7 +7,6 @@
 
 use std::{
     collections::BTreeSet,
-    process::Command,
     sync::{mpsc, Arc},
     thread::JoinHandle,
 };
@@ -300,7 +299,7 @@ fn detect_physical_cores(logical_cpus: usize) -> Option<usize> {
 
 #[cfg(target_os = "macos")]
 fn detect_physical_cores(logical_cpus: usize) -> Option<usize> {
-    let output = Command::new("sysctl")
+    let output = std::process::Command::new("sysctl")
         .args(["-n", "hw.physicalcpu"])
         .output()
         .ok()?;
@@ -454,6 +453,10 @@ fn json_optional_usize(value: Option<usize>) -> String {
     value.map_or_else(|| "null".into(), |value| value.to_string())
 }
 
+fn json_bool_local(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
 fn pooled_receipt_json(
     config: &Config,
     topology: &TopologyInfo,
@@ -484,7 +487,7 @@ fn pooled_receipt_json(
         json_optional_usize(topology.physical_cores),
         topology.source,
         schedule.name(),
-        json_bool(fell_back),
+        json_bool_local(fell_back),
         evidence.measurement.effective_workers,
         config.tile_particles,
         worker_tile_capacity_bytes,
