@@ -103,11 +103,13 @@ build_variant() {
   target_dir=$2
   rustflags=$3
   printf '%s\n' "== GALAXY SIMD probe: $label build ($rustflags) =="
-  # CLI --target pins Cargo to rustc's actual host triple, overriding any
-  # inherited CARGO_BUILD_TARGET or [build] target configuration. The explicit
-  # target also makes the artifact path deterministic below.
+  # CLI --target pins Cargo to the selected rustc's host triple, overriding any
+  # inherited CARGO_BUILD_TARGET or [build] target configuration. RUSTC is set
+  # explicitly so the compiler used for provenance is also the compiler Cargo
+  # invokes for both binaries.
   env -u CARGO_BUILD_TARGET -u CARGO_ENCODED_RUSTFLAGS \
     CARGO_TARGET_DIR="$target_dir" \
+    RUSTC="$GALAXY_RUSTC" \
     RUSTFLAGS="$rustflags" \
     "$GALAXY_CARGO" build --manifest-path cpu-runtime/Cargo.toml \
       --release --locked --offline --target "$HOST_TARGET" --bin simd_probe
@@ -196,11 +198,29 @@ summarize_isa() {
     }
   ' "$asm" > "$evex_mnemonics"
 
-  evex_lines=$(grep -Ec '^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]+62([[:space:]]|$)' "$asm" || true)
-  vex_lines=$(grep -Ec '^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]+(c4|c5)([[:space:]]|$)' "$asm" || true)
+  vex_mnemonics=$OUTPUT/${variant}-vex-mnemonics.txt
+  awk '
+    /^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]+(c4|c5)([[:space:]]|$)/ {
+      line = $0
+      sub(/^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]*/, "", line)
+      count = split(line, fields, /[[:space:]]+/)
+      for (i = 1; i <= count; i++) {
+        if (fields[i] ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) continue
+        if (fields[i] ~ /^[A-Za-z][A-Za-z0-9_.]*$/) {
+          print tolower(fields[i])
+          break
+        }
+      }
+    }
+  ' "$asm" > "$vex_mnemonics"
+
+  # Count only prefix-matched rows for which a decoded mnemonic was found.
+  # Wrapped raw-byte continuation rows therefore cannot inflate ISA evidence.
+  evex_lines=$(sed '/^$/d' "$evex_mnemonics" | wc -l | tr -d ' ')
+  vex_lines=$(sed '/^$/d' "$vex_mnemonics" | wc -l | tr -d ' ')
   packed_mnemonic_re='^(vp(add|sub|xor|mul|sr|sl|or|and)|p(add|sub|xor|mul|sr|sl|or|and))'
   packed_count=$(grep -E "$packed_mnemonic_re" "$mnemonics" | wc -l | tr -d ' ' || true)
-  decoded_evex_count=$(sed '/^$/d' "$evex_mnemonics" | wc -l | tr -d ' ')
+  decoded_evex_count=$evex_lines
 
   {
     printf 'variant=%s\n' "$variant"
@@ -215,7 +235,7 @@ summarize_isa() {
     printf '%s\n' 'decoded_evex_mnemonics:'
     sort "$evex_mnemonics" | uniq -c || true
     printf '%s\n' 'interpretation:'
-    printf '%s\n' '- EVEX-encoded instruction lines are direct evidence of EVEX/AVX-512-family code generation; their decoded mnemonics are listed above without a narrow opcode-family filter.'
+    printf '%s\n' '- EVEX-encoded instruction lines are direct evidence of EVEX/AVX-512-family code generation; only prefix-matched rows with decoded mnemonics are counted, excluding wrapped byte continuations.'
     printf '%s\n' '- Packed-integer counts remain a narrower hash-kernel diagnostic and include both legacy p... and VEX/EVEX vp... arithmetic/shift families.'
     printf '%s\n' '- VEX prefix counts alone are not a vectorization claim; inspect decoded mnemonics.'
     printf '%s\n' '- Register names alone are intentionally not used as ISA evidence.'
