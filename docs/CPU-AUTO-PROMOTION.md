@@ -39,21 +39,68 @@ Candidates are:
 3. persistent worker-local SoA with `physical-first` scheduling at the same tile set;
 4. persistent worker-local SoA with explicit logical/SMT scheduling when that resolves to a distinct worker count.
 
-Persistent candidates use a split scoring boundary:
+## Full-requested-workload score projection
 
-- steady-state median time comes from the bounded calibration slice;
-- pool startup comes from a separate **full-requested-pool startup probe** using the requested resident count, worker policy, and candidate tile size;
-- the observed full-pool startup is amortized across the requested full-workload repeat count.
+Promotion compares like with like. A bounded calibration median is **not** compared directly with a full-requested-pool startup cost.
+
+Every candidate's bounded median is projected to the requested particle-frame work using:
+
+```text
+calibration_work = calibration_resident × calibration_frames
+requested_work   = requested_resident × requested_frames
+
+projected_median = ceil(
+  calibration_median × requested_work / calibration_work
+)
+```
+
+The receipt identifies this model as:
+
+```text
+score_projection = linear-particle-frame-v1
+```
+
+The projection is an explicit host/workload tuning heuristic, not a theorem that runtime is perfectly linear. The selected full workload is still executed and checked against the independent oracle after selection.
+
+Canonical and spawned-SoA candidates use the projected median directly as their score. Their normal per-execution setup is already included in the measured calibration median and is therefore carried by the same projection.
+
+Persistent candidates add one extra term:
+
+- steady-state median is measured on the bounded calibration slice and projected to requested particle-frame work;
+- pool startup is measured separately with the **full requested resident count, worker policy, and candidate tile size**;
+- that observed full-pool startup is amortized across the requested repeat count.
+
+Thus:
+
+```text
+persistent_score = projected_median + full_pool_startup / requested_repeats
+```
 
 The full-pool probe constructs the actual persistent worker set and waits until every worker has allocated its requested worker-local tile capacity and reported ready. LUT construction remains outside that startup timer, matching the established persistent runtime timing boundary.
 
-This prevents a large full workload from being promoted on the strength of an artificially cheap 65,536-particle calibration-pool startup. The receipt retains both the bounded calibration-pool startup and the scored full-requested-pool startup for audit. Spawned and canonical candidates include their normal per-execution costs in their measured medians.
+The receipt preserves both the bounded calibration-pool startup and the scored full-requested-pool startup for audit.
+
+## Scheduling evidence and fallback
+
+`physical-first` is a requested policy, not a guarantee that physical-core topology is available.
+
+When physical-core detection succeeds, `physical-first` caps the persistent candidate at that detected physical-core count. When detection is unavailable, the runtime falls back to the logical worker limit.
+
+Auto receipts therefore distinguish:
+
+```text
+requested_schedule
+effective_schedule
+schedule_fell_back_to_logical
+```
+
+The compatibility field `schedule` and the top-level `selected_schedule` report the **effective** schedule actually executed. On Windows, where physical-core probing is currently unavailable, a `physical-first` candidate therefore records logical execution plus an explicit fallback marker instead of claiming that a physical-core policy was applied.
 
 ## Promotion margin
 
-The optimized candidate must beat canonical calibration by at least 5% before promotion.
+The optimized candidate must beat canonical by at least 5% in the projected full-requested-workload score before promotion.
 
-If the measured advantage is smaller, auto selects canonical. This prevents noisy near-ties from changing execution architecture.
+If the measured/projected advantage is smaller, auto selects canonical. This prevents noisy near-ties from changing execution architecture.
 
 The margin is recorded as:
 
@@ -77,6 +124,20 @@ After selection, the same oracle is run over the full requested workload. The se
 
 There is no silent checksum fallback.
 
+## Tuning latency
+
+`tuning_ns` covers the complete decision process beginning before the calibration oracle is constructed and evaluated.
+
+The calibration-oracle portion is also recorded separately as:
+
+```text
+calibration_oracle_ns
+```
+
+This prevents short jobs from hiding a large fraction of auto-selection latency outside the reported tuning cost.
+
+The later full-workload oracle remains separate as `full_oracle_ns` because it validates the selected execution rather than choosing the candidate.
+
 ## Receipt
 
 Auto receipts use:
@@ -88,6 +149,7 @@ execution_mode = host-auto
 selection_policy = calibrated-host-auto-v1
 canonical_oracle = streaming-canonical-bam-lut-v1
 parity_fail_closed = true
+score_projection = linear-particle-frame-v1
 persistent_startup_score_scope = full-requested-pool
 ```
 
@@ -95,12 +157,15 @@ The receipt records:
 
 - detected logical and physical topology;
 - bounded calibration shape;
-- every calibration candidate, timing score, worker count, tile and checksum;
+- calibration and requested particle-frame work units;
+- calibration-oracle time and complete tuning time;
+- every calibration candidate's calibration median and projected median;
+- requested/effective schedule and fallback state;
+- candidate worker count, tile, checksum and projected score;
 - bounded calibration-pool startup for persistent candidates;
 - full-requested-pool startup used for persistent scoring;
 - promotion margin;
-- selected engine, scheduling mode, tile and worker count;
-- tuning time;
+- selected engine, effective scheduling mode, requested scheduling mode, tile and worker count;
 - actual selected full-run pool startup when applicable;
 - full oracle time and checksum;
 - selected checksum and exact parity marker;
@@ -108,7 +173,7 @@ The receipt records:
 
 ## Claim boundary
 
-The selected configuration is host- and workload-specific evidence derived from a bounded calibration slice plus an observed full-requested-pool startup probe. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
+The selected configuration is host- and workload-specific evidence derived from a bounded calibration slice, an explicit particle-frame score projection, and—where applicable—an observed full-requested-pool startup probe. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
 
 PE #14 deliberately avoids model-name heuristics and preserves all manual execution commands so the automatic policy can be audited against explicit alternatives.
 
@@ -118,10 +183,12 @@ PE #14 passes only if:
 
 1. the streaming oracle matches the established canonical reference in tests;
 2. every calibration candidate matches the oracle exactly;
-3. persistent promotion accounts for observed startup of the full requested pool shape;
-4. the selected full workload matches the full oracle exactly;
-5. near-ties remain canonical because of the 5% promotion margin;
-6. material measured wins may promote to spawned or persistent SoA;
-7. topology evidence remains explicit and fail-soft;
-8. existing canonical and manual optimized commands remain unchanged;
-9. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
+3. every candidate score is expressed on the same requested particle-frame scale before promotion;
+4. persistent promotion accounts for observed startup of the full requested pool shape;
+5. physical-first fallback is reported as logical execution when physical topology is unavailable;
+6. tuning time includes the calibration-oracle work and records that component separately;
+7. the selected full workload matches the full oracle exactly;
+8. near-ties remain canonical because of the 5% promotion margin;
+9. material measured/projected wins may promote to spawned or persistent SoA;
+10. existing canonical and manual optimized commands remain unchanged;
+11. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
