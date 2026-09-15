@@ -44,12 +44,14 @@ galaxy-cpu bench-soa-pool \
 
 The spawned PR #11/#12 path creates worker threads for each complete execution.
 
-PE #13 instead creates the worker set once, allocates one compact SoA tile per worker once, then reuses both across warm-up and measured repetitions:
+PE #13 instead creates the worker set once, allocates one compact SoA tile per worker once, explicitly first-touches the complete worker-local tile capacity, then reuses both threads and committed buffers across warm-up and measured repetitions:
 
 ```text
 pool startup
   -> persistent worker threads
   -> worker-local compact SoA tile allocation
+  -> explicit worker-local buffer first-touch / memory commitment
+  -> worker reports ready
 
 repeat N
   -> dispatch one deterministic contiguous range per worker
@@ -84,6 +86,15 @@ PE #13 does **not** pin threads to individual cores. The topology policy control
 
 Steady-state pooled timing intentionally excludes pool startup/thread creation. The receipt records `pool_startup_ns` separately.
 
+`pool_startup_ns` includes:
+
+- worker thread creation;
+- worker-local compact-tile allocation;
+- explicit resize/zero first-touch of every worker-local SoA/scratch/contribution buffer to its requested capacity;
+- worker readiness acknowledgement after those pages have been touched.
+
+This prevents virtual `Vec::with_capacity` reservation from hiding page commitment and first-touch cost in the later untimed warm-up.
+
 Measured trials include:
 
 - pool dispatch and result collection;
@@ -98,9 +109,10 @@ The receipt explicitly records:
 worker_threads_persistent_across_trials = true
 worker_thread_creation_in_timed_region = false
 worker_local_tile_buffers_reused = true
+worker_local_tile_buffers_first_touched_before_ready = true
 ```
 
-This allows direct comparison with PR #12's spawned `bench-soa` path without hiding first-use setup cost.
+This allows direct comparison with PR #12's spawned `bench-soa` path without hiding first-use memory commitment cost.
 
 ## Verification boundary
 
@@ -128,7 +140,7 @@ canonical_oracle = bench
 spawned_soa_fallback = bench-soa
 ```
 
-Receipts also preserve requested/effective workers, detected topology, scheduling policy, pool startup/spawn/dispatch counts, tile capacity, timing, checksum, and Linux `VmHWM` evidence when available.
+Receipts also preserve requested/effective workers, detected topology, scheduling policy, pool startup/spawn/dispatch counts, first-touch state, tile capacity, timing, checksum, and Linux `VmHWM` evidence when available.
 
 ## PASS / HOLD boundary
 
@@ -136,9 +148,10 @@ PE #13 is a **PASS** only if:
 
 1. exact checksum parity survives persistent reuse;
 2. repeated dispatches do not create additional worker threads;
-3. persistent execution is repeatable over useful worker counts;
-4. topology metadata is explicit and fail-soft rather than guessed;
-5. physical-first and logical policies remain user-visible evidence choices rather than hidden tuning;
-6. any measured performance claim remains host/configuration specific.
+3. worker-local tile capacity is allocated and first-touched before readiness so startup accounting does not hide page-fault cost in warm-up;
+4. persistent execution is repeatable over useful worker counts;
+5. topology metadata is explicit and fail-soft rather than guessed;
+6. physical-first and logical policies remain user-visible evidence choices rather than hidden tuning;
+7. any measured performance claim remains host/configuration specific.
 
 PE #14, not this phase, decides whether host-aware policy selection should become automatic or promoted toward a default.
