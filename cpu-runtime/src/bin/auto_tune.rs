@@ -9,7 +9,8 @@ const AUTO_RECEIPT_SCHEMA: &str = "galaxy.cpu-runtime-auto-receipt.v1";
 const AUTO_POLICY: &str = "calibrated-host-auto-v1";
 const AUTO_ORACLE: &str = "streaming-canonical-bam-lut-v1";
 const AUTO_SCORE_PROJECTION: &str = "linear-particle-frame-v1";
-const AUTO_CALIBRATION_MAX_RESIDENT: usize = 65_536;
+const AUTO_TILE_SHAPE_POLICY: &str = "expand-resident-for-effective-tile-v1";
+const AUTO_CALIBRATION_BASE_RESIDENT: usize = 65_536;
 const AUTO_CALIBRATION_MAX_FRAMES: usize = 4;
 const AUTO_CALIBRATION_REPEATS: usize = 3;
 const AUTO_PROMOTION_MARGIN_BPS: u128 = 500; // 5% required before leaving canonical.
@@ -46,7 +47,10 @@ impl AutoEngine {
 struct AutoCandidate {
     engine: AutoEngine,
     tile_particles: Option<usize>,
+    calibration_workers: usize,
     effective_workers: usize,
+    calibration_effective_tile_particles: Option<usize>,
+    requested_effective_tile_particles: Option<usize>,
     requested_schedule: Option<SchedulePolicy>,
     effective_schedule: Option<SchedulePolicy>,
     schedule_fell_back_to_logical: bool,
@@ -55,7 +59,7 @@ struct AutoCandidate {
     calibration_startup_ns: u128,
     // Persistent candidates use an observed startup for the full requested pool.
     // Non-persistent candidates keep this at zero because their normal setup is
-    // already included in the measured execution median that is projected below.
+    // already included in the measured execution median projected below.
     startup_ns: u128,
     score_ns: u128,
     checksum: u64,
@@ -68,7 +72,7 @@ struct AutoRunEvidence {
 }
 
 pub fn auto_usage_text() -> &'static str {
-    "Usage:\n  galaxy-cpu verify-auto [--workers N]\n  galaxy-cpu bench-auto [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nPE #14 auto policy:\n  - calibrates canonical, spawned SoA, and persistent physical/logical candidates\n  - tunes over the evidence-backed tile set {1024,4096,16384,65536}\n  - projects every bounded calibration median to requested particle-frame work\n  - scores persistent candidates with observed full-requested-pool startup\n  - requires at least a 5% projected win before promoting away from canonical\n  - verifies every calibration candidate against an independent streaming canonical BAM-LUT oracle\n  - verifies the selected full-workload result against the same full-workload oracle\n\nManual control remains available through `bench`, `bench-soa`, and `bench-soa-pool`. `bench-auto` therefore rejects --path, --tile, and --schedule.\n"
+    "Usage:\n  galaxy-cpu verify-auto [--workers N]\n  galaxy-cpu bench-auto [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nPE #14 auto policy:\n  - calibrates canonical, spawned SoA, and persistent physical/logical candidates\n  - tunes over the evidence-backed tile set {1024,4096,16384,65536}\n  - starts from a 65536-particle calibration base and expands resident work when needed so every advertised tile is measured at the same effective per-worker size it will have on the requested workload\n  - projects every calibration median to requested particle-frame work\n  - scores persistent candidates with observed full-requested-pool startup\n  - requires at least a 5% projected win before promoting away from canonical\n  - verifies every calibration candidate against an independent streaming canonical BAM-LUT oracle\n  - verifies the selected full-workload result against the same full-workload oracle\n\nManual control remains available through `bench`, `bench-soa`, and `bench-soa-pool`. `bench-auto` therefore rejects --path, --tile, and --schedule.\n"
 }
 
 fn filter_auto_args(args: &[String]) -> Result<Vec<String>, String> {
@@ -127,9 +131,41 @@ fn auto_tiles(resident: usize) -> Vec<usize> {
     tiles
 }
 
-fn calibration_config(full: &Config) -> Config {
+fn minimum_partition_len(resident: usize, worker_count: usize) -> usize {
+    resident / worker_count.max(1)
+}
+
+fn effective_tile_particles(resident: usize, worker_count: usize, tile: usize) -> usize {
+    tile.min(minimum_partition_len(resident, worker_count).max(1))
+}
+
+fn tile_faithful_calibration_resident(full: &Config, topology: &TopologyInfo) -> usize {
+    let base = full.resident.min(AUTO_CALIBRATION_BASE_RESIDENT).max(1);
+    let logical_workers = resolve_pool_workers(
+        full.resident,
+        full.requested_workers,
+        topology,
+        SchedulePolicy::Logical,
+    );
+    let max_tile = auto_tiles(full.resident).into_iter().max().unwrap_or(1);
+    let full_min_partition = minimum_partition_len(full.resident, logical_workers).max(1);
+
+    // If every requested logical worker can consume the largest candidate tile,
+    // grow only far enough to make that tile real during calibration. Otherwise
+    // the requested workload itself is partition-limited, so use its exact
+    // resident shape rather than pretending a smaller calibration has the same
+    // per-worker cache/tile behavior.
+    let required = if max_tile <= full_min_partition {
+        max_tile.saturating_mul(logical_workers).min(full.resident)
+    } else {
+        full.resident
+    };
+    base.max(required).min(full.resident).max(1)
+}
+
+fn calibration_config(full: &Config, topology: &TopologyInfo) -> Config {
     let mut config = full.clone();
-    config.resident = full.resident.min(AUTO_CALIBRATION_MAX_RESIDENT).max(1);
+    config.resident = tile_faithful_calibration_resident(full, topology);
     config.frames = full.frames.min(AUTO_CALIBRATION_MAX_FRAMES).max(1);
     config.repeats = AUTO_CALIBRATION_REPEATS.min(MAX_REPEATS).max(1);
     config.receipt = None;
@@ -191,6 +227,26 @@ fn engine_for_schedule(schedule: SchedulePolicy) -> AutoEngine {
     }
 }
 
+fn verify_effective_tile_shape(
+    engine: AutoEngine,
+    tile: usize,
+    calibration_resident: usize,
+    calibration_workers: usize,
+    requested_resident: usize,
+    requested_workers: usize,
+) -> Result<(usize, usize), String> {
+    let calibration_effective =
+        effective_tile_particles(calibration_resident, calibration_workers, tile);
+    let requested_effective = effective_tile_particles(requested_resident, requested_workers, tile);
+    if calibration_effective != requested_effective {
+        return Err(format!(
+            "auto calibration tile-shape mismatch for {} tile {tile}: calibration effective tile {calibration_effective} != requested effective tile {requested_effective}",
+            engine.name()
+        ));
+    }
+    Ok((calibration_effective, requested_effective))
+}
+
 fn calibrate_non_persistent(
     base: &Config,
     full: &Config,
@@ -215,11 +271,31 @@ fn calibrate_non_persistent(
             engine.name(), measurement.timing.checksum
         ));
     }
+
+    let full_workers = effective_workers(full.resident, full.requested_workers).1;
+    let (calibration_effective_tile_particles, requested_effective_tile_particles) =
+        if let Some(tile) = tile {
+            let (calibration_effective, requested_effective) = verify_effective_tile_shape(
+                engine,
+                tile,
+                config.resident,
+                measurement.effective_workers,
+                full.resident,
+                full_workers,
+            )?;
+            (Some(calibration_effective), Some(requested_effective))
+        } else {
+            (None, None)
+        };
+
     let projected_median_ns = project_median_ns(measurement.timing.median_ns, base, full);
     Ok(AutoCandidate {
         engine,
         tile_particles: tile,
-        effective_workers: measurement.effective_workers,
+        calibration_workers: measurement.effective_workers,
+        effective_workers: full_workers,
+        calibration_effective_tile_particles,
+        requested_effective_tile_particles,
         requested_schedule: None,
         effective_schedule: None,
         schedule_fell_back_to_logical: false,
@@ -279,7 +355,7 @@ fn calibrate_persistent(
         requested_schedule,
     );
     let lut = Arc::new(Lut::build());
-    let evidence = measure_pooled(Arc::new(config), lut, calibration_worker_count)?;
+    let evidence = measure_pooled(Arc::new(config.clone()), lut, calibration_worker_count)?;
     if evidence.measurement.timing.checksum != oracle {
         return Err(format!(
             "auto calibration fail-closed: persistent {} checksum {:016x} != oracle {oracle:016x}",
@@ -287,18 +363,33 @@ fn calibrate_persistent(
         ));
     }
 
-    // The bounded calibration pool can allocate far less worker-local capacity
-    // than the requested workload. Observe the full pool startup before promotion.
+    // The calibration resident shape is expanded when necessary so the nominal
+    // tile maps to the same effective per-worker tile as the requested workload.
+    // Full pool startup is still observed separately because allocation/thread
+    // creation cost depends on the complete requested execution shape.
     let (full_worker_count, full_pool_startup_ns) =
         measure_full_pool_startup(full, topology, requested_schedule, tile)?;
     let effective_schedule = effective_schedule(requested_schedule, topology);
+    let engine = engine_for_schedule(effective_schedule);
+    let (calibration_effective_tile_particles, requested_effective_tile_particles) =
+        verify_effective_tile_shape(
+            engine,
+            tile,
+            config.resident,
+            calibration_worker_count,
+            full.resident,
+            full_worker_count,
+        )?;
     let projected_median_ns =
         project_median_ns(evidence.measurement.timing.median_ns, base, full);
 
     Ok(AutoCandidate {
-        engine: engine_for_schedule(effective_schedule),
+        engine,
         tile_particles: Some(tile),
+        calibration_workers: calibration_worker_count,
         effective_workers: full_worker_count,
+        calibration_effective_tile_particles: Some(calibration_effective_tile_particles),
+        requested_effective_tile_particles: Some(requested_effective_tile_particles),
         requested_schedule: Some(requested_schedule),
         effective_schedule: Some(effective_schedule),
         schedule_fell_back_to_logical: schedule_fell_back_to_logical(requested_schedule, topology),
@@ -353,7 +444,7 @@ fn calibrate_auto(
     // Tuning latency starts before calibration-oracle construction so the receipt
     // accounts for the complete decision cost.
     let tuning_started = std::time::Instant::now();
-    let calibration = calibration_config(full);
+    let calibration = calibration_config(full, topology);
     let oracle_started = std::time::Instant::now();
     let lut = Lut::build();
     let oracle = streaming_oracle_checksum(&calibration, &lut)?;
@@ -368,7 +459,7 @@ fn calibrate_auto(
         oracle,
     )?);
 
-    let tiles = auto_tiles(calibration.resident);
+    let tiles = auto_tiles(full.resident);
     for &tile in &tiles {
         candidates.push(calibrate_non_persistent(
             &calibration,
@@ -499,14 +590,21 @@ fn candidate_json(candidate: AutoCandidate) -> String {
         "null"
     };
     format!(
-        "{{\"engine\":\"{}\",\"schedule\":{},\"requested_schedule\":{},\"effective_schedule\":{},\"schedule_fell_back_to_logical\":{},\"tile_particles\":{},\"effective_workers\":{},\"calibration_median_ns\":{},\"projected_median_ns\":{},\"calibration_startup_ns\":{},\"startup_ns\":{},\"startup_scope\":{},\"score_ns\":{},\"checksum\":\"{:016x}\"}}",
+        "{{\"engine\":\"{}\",\"schedule\":{},\"requested_schedule\":{},\"effective_schedule\":{},\"schedule_fell_back_to_logical\":{},\"tile_particles\":{},\"calibration_workers\":{},\"effective_workers\":{},\"calibration_effective_tile_particles\":{},\"requested_effective_tile_particles\":{},\"tile_shape_match\":{},\"calibration_median_ns\":{},\"projected_median_ns\":{},\"calibration_startup_ns\":{},\"startup_ns\":{},\"startup_scope\":{},\"score_ns\":{},\"checksum\":\"{:016x}\"}}",
         candidate.engine.name(),
         optional_schedule_json(candidate.effective_schedule),
         optional_schedule_json(candidate.requested_schedule),
         optional_schedule_json(candidate.effective_schedule),
         json_bool_auto(candidate.schedule_fell_back_to_logical),
         optional_tile_json(candidate.tile_particles),
+        candidate.calibration_workers,
         candidate.effective_workers,
+        optional_tile_json(candidate.calibration_effective_tile_particles),
+        optional_tile_json(candidate.requested_effective_tile_particles),
+        json_bool_auto(
+            candidate.calibration_effective_tile_particles
+                == candidate.requested_effective_tile_particles
+        ),
         candidate.calibration_median_ns,
         candidate.projected_median_ns,
         candidate.calibration_startup_ns,
@@ -536,7 +634,7 @@ fn auto_receipt_json(
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\n  \"schema\": \"{AUTO_RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"execution_mode\": \"host-auto\",\n  \"selection_policy\": \"{AUTO_POLICY}\",\n  \"canonical_oracle\": \"{AUTO_ORACLE}\",\n  \"parity_fail_closed\": true,\n  \"promotion_margin_basis_points\": {AUTO_PROMOTION_MARGIN_BPS},\n  \"score_projection\": \"{AUTO_SCORE_PROJECTION}\",\n  \"persistent_startup_score_scope\": \"full-requested-pool\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"detected_physical_cores\": {},\n  \"topology_source\": \"{}\",\n  \"calibration_resident_particles\": {},\n  \"calibration_frames\": {},\n  \"calibration_repeats\": {},\n  \"calibration_work_units\": {},\n  \"requested_work_units\": {},\n  \"calibration_oracle_ns\": {},\n  \"calibration_candidate_count\": {},\n  \"calibration_candidates\": [{}],\n  \"tuning_ns\": {},\n  \"selected_engine\": \"{}\",\n  \"selected_schedule\": {},\n  \"selected_requested_schedule\": {},\n  \"selected_schedule_fell_back_to_logical\": {},\n  \"selected_tile_particles\": {},\n  \"selected_effective_workers\": {},\n  \"selected_calibration_median_ns\": {},\n  \"selected_projected_median_ns\": {},\n  \"selected_score_ns\": {},\n  \"selected_calibration_pool_startup_ns\": {},\n  \"selected_scored_full_pool_startup_ns\": {},\n  \"selected_pool_startup_ns\": {},\n  \"full_oracle_ns\": {},\n  \"oracle_checksum\": \"{:016x}\",\n  \"selected_checksum\": \"{:016x}\",\n  \"checksum_match\": true,\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"peak_rss_kib\": {},\n  \"claim_boundary\": \"Host-aware selection uses a bounded deterministic calibration slice and is not a universal hardware ranking. Every candidate median is projected to requested particle-frame work before the 5% promotion margin is applied. Persistent candidates additionally include observed full-requested-pool startup amortized over requested repeats. Physical-first fallback is reported explicitly. Every calibration candidate and the selected full-workload result must match the independent streaming canonical BAM-LUT oracle or execution fails closed.\"\n}}\n",
+        "{{\n  \"schema\": \"{AUTO_RECEIPT_SCHEMA}\",\n  \"runtime\": \"galaxy-cpu\",\n  \"execution_mode\": \"host-auto\",\n  \"selection_policy\": \"{AUTO_POLICY}\",\n  \"canonical_oracle\": \"{AUTO_ORACLE}\",\n  \"parity_fail_closed\": true,\n  \"promotion_margin_basis_points\": {AUTO_PROMOTION_MARGIN_BPS},\n  \"score_projection\": \"{AUTO_SCORE_PROJECTION}\",\n  \"tile_shape_policy\": \"{AUTO_TILE_SHAPE_POLICY}\",\n  \"calibration_base_resident_particles\": {AUTO_CALIBRATION_BASE_RESIDENT},\n  \"persistent_startup_score_scope\": \"full-requested-pool\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"logical_population\": \"{}\",\n  \"resident_particles\": {},\n  \"frames\": {},\n  \"repeats\": {},\n  \"seed\": {},\n  \"requested_workers\": {},\n  \"available_parallelism\": {},\n  \"detected_physical_cores\": {},\n  \"topology_source\": \"{}\",\n  \"calibration_resident_particles\": {},\n  \"calibration_frames\": {},\n  \"calibration_repeats\": {},\n  \"calibration_work_units\": {},\n  \"requested_work_units\": {},\n  \"calibration_oracle_ns\": {},\n  \"calibration_candidate_count\": {},\n  \"calibration_candidates\": [{}],\n  \"tuning_ns\": {},\n  \"selected_engine\": \"{}\",\n  \"selected_schedule\": {},\n  \"selected_requested_schedule\": {},\n  \"selected_schedule_fell_back_to_logical\": {},\n  \"selected_tile_particles\": {},\n  \"selected_calibration_effective_tile_particles\": {},\n  \"selected_requested_effective_tile_particles\": {},\n  \"selected_tile_shape_match\": {},\n  \"selected_effective_workers\": {},\n  \"selected_calibration_median_ns\": {},\n  \"selected_projected_median_ns\": {},\n  \"selected_score_ns\": {},\n  \"selected_calibration_pool_startup_ns\": {},\n  \"selected_scored_full_pool_startup_ns\": {},\n  \"selected_pool_startup_ns\": {},\n  \"full_oracle_ns\": {},\n  \"oracle_checksum\": \"{:016x}\",\n  \"selected_checksum\": \"{:016x}\",\n  \"checksum_match\": true,\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"peak_rss_kib\": {},\n  \"claim_boundary\": \"Host-aware selection begins with a bounded deterministic calibration base but expands calibration resident work when needed so each advertised tile is measured at the same effective per-worker tile size as the requested workload. Candidate medians are then projected to requested particle-frame work before the 5% promotion margin. Persistent candidates additionally include observed full-requested-pool startup amortized over requested repeats. Physical-first fallback is reported explicitly. Every calibration candidate and the selected full-workload result must match the independent streaming canonical BAM-LUT oracle or execution fails closed.\"\n}}\n",
         std::env::consts::ARCH,
         std::env::consts::OS,
         full.logical,
@@ -562,6 +660,12 @@ fn auto_receipt_json(
         optional_schedule_json(selected.requested_schedule),
         json_bool_auto(selected.schedule_fell_back_to_logical),
         optional_tile_json(selected.tile_particles),
+        optional_tile_json(selected.calibration_effective_tile_particles),
+        optional_tile_json(selected.requested_effective_tile_particles),
+        json_bool_auto(
+            selected.calibration_effective_tile_particles
+                == selected.requested_effective_tile_particles
+        ),
         evidence.measurement.effective_workers,
         selected.calibration_median_ns,
         selected.projected_median_ns,
@@ -606,6 +710,8 @@ pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
     println!("canonical_oracle={AUTO_ORACLE}");
     println!("promotion_margin_basis_points={AUTO_PROMOTION_MARGIN_BPS}");
     println!("score_projection={AUTO_SCORE_PROJECTION}");
+    println!("tile_shape_policy={AUTO_TILE_SHAPE_POLICY}");
+    println!("calibration_base_resident_particles={AUTO_CALIBRATION_BASE_RESIDENT}");
     println!("persistent_startup_score_scope=full-requested-pool");
     println!("available_parallelism={}", topology.logical_cpus);
     match topology.physical_cores {
@@ -613,6 +719,7 @@ pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
         None => println!("detected_physical_cores=unavailable"),
     }
     println!("topology_source={}", topology.source);
+    println!("calibration_resident_particles={}", calibration.resident);
     println!("calibration_work_units={}", workload_units(&calibration));
     println!("requested_work_units={}", workload_units(&full));
     println!("calibration_oracle_ns={calibration_oracle_ns}");
@@ -635,6 +742,19 @@ pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
         Some(tile) => println!("selected_tile_particles={tile}"),
         None => println!("selected_tile_particles=none"),
     }
+    match selected.calibration_effective_tile_particles {
+        Some(tile) => println!("selected_calibration_effective_tile_particles={tile}"),
+        None => println!("selected_calibration_effective_tile_particles=none"),
+    }
+    match selected.requested_effective_tile_particles {
+        Some(tile) => println!("selected_requested_effective_tile_particles={tile}"),
+        None => println!("selected_requested_effective_tile_particles=none"),
+    }
+    println!(
+        "selected_tile_shape_match={}",
+        selected.calibration_effective_tile_particles
+            == selected.requested_effective_tile_particles
+    );
     println!("selected_effective_workers={}", evidence.measurement.effective_workers);
     println!("selected_calibration_median_ns={}", selected.calibration_median_ns);
     println!("selected_projected_median_ns={}", selected.projected_median_ns);
@@ -714,10 +834,14 @@ mod auto_tests {
         startup_ns: u128,
         score_ns: u128,
     ) -> AutoCandidate {
+        let tile = if engine == AutoEngine::Canonical { None } else { Some(1024) };
         AutoCandidate {
             engine,
-            tile_particles: if engine == AutoEngine::Canonical { None } else { Some(1024) },
+            tile_particles: tile,
+            calibration_workers: 8,
             effective_workers: 8,
+            calibration_effective_tile_particles: tile,
+            requested_effective_tile_particles: tile,
             requested_schedule: None,
             effective_schedule: None,
             schedule_fell_back_to_logical: false,
@@ -749,6 +873,71 @@ mod auto_tests {
         assert_eq!(workload_units(&calibration), 200);
         assert_eq!(workload_units(&full), 4_000);
         assert_eq!(project_median_ns(1_000, &calibration, &full), 20_000);
+    }
+
+    #[test]
+    fn tile_faithful_calibration_expands_for_large_worker_count() {
+        let topology = TopologyInfo {
+            logical_cpus: 256,
+            physical_cores: Some(128),
+            source: "test",
+        };
+        let full = Config {
+            path: ExecutionPath::Reference,
+            logical: u64::MAX,
+            resident: 16_777_216,
+            frames: 8,
+            requested_workers: 256,
+            tile_particles: INTEGRATED_DEFAULT_TILE,
+            repeats: 5,
+            seed: DEFAULT_SEED,
+            receipt: None,
+        };
+        let calibration = calibration_config(&full, &topology);
+        assert_eq!(calibration.resident, full.resident);
+        assert_eq!(
+            effective_tile_particles(calibration.resident, 256, 65_536),
+            effective_tile_particles(full.resident, 256, 65_536)
+        );
+        assert_eq!(effective_tile_particles(calibration.resident, 256, 65_536), 65_536);
+    }
+
+    #[test]
+    fn tile_faithful_calibration_can_stop_below_full_resident() {
+        let topology = TopologyInfo {
+            logical_cpus: 96,
+            physical_cores: Some(48),
+            source: "test",
+        };
+        let full = Config {
+            path: ExecutionPath::Reference,
+            logical: u64::MAX,
+            resident: 16_777_216,
+            frames: 8,
+            requested_workers: 96,
+            tile_particles: INTEGRATED_DEFAULT_TILE,
+            repeats: 5,
+            seed: DEFAULT_SEED,
+            receipt: None,
+        };
+        let calibration = calibration_config(&full, &topology);
+        assert_eq!(calibration.resident, 65_536 * 96);
+        assert!(calibration.resident < full.resident);
+        assert_eq!(effective_tile_particles(calibration.resident, 96, 65_536), 65_536);
+        assert_eq!(effective_tile_particles(full.resident, 96, 65_536), 65_536);
+    }
+
+    #[test]
+    fn tile_shape_guard_rejects_collapsed_calibration_tile() {
+        let mismatch = verify_effective_tile_shape(
+            AutoEngine::SpawnedSoa,
+            65_536,
+            65_536,
+            256,
+            16_777_216,
+            256,
+        );
+        assert!(mismatch.is_err());
     }
 
     #[test]
