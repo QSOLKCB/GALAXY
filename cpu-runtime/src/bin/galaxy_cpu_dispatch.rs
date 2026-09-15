@@ -2,8 +2,8 @@
 //! Production command dispatcher for GALAXY's native CPU runtime.
 //!
 //! The canonical AoS runtime remains the default command surface. Optimized SoA
-//! paths stay behind explicit commands so callers opt in while the established
-//! path remains the oracle and fallback.
+//! paths and calibrated host-auto promotion stay behind explicit commands so the
+//! established path remains available as oracle and manual fallback.
 
 use std::env;
 
@@ -28,6 +28,23 @@ mod integrated_soa {
     mod pooled {
         use super::*;
         include!(concat!(env!("OUT_DIR"), "/persistent_soa.inc.rs"));
+
+        mod auto {
+            use super::*;
+            include!(concat!(env!("OUT_DIR"), "/auto_tune.inc.rs"));
+        }
+
+        pub fn auto_usage_text() -> &'static str {
+            auto::auto_usage_text()
+        }
+
+        pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
+            auto::run_auto_bench(args)
+        }
+
+        pub fn run_auto_verify(args: &[String]) -> Result<(), String> {
+            auto::run_auto_verify(args)
+        }
     }
 
     pub fn usage_text() -> &'static str {
@@ -36,6 +53,10 @@ mod integrated_soa {
 
     pub fn pooled_usage_text() -> &'static str {
         pooled::usage_text()
+    }
+
+    pub fn auto_usage_text() -> &'static str {
+        pooled::auto_usage_text()
     }
 
     fn integrated_args(args: &[String]) -> Result<Vec<String>, String> {
@@ -138,14 +159,23 @@ mod integrated_soa {
     pub fn run_pooled_verify(args: &[String]) -> Result<(), String> {
         pooled::run_pooled_verify(args)
     }
+
+    pub fn run_auto_bench(args: &[String]) -> Result<(), String> {
+        pooled::run_auto_bench(args)
+    }
+
+    pub fn run_auto_verify(args: &[String]) -> Result<(), String> {
+        pooled::run_auto_verify(args)
+    }
 }
 
 fn combined_usage() -> String {
     format!(
-        "{}\nGuarded worker-local SoA integration:\n{}\nPersistent execution architecture (PE #13):\n{}",
+        "{}\nGuarded worker-local SoA integration:\n{}\nPersistent execution architecture (PE #13):\n{}\nHost-aware promotion/tuning (PE #14):\n{}",
         legacy::usage_text(),
         integrated_soa::usage_text(),
-        integrated_soa::pooled_usage_text()
+        integrated_soa::pooled_usage_text(),
+        integrated_soa::auto_usage_text(),
     )
 }
 
@@ -178,6 +208,16 @@ fn main() {
             Ok(())
         }
         Some("verify-soa-pool") => integrated_soa::run_pooled_verify(&args[1..]),
+        Some("bench-auto") | Some("run-auto") if help_requested(&args[1..]) => {
+            print!("{}", integrated_soa::auto_usage_text());
+            Ok(())
+        }
+        Some("bench-auto") | Some("run-auto") => integrated_soa::run_auto_bench(&args[1..]),
+        Some("verify-auto") if help_requested(&args[1..]) => {
+            print!("{}", integrated_soa::auto_usage_text());
+            Ok(())
+        }
+        Some("verify-auto") => integrated_soa::run_auto_verify(&args[1..]),
         Some("--help") | Some("-h") | None => {
             print!("{}", combined_usage());
             Ok(())
