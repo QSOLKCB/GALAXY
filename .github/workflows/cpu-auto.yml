@@ -47,8 +47,12 @@ jobs:
         run: |
           set -eu
           cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
-          cpu-runtime/target/release/galaxy-cpu --help | grep -q 'bench-auto'
-          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help >/dev/null
+          top_help=$(cpu-runtime/target/release/galaxy-cpu --help)
+          printf '%s\n' "$top_help" | grep -q 'bench-auto'
+          printf '%s\n' "$top_help" | grep -q 'expands resident work when needed so every advertised tile is measured'
+          auto_help=$(cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help)
+          printf '%s\n' "$auto_help" | grep -q 'projects every calibration median to requested particle-frame work'
+          printf '%s\n' "$auto_help" | grep -q 'expands resident work when needed so every advertised tile is measured'
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --help >/dev/null
           for flag in --path --tile --schedule; do
             if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto "$flag" 1 >/dev/null 2>&1; then
@@ -81,6 +85,7 @@ jobs:
           grep -q '^execution_mode=host-auto$' runs/cpu-auto-ci/stdout.txt
           grep -q '^selection_policy=calibrated-host-auto-v1$' runs/cpu-auto-ci/stdout.txt
           grep -q '^score_projection=linear-particle-frame-v1$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^tile_shape_policy=expand-resident-for-effective-tile-v1$' runs/cpu-auto-ci/stdout.txt
           grep -q '^calibration_oracle_ns=' runs/cpu-auto-ci/stdout.txt
           grep -q '"schema": "galaxy.cpu-runtime-auto-receipt.v1"' runs/cpu-auto-ci/receipt.json
           grep -q '"runtime": "galaxy-cpu"' runs/cpu-auto-ci/receipt.json
@@ -90,11 +95,23 @@ jobs:
           grep -q '"parity_fail_closed": true' runs/cpu-auto-ci/receipt.json
           grep -q '"promotion_margin_basis_points": 500' runs/cpu-auto-ci/receipt.json
           grep -q '"score_projection": "linear-particle-frame-v1"' runs/cpu-auto-ci/receipt.json
+          grep -q '"tile_shape_policy": "expand-resident-for-effective-tile-v1"' runs/cpu-auto-ci/receipt.json
           grep -q '"calibration_work_units":' runs/cpu-auto-ci/receipt.json
           grep -q '"requested_work_units":' runs/cpu-auto-ci/receipt.json
           grep -q '"calibration_oracle_ns":' runs/cpu-auto-ci/receipt.json
           grep -q '"selected_schedule_fell_back_to_logical":' runs/cpu-auto-ci/receipt.json
+          grep -q '"selected_tile_shape_match": true' runs/cpu-auto-ci/receipt.json
           grep -q '"checksum_match": true' runs/cpu-auto-ci/receipt.json
+          python3 - <<'PY'
+          import json
+          with open('runs/cpu-auto-ci/receipt.json', encoding='utf-8') as handle:
+              receipt = json.load(handle)
+          assert receipt['tile_shape_policy'] == 'expand-resident-for-effective-tile-v1'
+          for candidate in receipt['calibration_candidates']:
+              if candidate['tile_particles'] is not None:
+                  assert candidate['tile_shape_match'] is True
+                  assert candidate['calibration_effective_tile_particles'] == candidate['requested_effective_tile_particles']
+          PY
           selected=$(sed -n 's/.*"selected_checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-auto-ci/receipt.json)
           oracle=$(sed -n 's/.*"oracle_checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-auto-ci/receipt.json)
           test -n "$selected"
@@ -119,8 +136,11 @@ jobs:
           cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
           $help = & 'cpu-runtime/target/release/galaxy-cpu.exe' --help
           if (-not ($help -match 'bench-auto')) { throw "galaxy-cpu help omitted bench-auto" }
-          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help | Out-Null
+          if (-not ($help -match 'expands resident work when needed so every advertised tile is measured')) { throw "top-level help omitted live tile-shape policy" }
+          $autoHelp = cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help
           if ($LASTEXITCODE -ne 0) { throw "bench-auto --help failed" }
+          if (-not ($autoHelp -match 'projects every calibration median to requested particle-frame work')) { throw "bench-auto help omitted score projection" }
+          if (-not ($autoHelp -match 'expands resident work when needed so every advertised tile is measured')) { throw "bench-auto help omitted tile-shape policy" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "verify-auto --help failed" }
           foreach ($flag in @('--path','--tile','--schedule')) {
@@ -149,8 +169,16 @@ jobs:
           if (-not $receipt.parity_fail_closed) { throw "auto policy lost fail-closed marker" }
           if ($receipt.promotion_margin_basis_points -ne 500) { throw "auto promotion margin changed" }
           if ($receipt.score_projection -ne 'linear-particle-frame-v1') { throw "auto score projection changed" }
+          if ($receipt.tile_shape_policy -ne 'expand-resident-for-effective-tile-v1') { throw "auto tile-shape policy changed" }
           if ($receipt.calibration_oracle_ns -le 0) { throw "calibration oracle timing was not recorded" }
           if ($receipt.tuning_ns -lt $receipt.calibration_oracle_ns) { throw "tuning time excluded calibration oracle" }
+          if (-not $receipt.selected_tile_shape_match) { throw "selected tile shape did not match requested execution" }
+          foreach ($candidate in @($receipt.calibration_candidates)) {
+            if ($null -ne $candidate.tile_particles) {
+              if (-not $candidate.tile_shape_match) { throw "candidate tile shape did not match requested execution" }
+              if ($candidate.calibration_effective_tile_particles -ne $candidate.requested_effective_tile_particles) { throw "candidate effective tile fields diverged" }
+            }
+          }
           if (-not $receipt.checksum_match) { throw "auto selected checksum did not match oracle" }
           if ($receipt.selected_checksum -ne $receipt.oracle_checksum) { throw "auto checksum fields diverged" }
 
