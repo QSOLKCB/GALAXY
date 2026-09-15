@@ -15,18 +15,29 @@ if [ ! -x "$GALAXY_CARGO" ] && ! command -v "$GALAXY_CARGO" >/dev/null 2>&1; the
   exit 1
 fi
 
-ITEMS=${GALAXY_SIMD_ITEMS:-4194304}
-PAIRS=${GALAXY_SIMD_REPEATS:-7}
-case "$PAIRS" in
-  ''|*[!0-9]*)
-    printf '%s\n' "GALAXY_SIMD_REPEATS must be an integer in 1..=25." >&2
+normalize_positive_decimal() {
+  name=$1
+  raw=$2
+  maximum=$3
+  normalized=$(awk -v value="$raw" -v maximum="$maximum" '
+    BEGIN {
+      if (value !~ /^\+?[0-9]+$/) exit 1
+      sub(/^\+/, "", value)
+      sub(/^0+/, "", value)
+      if (value == "") value = "0"
+      number = value + 0
+      if (number < 1 || number > maximum || number != int(number)) exit 1
+      printf "%.0f\n", number
+    }
+  ') || {
+    printf '%s must be a decimal integer in 1..=%s.\n' "$name" "$maximum" >&2
     exit 2
-    ;;
-esac
-if [ "$PAIRS" -lt 1 ] || [ "$PAIRS" -gt 25 ]; then
-  printf '%s\n' "GALAXY_SIMD_REPEATS must be in 1..=25." >&2
-  exit 2
-fi
+  }
+  printf '%s\n' "$normalized"
+}
+
+ITEMS=$(normalize_positive_decimal GALAXY_SIMD_ITEMS "${GALAXY_SIMD_ITEMS:-4194304}" 16777216)
+PAIRS=$(normalize_positive_decimal GALAXY_SIMD_REPEATS "${GALAXY_SIMD_REPEATS:-7}" 25)
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 OUTPUT=${GALAXY_SIMD_OUTPUT:-runs/cpu-simd-${STAMP}-$$}
@@ -90,6 +101,7 @@ summarize_isa() {
   variant=$1
   binary=$2
   asm=$OUTPUT/${variant}-galaxy_hash_batch.asm
+  decoded_asm=$OUTPUT/${variant}-galaxy_hash_batch.decoded.asm
   evidence=$OUTPUT/${variant}-isa-evidence.txt
 
   if ! command -v objdump >/dev/null 2>&1; then
@@ -108,16 +120,39 @@ summarize_isa() {
   fi
 
   mnemonics=$OUTPUT/${variant}-decoded-mnemonics.txt
-  awk '
-    /^[[:space:]]*[0-9A-Fa-f]+:/ {
-      for (i = 2; i <= NF; i++) {
-        if ($i ~ /^[A-Za-z][A-Za-z0-9_.]*$/) {
-          print tolower($i)
-          break
+  if objdump -d -M intel --no-show-raw-insn --disassemble=galaxy_hash_batch "$binary" > "$decoded_asm" 2>/dev/null \
+    || objdump -d --no-show-raw-insn --disassemble=galaxy_hash_batch "$binary" > "$decoded_asm" 2>/dev/null; then
+    # With raw bytes suppressed, the first token after the address is the
+    # decoded mnemonic. This avoids confusing hexadecimal bytes such as c4/ec/f8
+    # with instruction names.
+    awk '
+      /^[[:space:]]*[0-9A-Fa-f]+:/ {
+        line = $0
+        sub(/^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]*/, "", line)
+        split(line, fields, /[[:space:]]+/)
+        if (fields[1] ~ /^[A-Za-z][A-Za-z0-9_.]*$/) print tolower(fields[1])
+      }
+    ' "$decoded_asm" > "$mnemonics"
+  else
+    rm -f "$decoded_asm"
+    # Fallback for objdump implementations without --no-show-raw-insn: strip
+    # the address, skip each two-digit raw byte token, then take the first
+    # mnemonic-shaped field.
+    awk '
+      /^[[:space:]]*[0-9A-Fa-f]+:/ {
+        line = $0
+        sub(/^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]*/, "", line)
+        count = split(line, fields, /[[:space:]]+/)
+        for (i = 1; i <= count; i++) {
+          if (fields[i] ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) continue
+          if (fields[i] ~ /^[A-Za-z][A-Za-z0-9_.]*$/) {
+            print tolower(fields[i])
+            break
+          }
         }
       }
-    }
-  ' "$asm" > "$mnemonics"
+    ' "$asm" > "$mnemonics"
+  fi
 
   evex_lines=$(grep -Ec '^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]+62([[:space:]]|$)' "$asm" || true)
   vex_lines=$(grep -Ec '^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]+(c4|c5)([[:space:]]|$)' "$asm" || true)
