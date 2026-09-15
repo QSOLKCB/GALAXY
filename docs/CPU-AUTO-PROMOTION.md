@@ -29,7 +29,7 @@ It does not use CPU model-name tables. It starts from a deterministic calibratio
 The baseline calibration policy is:
 
 - base resident target: 65,536 particles;
-- frames capped at 4;
+- **requested frame depth is preserved exactly**;
 - 3 repeats;
 - resident count may expand above 65,536, never beyond the requested resident count, when worker partitioning would otherwise collapse an advertised tile to a smaller effective tile.
 
@@ -71,6 +71,24 @@ A mismatch is a fail-closed tuning error. A candidate is never promoted on timin
 
 This may make auto tuning more expensive on very large worker counts. That cost is intentional: choosing among large cache-sensitive tile sizes without actually exercising those tile sizes would be cheaper but scientifically misleading.
 
+## Requested frame-depth calibration
+
+Particle generation and worker-local tile fill happen once per particle before the frame loop, while BAM-LUT projection and contribution hashing repeat for every frame. A fixed shallow calibration such as four frames therefore changes the ratio between one-time per-particle work and repeated per-frame work.
+
+PE #14 now preserves:
+
+```text
+calibration_frames = requested_frames
+```
+
+with policy identifier:
+
+```text
+frame_calibration_policy = preserve-requested-depth-v1
+```
+
+This means a deep requested run is ranked at the same frame depth rather than extrapolated from a cost mix that only exists for a shallow run. Resident work may still be bounded/expanded by the tile-shape policy above.
+
 ## Full-requested-workload score projection
 
 Promotion compares like with like. A calibration median is **not** compared directly with a full-requested-pool startup cost.
@@ -86,7 +104,9 @@ projected_median = ceil(
 )
 ```
 
-The receipt identifies this model as:
+Because frame depth is preserved, the projection normally scales only the remaining resident-population difference while retaining the requested per-particle/per-frame cost mix.
+
+The receipt identifies the projection model as:
 
 ```text
 score_projection = linear-particle-frame-v1
@@ -98,8 +118,9 @@ Canonical and spawned-SoA candidates use the projected median directly as their 
 
 Persistent candidates add one extra term:
 
-- steady-state median is measured on the tile-faithful calibration shape and projected to requested particle-frame work;
+- steady-state median is measured on the tile-faithful, frame-faithful calibration shape and projected to requested particle-frame work;
 - pool startup is measured separately with the **full requested resident count, worker policy, and candidate tile size**;
+- persistent worker-local buffers are allocated and explicitly first-touched before workers report ready;
 - that observed full-pool startup is amortized across the requested repeat count.
 
 Thus:
@@ -108,9 +129,13 @@ Thus:
 persistent_score = projected_median + full_pool_startup / requested_repeats
 ```
 
-The full-pool probe constructs the actual persistent worker set and waits until every worker has allocated its requested worker-local tile capacity and reported ready. LUT construction remains outside that startup timer, matching the established persistent runtime timing boundary.
+The full-pool probe constructs the actual persistent worker set and waits until every worker has allocated and first-touched its requested worker-local tile capacity and reported ready. LUT construction remains outside that startup timer, matching the established persistent runtime timing boundary.
 
-The receipt preserves both the calibration-pool startup and the scored full-requested-pool startup for audit.
+The receipt preserves both the calibration-pool startup and the scored full-requested-pool startup for audit and records:
+
+```text
+persistent_startup_includes_buffer_first_touch = true
+```
 
 ## Scheduling evidence and fallback
 
@@ -158,7 +183,13 @@ There is no silent checksum fallback.
 
 ## Tuning latency
 
-`tuning_ns` covers the complete decision process beginning before the calibration oracle is constructed and evaluated.
+`tuning_ns` covers the complete execution-policy decision beginning **before topology detection**. This matters because Linux topology detection reads process/sysfs state and macOS invokes `sysctl`, and that result directly changes which candidates and worker counts are calibrated.
+
+The receipt records topology cost separately as:
+
+```text
+topology_detection_ns
+```
 
 The calibration-oracle portion is also recorded separately as:
 
@@ -166,9 +197,7 @@ The calibration-oracle portion is also recorded separately as:
 calibration_oracle_ns
 ```
 
-This prevents short jobs from hiding a large fraction of auto-selection latency outside the reported tuning cost.
-
-The later full-workload oracle remains separate as `full_oracle_ns` because it validates the selected execution rather than choosing the candidate.
+Both are included inside `tuning_ns`. The later full-workload oracle remains separate as `full_oracle_ns` because it validates the selected execution rather than choosing the candidate.
 
 ## Receipt
 
@@ -183,13 +212,17 @@ canonical_oracle = streaming-canonical-bam-lut-v1
 parity_fail_closed = true
 score_projection = linear-particle-frame-v1
 tile_shape_policy = expand-resident-for-effective-tile-v1
+frame_calibration_policy = preserve-requested-depth-v1
 persistent_startup_score_scope = full-requested-pool
+persistent_startup_includes_buffer_first_touch = true
 ```
 
 The receipt records:
 
 - detected logical and physical topology;
+- topology-detection time;
 - 65,536-particle calibration base and the actual tile-faithful calibration resident count;
+- requested frame depth and identical calibration frame depth;
 - calibration and requested particle-frame work units;
 - calibration-oracle time and complete tuning time;
 - every calibration candidate's calibration median and projected median;
@@ -198,7 +231,7 @@ The receipt records:
 - nominal tile plus calibration/requested effective tile sizes and exact match marker;
 - candidate checksum and projected score;
 - calibration-pool startup for persistent candidates;
-- full-requested-pool startup used for persistent scoring;
+- full-requested-pool startup used for persistent scoring, including explicit buffer first-touch;
 - promotion margin;
 - selected engine, effective scheduling mode, requested scheduling mode, tile and worker count;
 - selected effective tile-shape evidence;
@@ -209,7 +242,7 @@ The receipt records:
 
 ## Claim boundary
 
-The selected configuration is host- and workload-specific evidence derived from a deterministic tile-faithful calibration shape, an explicit particle-frame score projection, and—where applicable—an observed full-requested-pool startup probe. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
+The selected configuration is host- and workload-specific evidence derived from a deterministic tile-faithful and frame-faithful calibration shape, an explicit particle-frame score projection, and—where applicable—an observed full-requested-pool startup probe that includes worker-local buffer first-touch. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
 
 PE #14 deliberately avoids model-name heuristics and preserves all manual execution commands so the automatic policy can be audited against explicit alternatives.
 
@@ -220,13 +253,14 @@ PE #14 passes only if:
 1. the streaming oracle matches the established canonical reference in tests;
 2. every calibration candidate matches the oracle exactly;
 3. every tiled candidate is measured at the same effective per-worker tile size it will have on the requested workload;
-4. every candidate score is expressed on the same requested particle-frame scale before promotion;
-5. persistent promotion accounts for observed startup of the full requested pool shape;
-6. physical-first fallback is reported as logical execution when physical topology is unavailable;
-7. tuning time includes the calibration-oracle work and records that component separately;
-8. the selected full workload matches the full oracle exactly;
-9. near-ties remain canonical because of the 5% promotion margin;
-10. material measured/projected wins may promote to spawned or persistent SoA;
-11. public auto help is sourced from the live policy text rather than a duplicate dispatcher string;
-12. existing canonical and manual optimized commands remain unchanged;
-13. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
+4. calibration preserves the requested frame depth;
+5. every candidate score is expressed on the same requested particle-frame scale before promotion;
+6. persistent promotion accounts for observed startup of the full requested pool shape **including worker-local buffer first-touch**;
+7. physical-first fallback is reported as logical execution when physical topology is unavailable;
+8. tuning time starts before topology detection and separately records topology and calibration-oracle components;
+9. the selected full workload matches the full oracle exactly;
+10. near-ties remain canonical because of the 5% promotion margin;
+11. material measured/projected wins may promote to spawned or persistent SoA;
+12. public auto help is sourced from the live policy text rather than a duplicate dispatcher string;
+13. existing canonical and manual optimized commands remain unchanged;
+14. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
