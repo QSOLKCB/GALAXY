@@ -21,6 +21,10 @@ path = "src/bin/simd_probe.rs"
 name = "worker_soa_probe"
 path = "src/bin/worker_soa_probe.rs"
 
+[[bin]]
+name = "memory_wall_probe"
+path = "src/bin/memory_wall_probe.rs"
+
 [dependencies]
 galaxy-retro-math = { path = "../retro" }
 galaxy-sampler = { path = "../rust" }
