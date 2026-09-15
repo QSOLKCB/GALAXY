@@ -1,0 +1,145 @@
+name: CPU host-auto promotion
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpu-auto-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unix-auto:
+    name: Auto ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+            expected_arch: x86_64
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            expected_arch: aarch64
+          - name: macOS ARM64
+            runner: macos-15
+            expected_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: sh
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        run: |
+          set -eu
+          actual=$(uname -m)
+          printf 'runner_arch=%s expected_arch=%s\n' "$actual" "$EXPECTED_ARCH"
+          test "$actual" = "$EXPECTED_ARCH"
+      - name: Test auto policy unit contracts
+        shell: sh
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+      - name: Verify auto CLI boundaries
+        shell: sh
+        run: |
+          set -eu
+          cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
+          cpu-runtime/target/release/galaxy-cpu --help | grep -q 'bench-auto'
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help >/dev/null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --help >/dev/null
+          for flag in --path --tile --schedule; do
+            if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto "$flag" 1 >/dev/null 2>&1; then
+              echo "bench-auto unexpectedly accepted $flag" >&2
+              exit 1
+            fi
+          done
+      - name: Verify fail-closed auto selection
+        shell: sh
+        run: |
+          set -eu
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --workers 4
+      - name: Run bounded auto receipt
+        shell: sh
+        run: |
+          set -eu
+          mkdir -p runs/cpu-auto-ci
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
+            bench-auto \
+            --logical 18446744073709551615 \
+            --resident 16384 \
+            --frames 2 \
+            --workers 4 \
+            --repeats 2 \
+            --seed 303 \
+            --receipt runs/cpu-auto-ci/receipt.json \
+            > runs/cpu-auto-ci/stdout.txt
+          cat runs/cpu-auto-ci/stdout.txt
+          cat runs/cpu-auto-ci/receipt.json
+          grep -q '^execution_mode=host-auto$' runs/cpu-auto-ci/stdout.txt
+          grep -q '^selection_policy=calibrated-host-auto-v1$' runs/cpu-auto-ci/stdout.txt
+          grep -q '"schema": "galaxy.cpu-runtime-auto-receipt.v1"' runs/cpu-auto-ci/receipt.json
+          grep -q '"runtime": "galaxy-cpu"' runs/cpu-auto-ci/receipt.json
+          grep -q '"execution_mode": "host-auto"' runs/cpu-auto-ci/receipt.json
+          grep -q '"selection_policy": "calibrated-host-auto-v1"' runs/cpu-auto-ci/receipt.json
+          grep -q '"canonical_oracle": "streaming-canonical-bam-lut-v1"' runs/cpu-auto-ci/receipt.json
+          grep -q '"parity_fail_closed": true' runs/cpu-auto-ci/receipt.json
+          grep -q '"promotion_margin_basis_points": 500' runs/cpu-auto-ci/receipt.json
+          grep -q '"checksum_match": true' runs/cpu-auto-ci/receipt.json
+          selected=$(sed -n 's/.*"selected_checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-auto-ci/receipt.json)
+          oracle=$(sed -n 's/.*"oracle_checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-auto-ci/receipt.json)
+          test -n "$selected"
+          test "$selected" = "$oracle"
+
+  windows-auto:
+    name: Auto Windows x86-64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: pwsh
+        run: |
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          if ($arch -ne 'X64') { throw "Expected native X64 runner" }
+      - name: Test auto policy unit contracts
+        shell: pwsh
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline
+      - name: Verify auto CLI boundaries
+        shell: pwsh
+        run: |
+          cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
+          $help = & 'cpu-runtime/target/release/galaxy-cpu.exe' --help
+          if (-not ($help -match 'bench-auto')) { throw "galaxy-cpu help omitted bench-auto" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "bench-auto --help failed" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "verify-auto --help failed" }
+          foreach ($flag in @('--path','--tile','--schedule')) {
+            $probe = Start-Process -FilePath cargo -ArgumentList @(
+              'run','--manifest-path','cpu-runtime/Cargo.toml','--release','--locked','--offline',
+              '--','bench-auto',$flag,'1'
+            ) -NoNewWindow -Wait -PassThru
+            if ($probe.ExitCode -eq 0) { throw "bench-auto unexpectedly accepted $flag" }
+          }
+      - name: Verify fail-closed auto selection
+        shell: pwsh
+        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-auto --workers 4
+      - name: Run bounded auto receipt
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force runs/cpu-auto-ci | Out-Null
+          $output = cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-auto --logical 18446744073709551615 --resident 16384 --frames 2 --workers 4 --repeats 2 --seed 303 --receipt runs/cpu-auto-ci/receipt.json
+          $output | Set-Content runs/cpu-auto-ci/stdout.txt
+          $output
+          $receipt = Get-Content runs/cpu-auto-ci/receipt.json -Raw | ConvertFrom-Json
+          if ($receipt.schema -ne 'galaxy.cpu-runtime-auto-receipt.v1') { throw "auto receipt schema changed" }
+          if ($receipt.runtime -ne 'galaxy-cpu') { throw "auto receipt runtime changed" }
+          if ($receipt.execution_mode -ne 'host-auto') { throw "auto execution mode changed" }
+          if ($receipt.selection_policy -ne 'calibrated-host-auto-v1') { throw "auto selection policy changed" }
+          if ($receipt.canonical_oracle -ne 'streaming-canonical-bam-lut-v1') { throw "auto oracle changed" }
+          if (-not $receipt.parity_fail_closed) { throw "auto policy lost fail-closed marker" }
+          if ($receipt.promotion_margin_basis_points -ne 500) { throw "auto promotion margin changed" }
+          if (-not $receipt.checksum_match) { throw "auto selected checksum did not match oracle" }
+          if ($receipt.selected_checksum -ne $receipt.oracle_checksum) { throw "auto checksum fields diverged" }
