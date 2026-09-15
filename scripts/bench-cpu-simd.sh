@@ -78,7 +78,23 @@ NATIVE_RUSTFLAGS='-C target-cpu=native'
 GENERIC_BINARY=$GENERIC_TARGET/$HOST_TARGET/release/simd_probe$EXE_SUFFIX
 NATIVE_BINARY=$NATIVE_TARGET/$HOST_TARGET/release/simd_probe$EXE_SUFFIX
 
-mkdir -p "$OUTPUT"
+if [ -e "$OUTPUT" ]; then
+  if [ ! -d "$OUTPUT" ]; then
+    printf 'GALAXY_SIMD_OUTPUT exists but is not a directory: %s\n' "$OUTPUT" >&2
+    exit 2
+  fi
+  OUTPUT_CONTENTS=$(ls -A "$OUTPUT" 2>/dev/null) || {
+    printf 'GALAXY SIMD probe: could not inspect output directory: %s\n' "$OUTPUT" >&2
+    exit 2
+  }
+  if [ -n "$OUTPUT_CONTENTS" ]; then
+    printf 'GALAXY_SIMD_OUTPUT must be empty before a benchmark run: %s\n' "$OUTPUT" >&2
+    exit 2
+  fi
+else
+  mkdir -p "$OUTPUT"
+fi
+
 : > "$GENERIC_SAMPLES"
 : > "$NATIVE_SAMPLES"
 printf 'pair\tsequence\tvariant\n' > "$ORDER_LOG"
