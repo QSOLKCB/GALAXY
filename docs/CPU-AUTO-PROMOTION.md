@@ -39,7 +39,15 @@ Candidates are:
 3. persistent worker-local SoA with `physical-first` scheduling at the same tile set;
 4. persistent worker-local SoA with explicit logical/SMT scheduling when that resolves to a distinct worker count.
 
-Persistent candidates are scored with their steady-state median plus pool startup amortized across the requested full-workload repeat count. Spawned and canonical candidates include their normal per-execution costs in their measured medians.
+Persistent candidates use a split scoring boundary:
+
+- steady-state median time comes from the bounded calibration slice;
+- pool startup comes from a separate **full-requested-pool startup probe** using the requested resident count, worker policy, and candidate tile size;
+- the observed full-pool startup is amortized across the requested full-workload repeat count.
+
+The full-pool probe constructs the actual persistent worker set and waits until every worker has allocated its requested worker-local tile capacity and reported ready. LUT construction remains outside that startup timer, matching the established persistent runtime timing boundary.
+
+This prevents a large full workload from being promoted on the strength of an artificially cheap 65,536-particle calibration-pool startup. The receipt retains both the bounded calibration-pool startup and the scored full-requested-pool startup for audit. Spawned and canonical candidates include their normal per-execution costs in their measured medians.
 
 ## Promotion margin
 
@@ -80,6 +88,7 @@ execution_mode = host-auto
 selection_policy = calibrated-host-auto-v1
 canonical_oracle = streaming-canonical-bam-lut-v1
 parity_fail_closed = true
+persistent_startup_score_scope = full-requested-pool
 ```
 
 The receipt records:
@@ -87,17 +96,19 @@ The receipt records:
 - detected logical and physical topology;
 - bounded calibration shape;
 - every calibration candidate, timing score, worker count, tile and checksum;
+- bounded calibration-pool startup for persistent candidates;
+- full-requested-pool startup used for persistent scoring;
 - promotion margin;
 - selected engine, scheduling mode, tile and worker count;
 - tuning time;
-- selected pool startup time when applicable;
+- actual selected full-run pool startup when applicable;
 - full oracle time and checksum;
 - selected checksum and exact parity marker;
 - final best/median timing and RSS evidence.
 
 ## Claim boundary
 
-The selected configuration is host- and workload-specific evidence derived from a bounded calibration slice. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
+The selected configuration is host- and workload-specific evidence derived from a bounded calibration slice plus an observed full-requested-pool startup probe. It is not a universal CPU ranking and does not establish that one tile or scheduling mode is globally optimal.
 
 PE #14 deliberately avoids model-name heuristics and preserves all manual execution commands so the automatic policy can be audited against explicit alternatives.
 
@@ -107,9 +118,10 @@ PE #14 passes only if:
 
 1. the streaming oracle matches the established canonical reference in tests;
 2. every calibration candidate matches the oracle exactly;
-3. the selected full workload matches the full oracle exactly;
-4. near-ties remain canonical because of the 5% promotion margin;
-5. material measured wins may promote to spawned or persistent SoA;
-6. topology evidence remains explicit and fail-soft;
-7. existing canonical and manual optimized commands remain unchanged;
-8. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
+3. persistent promotion accounts for observed startup of the full requested pool shape;
+4. the selected full workload matches the full oracle exactly;
+5. near-ties remain canonical because of the 5% promotion margin;
+6. material measured wins may promote to spawned or persistent SoA;
+7. topology evidence remains explicit and fail-soft;
+8. existing canonical and manual optimized commands remain unchanged;
+9. native CI passes on Linux x86-64, Linux ARM64, macOS ARM64, and Windows x86-64.
