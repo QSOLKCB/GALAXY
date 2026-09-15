@@ -160,12 +160,83 @@ FIRST_TILE=$(printf '%s\n' $TILES | sed -n '1p')
 printf '\n%s\n' '== parity verification =='
 "$NATIVE_BINARY" verify --workers 4 --tile "$FIRST_TILE" | tee "$OUTPUT/verify.txt"
 
-if command -v objdump >/dev/null 2>&1; then
-  objdump -d -M intel --disassemble=galaxy_worker_soa_hash_batch "$GENERIC_BINARY" \
-    > "$OUTPUT/generic-galaxy_worker_soa_hash_batch.asm" 2>/dev/null || true
-  objdump -d -M intel --disassemble=galaxy_worker_soa_hash_batch "$NATIVE_BINARY" \
-    > "$OUTPUT/native-galaxy_worker_soa_hash_batch.asm" 2>/dev/null || true
-fi
+disassembly_has_body() {
+  awk '
+    BEGIN { found = 0 }
+    /^[[:space:]]*[0-9A-Fa-f]+:/ {
+      line = $0
+      sub(/^[[:space:]]*[0-9A-Fa-f]+:[[:space:]]*/, "", line)
+      count = split(line, fields, /[[:space:]]+/)
+      for (i = 1; i <= count; i++) {
+        if (fields[i] ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) continue
+        if (fields[i] ~ /^[A-Za-z][A-Za-z0-9_.]*$/) {
+          found = 1
+          exit
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$1"
+}
+
+disassemble_required() {
+  label=$1
+  binary=$2
+  asm=$OUTPUT/${label}-galaxy_worker_soa_hash_batch.asm
+  evidence=$OUTPUT/${label}-isa-evidence.txt
+
+  if ! command -v objdump >/dev/null 2>&1; then
+    {
+      printf 'build=%s\n' "$label"
+      printf 'symbol=galaxy_worker_soa_hash_batch\n'
+      printf 'evidence_available=false\n'
+      printf 'reason=objdump-not-found\n'
+    } > "$evidence"
+    printf 'required SIMD disassembly evidence unavailable for %s: objdump not found\n' "$label" >&2
+    return 1
+  fi
+
+  if objdump -d -M intel --no-show-raw-insn --disassemble=galaxy_worker_soa_hash_batch "$binary" > "$asm" 2>/dev/null; then
+    :
+  elif objdump -d --no-show-raw-insn --disassemble=galaxy_worker_soa_hash_batch "$binary" > "$asm" 2>/dev/null; then
+    :
+  elif objdump -d -M intel --disassemble=galaxy_worker_soa_hash_batch "$binary" > "$asm" 2>/dev/null; then
+    :
+  elif objdump -d --disassemble=galaxy_worker_soa_hash_batch "$binary" > "$asm" 2>/dev/null; then
+    :
+  else
+    {
+      printf 'build=%s\n' "$label"
+      printf 'symbol=galaxy_worker_soa_hash_batch\n'
+      printf 'evidence_available=false\n'
+      printf 'reason=objdump-disassembly-failed\n'
+    } > "$evidence"
+    rm -f "$asm"
+    printf 'required SIMD disassembly failed for %s\n' "$label" >&2
+    return 1
+  fi
+
+  if ! disassembly_has_body "$asm"; then
+    {
+      printf 'build=%s\n' "$label"
+      printf 'symbol=galaxy_worker_soa_hash_batch\n'
+      printf 'evidence_available=false\n'
+      printf 'reason=probe-symbol-body-not-decoded\n'
+    } > "$evidence"
+    printf 'required SIMD symbol body was not decoded for %s\n' "$label" >&2
+    return 1
+  fi
+
+  {
+    printf 'build=%s\n' "$label"
+    printf 'symbol=galaxy_worker_soa_hash_batch\n'
+    printf 'evidence_available=true\n'
+    printf 'assembly=%s\n' "$asm"
+  } > "$evidence"
+}
+
+disassemble_required generic "$GENERIC_BINARY"
+disassemble_required native "$NATIVE_BINARY"
 
 printf 'build\tpath\trequested_workers\teffective_workers\ttile\tmedian_ns\tbest_ns\tchecksum\tpeak_rss_kib\treceipt\n' > "$MATRIX"
 
@@ -289,6 +360,8 @@ awk -F '\t' '
   printf 'repeats_per_case=%s\n' "$REPEATS"
   printf 'matrix=%s\n' "$MATRIX"
   printf 'comparison=%s\n' "$COMPARISON"
+  printf 'generic_isa_evidence=%s\n' "$OUTPUT/generic-isa-evidence.txt"
+  printf 'native_isa_evidence=%s\n' "$OUTPUT/native-isa-evidence.txt"
   printf '%s\n' 'decision_boundary=Do not promote the SoA path solely from this script; require exact parity, repeatable end-to-end timing wins across useful worker counts, and no unacceptable RSS regression.'
 } > "$SUMMARY"
 
