@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Production command dispatcher for GALAXY's native CPU runtime.
 //!
-//! The canonical AoS runtime remains the default command surface. The worker-local
-//! SoA path is integrated behind explicit `bench-soa` / `verify-soa` commands so
-//! callers must opt in while the established path remains the oracle and fallback.
+//! The canonical AoS runtime remains the default command surface. Optimized SoA
+//! paths stay behind explicit commands so callers opt in while the established
+//! path remains the oracle and fallback.
 
 use std::env;
 
@@ -25,8 +25,17 @@ mod integrated_soa {
     const INTEGRATED_RECEIPT_SCHEMA: &str = "galaxy.cpu-runtime-soa-receipt.v1";
     const INTEGRATED_DEFAULT_TILE: usize = 1_024;
 
+    mod pooled {
+        use super::*;
+        include!(concat!(env!("OUT_DIR"), "/persistent_soa.inc.rs"));
+    }
+
     pub fn usage_text() -> &'static str {
         "Usage:\n  galaxy-cpu verify-soa [--workers N] [--tile N]\n  galaxy-cpu bench-soa [--logical U64] [--resident N] [--frames N] [--workers N] [--tile N] [--repeats N] [--seed U32] [--receipt PATH]\n\nGuarded SoA defaults:\n  logical=18446744073709551615 resident=262144 frames=8 repeats=3 tile=1024 seed=303\n  workers=min(std::thread::available_parallelism(), 256)\n\nThe canonical `bench` / `verify` commands remain unchanged and are the default/oracle path.\n"
+    }
+
+    pub fn pooled_usage_text() -> &'static str {
+        pooled::usage_text()
     }
 
     fn integrated_args(args: &[String]) -> Result<Vec<String>, String> {
@@ -121,29 +130,54 @@ mod integrated_soa {
         println!("GALAXY guarded worker-local SoA integration verification passed");
         Ok(())
     }
+
+    pub fn run_pooled_bench(args: &[String]) -> Result<(), String> {
+        pooled::run_pooled_bench(args)
+    }
+
+    pub fn run_pooled_verify(args: &[String]) -> Result<(), String> {
+        pooled::run_pooled_verify(args)
+    }
 }
 
 fn combined_usage() -> String {
     format!(
-        "{}\nGuarded worker-local SoA integration:\n{}",
+        "{}\nGuarded worker-local SoA integration:\n{}\nPersistent execution architecture (PE #13):\n{}",
         legacy::usage_text(),
-        integrated_soa::usage_text()
+        integrated_soa::usage_text(),
+        integrated_soa::pooled_usage_text()
     )
+}
+
+fn help_requested(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--help" || arg == "-h")
 }
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
-        Some("bench-soa") | Some("run-soa") if args[1..].iter().any(|arg| arg == "--help" || arg == "-h") => {
+        Some("bench-soa") | Some("run-soa") if help_requested(&args[1..]) => {
             print!("{}", integrated_soa::usage_text());
             Ok(())
         }
         Some("bench-soa") | Some("run-soa") => integrated_soa::run_integrated_bench(&args[1..]),
-        Some("verify-soa") if args[1..].iter().any(|arg| arg == "--help" || arg == "-h") => {
+        Some("verify-soa") if help_requested(&args[1..]) => {
             print!("{}", integrated_soa::usage_text());
             Ok(())
         }
         Some("verify-soa") => integrated_soa::run_integrated_verify(&args[1..]),
+        Some("bench-soa-pool") | Some("run-soa-pool") if help_requested(&args[1..]) => {
+            print!("{}", integrated_soa::pooled_usage_text());
+            Ok(())
+        }
+        Some("bench-soa-pool") | Some("run-soa-pool") => {
+            integrated_soa::run_pooled_bench(&args[1..])
+        }
+        Some("verify-soa-pool") if help_requested(&args[1..]) => {
+            print!("{}", integrated_soa::pooled_usage_text());
+            Ok(())
+        }
+        Some("verify-soa-pool") => integrated_soa::run_pooled_verify(&args[1..]),
         Some("--help") | Some("-h") | None => {
             print!("{}", combined_usage());
             Ok(())

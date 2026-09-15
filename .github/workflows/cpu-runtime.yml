@@ -60,10 +60,13 @@ jobs:
           cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
           test -x cpu-runtime/target/release/galaxy-cpu
           cpu-runtime/target/release/galaxy-cpu --help | grep -q 'bench-soa'
+          cpu-runtime/target/release/galaxy-cpu --help | grep -q 'bench-soa-pool'
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help >/dev/null
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help >/dev/null
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa --help >/dev/null
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa --help >/dev/null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa-pool --help >/dev/null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa-pool --help >/dev/null
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin worker_soa_probe -- --help >/dev/null
           if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --frames 1 >/dev/null 2>&1; then
             echo "verify unexpectedly accepted benchmark-only --frames" >&2
@@ -71,6 +74,10 @@ jobs:
           fi
           if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa --path reference >/dev/null 2>&1; then
             echo "bench-soa unexpectedly accepted --path override" >&2
+            exit 1
+          fi
+          if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa-pool --path reference >/dev/null 2>&1; then
+            echo "bench-soa-pool unexpectedly accepted --path override" >&2
             exit 1
           fi
       - name: Verify exact u64 and parallel invariants
@@ -83,6 +90,14 @@ jobs:
             verify --workers 4 --tile 127
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
             verify-soa --workers 4 --tile 127
+      - name: Verify persistent SoA parity and scheduling
+        shell: sh
+        run: |
+          set -eu
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
+            verify-soa-pool --workers 4 --tile 127 --schedule physical-first
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
+            verify-soa-pool --workers 4 --tile 127 --schedule logical
       - name: Run bounded native CPU receipt benchmark
         shell: sh
         run: |
@@ -133,6 +148,37 @@ jobs:
           soa=$(sed -n 's/.*"checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-runtime-ci/soa-receipt.json)
           test -n "$canonical"
           test "$canonical" = "$soa"
+      - name: Run bounded persistent SoA production receipt
+        shell: sh
+        run: |
+          set -eu
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
+            bench-soa-pool \
+            --logical 18446744073709551615 \
+            --resident 65536 \
+            --frames 4 \
+            --workers 4 \
+            --tile 127 \
+            --schedule physical-first \
+            --repeats 2 \
+            --seed 303 \
+            --receipt runs/cpu-runtime-ci/pool-receipt.json \
+            > runs/cpu-runtime-ci/pool-stdout.txt
+          cat runs/cpu-runtime-ci/pool-stdout.txt
+          cat runs/cpu-runtime-ci/pool-receipt.json
+          grep -q '^execution_mode=worker-local-soa-persistent$' runs/cpu-runtime-ci/pool-stdout.txt
+          grep -q '"schema": "galaxy.cpu-runtime-persistent-soa-receipt.v1"' runs/cpu-runtime-ci/pool-receipt.json
+          grep -q '"runtime": "galaxy-cpu"' runs/cpu-runtime-ci/pool-receipt.json
+          grep -q '"execution_mode": "worker-local-soa-persistent"' runs/cpu-runtime-ci/pool-receipt.json
+          grep -q '"schedule_policy": "physical-first"' runs/cpu-runtime-ci/pool-receipt.json
+          grep -q '"worker_threads_persistent_across_trials": true' runs/cpu-runtime-ci/pool-receipt.json
+          grep -q '"worker_thread_creation_in_timed_region": false' runs/cpu-runtime-ci/pool-receipt.json
+          grep -q '"worker_local_tile_buffers_reused": true' runs/cpu-runtime-ci/pool-receipt.json
+          grep -q '"pool_dispatches": 3' runs/cpu-runtime-ci/pool-receipt.json
+          canonical=$(grep '"parallel_checksum"' runs/cpu-runtime-ci/receipt.json | tail -n 1 | sed -n 's/.*"parallel_checksum": "\([0-9a-fA-F]*\)".*/\1/p')
+          pooled=$(sed -n 's/.*"checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-runtime-ci/pool-receipt.json)
+          test -n "$canonical"
+          test "$canonical" = "$pooled"
 
   windows-x64:
     name: Windows x86-64
@@ -156,6 +202,7 @@ jobs:
           $help = & 'cpu-runtime/target/release/galaxy-cpu.exe' --help
           if ($LASTEXITCODE -ne 0) { throw "galaxy-cpu.exe --help failed" }
           if (-not ($help -match 'bench-soa')) { throw "galaxy-cpu help omitted bench-soa" }
+          if (-not ($help -match 'bench-soa-pool')) { throw "galaxy-cpu help omitted bench-soa-pool" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "bench --help failed" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help | Out-Null
@@ -164,6 +211,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "bench-soa --help failed" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "verify-soa --help failed" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa-pool --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "bench-soa-pool --help failed" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa-pool --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "verify-soa-pool --help failed" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin worker_soa_probe -- --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "worker_soa_probe --help failed" }
           $probe = Start-Process -FilePath cargo -ArgumentList @(
@@ -176,6 +227,11 @@ jobs:
             '--', 'bench-soa', '--path', 'reference'
           ) -NoNewWindow -Wait -PassThru
           if ($soaOverride.ExitCode -eq 0) { throw "bench-soa unexpectedly accepted --path override" }
+          $poolOverride = Start-Process -FilePath cargo -ArgumentList @(
+            'run', '--manifest-path', 'cpu-runtime/Cargo.toml', '--release', '--locked', '--offline',
+            '--', 'bench-soa-pool', '--path', 'reference'
+          ) -NoNewWindow -Wait -PassThru
+          if ($poolOverride.ExitCode -eq 0) { throw "bench-soa-pool unexpectedly accepted --path override" }
       - name: Verify exact u64 and parallel invariants
         shell: pwsh
         run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
@@ -184,6 +240,13 @@ jobs:
         run: |
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin worker_soa_probe -- verify --workers 4 --tile 127
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa --workers 4 --tile 127
+      - name: Verify persistent SoA parity and scheduling
+        shell: pwsh
+        run: |
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa-pool --workers 4 --tile 127 --schedule physical-first
+          if ($LASTEXITCODE -ne 0) { throw "physical-first persistent verification failed" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa-pool --workers 4 --tile 127 --schedule logical
+          if ($LASTEXITCODE -ne 0) { throw "logical persistent verification failed" }
       - name: Run bounded native CPU receipt benchmark
         shell: pwsh
         run: |
@@ -211,3 +274,20 @@ jobs:
           if (-not $soa.guarded_opt_in) { throw "SoA receipt lost guarded opt-in marker" }
           if ($soa.tile_particles -ne 127) { throw "SoA receipt did not preserve tile size" }
           if ($soa.checksum -ne $canonical.bam_lut.parallel_checksum) { throw "Guarded SoA checksum diverged from canonical BAM-LUT" }
+      - name: Run bounded persistent SoA production receipt
+        shell: pwsh
+        run: |
+          $output = cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa-pool --logical 18446744073709551615 --resident 65536 --frames 4 --workers 4 --tile 127 --schedule physical-first --repeats 2 --seed 303 --receipt runs/cpu-runtime-ci/pool-receipt.json
+          $output | Set-Content runs/cpu-runtime-ci/pool-stdout.txt
+          $output
+          $pool = Get-Content runs/cpu-runtime-ci/pool-receipt.json -Raw | ConvertFrom-Json
+          $canonical = Get-Content runs/cpu-runtime-ci/receipt.json -Raw | ConvertFrom-Json
+          if ($pool.schema -ne 'galaxy.cpu-runtime-persistent-soa-receipt.v1') { throw "Persistent receipt schema changed" }
+          if ($pool.runtime -ne 'galaxy-cpu') { throw "Persistent receipt runtime identity changed" }
+          if ($pool.execution_mode -ne 'worker-local-soa-persistent') { throw "Persistent execution mode changed" }
+          if ($pool.schedule_policy -ne 'physical-first') { throw "Persistent scheduling policy changed" }
+          if (-not $pool.worker_threads_persistent_across_trials) { throw "Persistent receipt lost pool reuse marker" }
+          if ($pool.worker_thread_creation_in_timed_region) { throw "Persistent timing unexpectedly includes thread creation" }
+          if (-not $pool.worker_local_tile_buffers_reused) { throw "Persistent receipt lost tile reuse marker" }
+          if ($pool.pool_dispatches -ne 3) { throw "Persistent receipt dispatch count changed" }
+          if ($pool.checksum -ne $canonical.bam_lut.parallel_checksum) { throw "Persistent SoA checksum diverged from canonical BAM-LUT" }
