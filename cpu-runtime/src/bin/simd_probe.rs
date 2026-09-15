@@ -85,9 +85,9 @@ fn contribution_reference(id_lo: u32, id_hi: u32, x: u32, y: u32) -> u64 {
 /// SoA form of GALAXY's exact contribution hash.
 ///
 /// The symbol is intentionally left unmangled so `objdump --disassemble` can
-/// inspect whether a host-native build used XMM/YMM/ZMM registers. The function
-/// contains no ISA-specific intrinsics; LLVM is free to autovectorize it for the
-/// selected target CPU while the source remains portable.
+/// inspect the decoded instructions selected by LLVM. The function contains no
+/// ISA-specific intrinsics; source portability is preserved while target CPU
+/// selection remains a build-time concern.
 #[no_mangle]
 #[inline(never)]
 pub fn galaxy_hash_batch(
@@ -222,8 +222,12 @@ fn run() -> Result<(), String> {
     let median_ns = median_sorted(&mut timings);
     let ns_per_item = median_ns as f64 / config.items as f64;
 
+    // `cfg!(target_feature = ...)` is useful for stable target features such as
+    // AVX2/FMA, but it is not a trustworthy AVX-512 code-generation receipt on
+    // the crate's Rust 1.85 MSRV. AVX-512 codegen evidence is therefore kept
+    // outside this receipt and derived from decoded disassembly by the runner.
     let receipt = format!(
-        "{{\n  \"schema\": \"galaxy.cpu-simd-probe.v1\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"items\": {},\n  \"repeats\": {},\n  \"runtime_avx2\": {},\n  \"runtime_fma\": {},\n  \"runtime_avx512f\": {},\n  \"compile_avx2\": {},\n  \"compile_fma\": {},\n  \"compile_avx512f\": {},\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"median_ns_per_item\": {:.9},\n  \"checksum\": \"{:016x}\",\n  \"full_parity_check\": true,\n  \"claim_boundary\": \"Isolated structure-of-arrays contribution-hash evidence only; this is not an end-to-end GALAXY runtime speedup claim.\"\n}}\n",
+        "{{\n  \"schema\": \"galaxy.cpu-simd-probe.v2\",\n  \"architecture\": \"{}\",\n  \"os\": \"{}\",\n  \"items\": {},\n  \"repeats\": {},\n  \"runtime_avx2\": {},\n  \"runtime_fma\": {},\n  \"runtime_avx512f\": {},\n  \"cfg_target_feature_avx2\": {},\n  \"cfg_target_feature_fma\": {},\n  \"avx512_codegen_evidence\": \"external-decoded-disassembly-required\",\n  \"best_ns\": {},\n  \"median_ns\": {},\n  \"median_ns_per_item\": {:.9},\n  \"checksum\": \"{:016x}\",\n  \"full_parity_check\": true,\n  \"claim_boundary\": \"Isolated structure-of-arrays contribution-hash evidence only; AVX-512 code generation is established from decoded disassembly, not Rust cfg target_feature; this is not an end-to-end GALAXY runtime speedup claim.\"\n}}\n",
         env::consts::ARCH,
         env::consts::OS,
         config.items,
@@ -233,7 +237,6 @@ fn run() -> Result<(), String> {
         runtime_avx512f,
         cfg!(target_feature = "avx2"),
         cfg!(target_feature = "fma"),
-        cfg!(target_feature = "avx512f"),
         best_ns,
         median_ns,
         ns_per_item,
