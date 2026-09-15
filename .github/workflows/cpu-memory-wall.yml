@@ -24,25 +24,48 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: cpu-memory-wall-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  verify-memory-wall:
+  unix-memory-wall:
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - name: Memory Linux x86-64
+            runner: ubuntu-24.04
+            expected_arch: x86_64
+          - name: Memory Linux ARM64
+            runner: ubuntu-24.04-arm
+            expected_arch: aarch64
+          - name: Memory macOS ARM64
+            runner: macos-15
+            expected_arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: '1.85.0'
-      - name: Unit tests
-        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline --bin memory_wall_probe
-      - name: Exact memory-wall parity matrix
-        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin memory_wall_probe -- verify --workers 4
-      - name: Bounded fused quarter-LUT receipt
-        shell: bash
+      - name: Verify native architecture
+        shell: sh
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
         run: |
+          set -eu
+          actual=$(uname -m)
+          printf 'runner_arch=%s expected_arch=%s\n' "$actual" "$EXPECTED_ARCH"
+          test "$actual" = "$EXPECTED_ARCH"
+      - name: Test memory-wall contracts
+        shell: sh
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline --bin memory_wall_probe
+      - name: Verify exact memory-wall parity matrix
+        shell: sh
+        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin memory_wall_probe -- verify --workers 4
+      - name: Run bounded fused quarter-LUT receipt
+        shell: sh
+        run: |
+          set -eu
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin memory_wall_probe -- \
             bench \
             --reduce fused \
@@ -57,7 +80,8 @@ jobs:
             --receipt memory-wall.json
           python3 - <<'PY'
           import json
-          d=json.load(open('memory-wall.json', encoding='utf-8'))
+          with open('memory-wall.json', encoding='utf-8') as f:
+              d=json.load(f)
           assert d['schema'] == 'galaxy.cpu-memory-wall-probe.v1'
           assert d['reduction_mode'] == 'fused-hash-reduce'
           assert d['materializes_contribution_array'] is False
@@ -67,3 +91,35 @@ jobs:
           assert d['lut_storage_bytes'] < 131072
           assert d['microtile_particles'] == 128
           PY
+
+  windows-memory-wall:
+    name: Memory Windows x86-64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: pwsh
+        run: |
+          $arch = $env:PROCESSOR_ARCHITECTURE
+          Write-Host "runner_arch=$arch expected_arch=AMD64"
+          if ($arch -ne 'AMD64') { throw "Expected native AMD64 runner" }
+      - name: Test memory-wall contracts
+        shell: pwsh
+        run: cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline --bin memory_wall_probe
+      - name: Verify exact memory-wall parity matrix
+        shell: pwsh
+        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin memory_wall_probe -- verify --workers 4
+      - name: Run bounded fused quarter-LUT receipt
+        shell: pwsh
+        run: |
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin memory_wall_probe -- bench --reduce fused --lut quarter --logical 18446744073709551615 --resident 32768 --frames 3 --workers 4 --tile 128 --repeats 2 --seed 303 --receipt memory-wall.json
+          if ($LASTEXITCODE -ne 0) { throw "memory-wall bench failed" }
+          $d = Get-Content memory-wall.json -Raw | ConvertFrom-Json
+          if ($d.schema -ne 'galaxy.cpu-memory-wall-probe.v1') { throw "memory-wall receipt schema changed" }
+          if ($d.reduction_mode -ne 'fused-hash-reduce') { throw "fused reduction mode changed" }
+          if ($d.materializes_contribution_array) { throw "fused path materialized contribution array" }
+          if ($d.lut_mode -ne 'quarter-cosine-plus-exact-correction-palette-v1') { throw "quarter LUT identity changed" }
+          if (-not $d.lut_exact_sample_parity) { throw "quarter LUT lost exact parity marker" }
+          if ($d.working_bytes_per_tiled_particle -ne 28) { throw "fused working bytes changed" }
+          if ($d.lut_storage_bytes -ge 131072) { throw "quarter LUT did not reduce storage" }
+          if ($d.microtile_particles -ne 128) { throw "microtile receipt changed" }
