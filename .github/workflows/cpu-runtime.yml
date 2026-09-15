@@ -59,12 +59,18 @@ jobs:
           set -eu
           cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
           test -x cpu-runtime/target/release/galaxy-cpu
-          cpu-runtime/target/release/galaxy-cpu --help >/dev/null
+          cpu-runtime/target/release/galaxy-cpu --help | grep -q 'bench-soa'
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help >/dev/null
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help >/dev/null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa --help >/dev/null
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa --help >/dev/null
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin worker_soa_probe -- --help >/dev/null
           if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --frames 1 >/dev/null 2>&1; then
             echo "verify unexpectedly accepted benchmark-only --frames" >&2
+            exit 1
+          fi
+          if cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa --path reference >/dev/null 2>&1; then
+            echo "bench-soa unexpectedly accepted --path override" >&2
             exit 1
           fi
       - name: Verify exact u64 and parallel invariants
@@ -75,6 +81,8 @@ jobs:
         run: |
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin worker_soa_probe -- \
             verify --workers 4 --tile 127
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
+            verify-soa --workers 4 --tile 127
       - name: Run bounded native CPU receipt benchmark
         shell: sh
         run: |
@@ -99,6 +107,32 @@ jobs:
             echo "receipt retained misleading global LUT maximum field" >&2
             exit 1
           fi
+      - name: Run bounded guarded SoA production receipt
+        shell: sh
+        run: |
+          set -eu
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- \
+            bench-soa \
+            --logical 18446744073709551615 \
+            --resident 65536 \
+            --frames 4 \
+            --workers 4 \
+            --tile 127 \
+            --repeats 2 \
+            --seed 303 \
+            --receipt runs/cpu-runtime-ci/soa-receipt.json \
+            > runs/cpu-runtime-ci/soa-stdout.txt
+          cat runs/cpu-runtime-ci/soa-stdout.txt
+          cat runs/cpu-runtime-ci/soa-receipt.json
+          grep -q '^execution_mode=worker-local-soa-guarded$' runs/cpu-runtime-ci/soa-stdout.txt
+          grep -q '"runtime": "galaxy-cpu"' runs/cpu-runtime-ci/soa-receipt.json
+          grep -q '"execution_mode": "worker-local-soa-guarded"' runs/cpu-runtime-ci/soa-receipt.json
+          grep -q '"guarded_opt_in": true' runs/cpu-runtime-ci/soa-receipt.json
+          grep -q '"tile_particles": 127' runs/cpu-runtime-ci/soa-receipt.json
+          canonical=$(grep '"parallel_checksum"' runs/cpu-runtime-ci/receipt.json | tail -n 1 | sed -n 's/.*"parallel_checksum": "\([0-9a-fA-F]*\)".*/\1/p')
+          soa=$(sed -n 's/.*"checksum": "\([0-9a-fA-F]*\)".*/\1/p' runs/cpu-runtime-ci/soa-receipt.json)
+          test -n "$canonical"
+          test "$canonical" = "$soa"
 
   windows-x64:
     name: Windows x86-64
@@ -119,12 +153,17 @@ jobs:
         run: |
           cargo build --manifest-path cpu-runtime/Cargo.toml --release --locked --offline
           if (-not (Test-Path 'cpu-runtime/target/release/galaxy-cpu.exe')) { throw "galaxy-cpu.exe was not built" }
-          & 'cpu-runtime/target/release/galaxy-cpu.exe' --help | Out-Null
+          $help = & 'cpu-runtime/target/release/galaxy-cpu.exe' --help
           if ($LASTEXITCODE -ne 0) { throw "galaxy-cpu.exe --help failed" }
+          if (-not ($help -match 'bench-soa')) { throw "galaxy-cpu help omitted bench-soa" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "bench --help failed" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "verify --help failed" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "bench-soa --help failed" }
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "verify-soa --help failed" }
           cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin worker_soa_probe -- --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "worker_soa_probe --help failed" }
           $probe = Start-Process -FilePath cargo -ArgumentList @(
@@ -132,12 +171,19 @@ jobs:
             '--', 'verify', '--frames', '1'
           ) -NoNewWindow -Wait -PassThru
           if ($probe.ExitCode -eq 0) { throw "verify unexpectedly accepted benchmark-only --frames" }
+          $soaOverride = Start-Process -FilePath cargo -ArgumentList @(
+            'run', '--manifest-path', 'cpu-runtime/Cargo.toml', '--release', '--locked', '--offline',
+            '--', 'bench-soa', '--path', 'reference'
+          ) -NoNewWindow -Wait -PassThru
+          if ($soaOverride.ExitCode -eq 0) { throw "bench-soa unexpectedly accepted --path override" }
       - name: Verify exact u64 and parallel invariants
         shell: pwsh
         run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
       - name: Verify worker-local SoA parity
         shell: pwsh
-        run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin worker_soa_probe -- verify --workers 4 --tile 127
+        run: |
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline --bin worker_soa_probe -- verify --workers 4 --tile 127
+          cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify-soa --workers 4 --tile 127
       - name: Run bounded native CPU receipt benchmark
         shell: pwsh
         run: |
@@ -152,3 +198,16 @@ jobs:
           if ($receipt.lut_error_sample_count -ne 8193) { throw "Receipt did not preserve LUT sample count" }
           if ($receipt.lut_sampled_max_abs_q30_error -ne 255) { throw "Receipt sampled LUT diagnostic changed unexpectedly" }
           if ($null -ne $receipt.lut_max_abs_q30_error) { throw "Receipt retained misleading global LUT maximum field" }
+      - name: Run bounded guarded SoA production receipt
+        shell: pwsh
+        run: |
+          $output = cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- bench-soa --logical 18446744073709551615 --resident 65536 --frames 4 --workers 4 --tile 127 --repeats 2 --seed 303 --receipt runs/cpu-runtime-ci/soa-receipt.json
+          $output | Set-Content runs/cpu-runtime-ci/soa-stdout.txt
+          $output
+          $soa = Get-Content runs/cpu-runtime-ci/soa-receipt.json -Raw | ConvertFrom-Json
+          $canonical = Get-Content runs/cpu-runtime-ci/receipt.json -Raw | ConvertFrom-Json
+          if ($soa.runtime -ne 'galaxy-cpu') { throw "SoA receipt runtime identity changed" }
+          if ($soa.execution_mode -ne 'worker-local-soa-guarded') { throw "SoA execution mode changed" }
+          if (-not $soa.guarded_opt_in) { throw "SoA receipt lost guarded opt-in marker" }
+          if ($soa.tile_particles -ne 127) { throw "SoA receipt did not preserve tile size" }
+          if ($soa.checksum -ne $canonical.bam_lut.parallel_checksum) { throw "Guarded SoA checksum diverged from canonical BAM-LUT" }

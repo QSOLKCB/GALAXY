@@ -3,6 +3,7 @@ name = "galaxy-cpu-runtime"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
+autobins = false
 default-run = "galaxy-cpu"
 license = "Apache-2.0"
 publish = false
@@ -10,7 +11,15 @@ description = "Deterministic native CPU execution runtime for GALAXY"
 
 [[bin]]
 name = "galaxy-cpu"
-path = "src/main.rs"
+path = "src/bin/galaxy_cpu_dispatch.rs"
+
+[[bin]]
+name = "simd_probe"
+path = "src/bin/simd_probe.rs"
+
+[[bin]]
+name = "worker_soa_probe"
+path = "src/bin/worker_soa_probe.rs"
 
 [dependencies]
 galaxy-retro-math = { path = "../retro" }
