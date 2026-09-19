@@ -1,6 +1,6 @@
 # GALAXY
 
-[![Release](https://img.shields.io/badge/release-v0.4.0-2f81f7)](https://github.com/QSOLKCB/GALAXY/releases/tag/v0.4.0)
+[![Release](https://img.shields.io/badge/release-v0.6.0-2f81f7)](https://github.com/QSOLKCB/GALAXY/releases/tag/v0.6.0)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22756969.svg)](https://doi.org/10.5281/zenodo.22756969)
 
 **GALAXY is an offline deterministic galaxy-dynamics instrument with browser, native CPU, and native GPU execution paths.**
