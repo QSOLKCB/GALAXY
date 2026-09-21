@@ -8,7 +8,7 @@
 //! canonical runtime.
 
 mod canonical {
-    include!("../main.rs");
+    include!(concat!(env!("OUT_DIR"), "/legacy_runtime.inc.rs"));
 
     const OVERSUB_RECEIPT_SCHEMA: &str = "galaxy.cpu-oversubscription-probe.v1";
 
