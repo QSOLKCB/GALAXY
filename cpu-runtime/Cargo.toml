@@ -25,6 +25,10 @@ path = "src/bin/worker_soa_probe.rs"
 name = "memory_wall_probe"
 path = "src/bin/memory_wall_probe.rs"
 
+[[bin]]
+name = "galaxy-cpu-oversubscription"
+path = "src/bin/oversubscription_probe.rs"
+
 [dependencies]
 galaxy-retro-math = { path = "../retro" }
 galaxy-sampler = { path = "../rust" }
