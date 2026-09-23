@@ -107,6 +107,60 @@ jobs:
           partial = (run(0, 63) + run(63, 129) + run(129, 257)) % 2**64
           assert full == partial
           PY
+      - name: Verify frozen BAM-LUT oracle with live ranges
+        if: matrix.expected_arch == 'x86_64'
+        shell: sh
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          binary = "cpu-runtime/target/release/galaxy-cpu"
+          resident = 8_388_608
+          base = [binary, "range", "--logical", str(2**64 - 1),
+                  "--resident", str(resident), "--frames", "8", "--seed", "303",
+                  "--backend", "lut"]
+
+          def run(start, end):
+              fields = subprocess.check_output(
+                  base + ["--start", str(start), "--end", str(end)], text=True
+              ).strip().split("\t")
+              assert fields[0] == "galaxy.cpu-range.v1"
+              assert fields[3:5] == [f"start={start}", f"end={end}"]
+              assert fields[7] == "backend=bam-lut-q30"
+              return int(fields[8].removeprefix("checksum="), 16)
+
+          full = run(0, resident)
+          low = run(0, resident // 2)
+          high = run(resident // 2, resident)
+          combined = (low + high) % 2**64
+          assert full == combined == 0x8d6f07bd77e2fc16
+          receipt = {
+              "schema": "galaxy.cpu-range-frozen-oracle-check.v1",
+              "logical_population": str(2**64 - 1),
+              "resident_particles": resident,
+              "frames": 8,
+              "seed": 303,
+              "ranges": [[0, resident // 2], [resident // 2, resident]],
+              "full_checksum": f"{full:016x}",
+              "partition_checksums": [f"{low:016x}", f"{high:016x}"],
+              "combined_checksum": f"{combined:016x}",
+              "archived_oracle_checksum": "8d6f07bd77e2fc16",
+              "verified": True,
+          }
+          Path("runs/cpu-range-ci").mkdir(parents=True, exist_ok=True)
+          Path("runs/cpu-range-ci/frozen-oracle.json").write_text(
+              json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: matrix.expected_arch == 'x86_64'
+        with:
+          name: galaxy-cpu-frozen-range-oracle
+          path: runs/cpu-range-ci/frozen-oracle.json
+          if-no-files-found: error
       - name: Verify worker-local SoA parity
         shell: sh
         run: |
