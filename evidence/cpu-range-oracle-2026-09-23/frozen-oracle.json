@@ -1,0 +1,25 @@
+{
+  "schema": "galaxy.cpu-range-frozen-oracle-check.v1",
+  "logical_population": "18446744073709551615",
+  "resident_particles": 8388608,
+  "frames": 8,
+  "seed": 303,
+  "ranges": [
+    [
+      0,
+      4194304
+    ],
+    [
+      4194304,
+      8388608
+    ]
+  ],
+  "full_checksum": "8d6f07bd77e2fc16",
+  "partition_checksums": [
+    "9d6ffa7998c353c0",
+    "efff0d43df1fa856"
+  ],
+  "combined_checksum": "8d6f07bd77e2fc16",
+  "archived_oracle_checksum": "8d6f07bd77e2fc16",
+  "verified": true
+}
