@@ -124,7 +124,81 @@ struct Config {
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  galaxy-cpu verify [--workers N]\n  galaxy-cpu bench [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n\nDefaults:\n  logical=18446744073709551615 resident=1048576 frames=8 repeats=5 seed=303\n  workers=min(std::thread::available_parallelism(), 256)\n"
+    "Usage:\n  galaxy-cpu verify [--workers N]\n  galaxy-cpu bench [--logical U64] [--resident N] [--frames N] [--workers N] [--repeats N] [--seed U32] [--receipt PATH]\n  galaxy-cpu range --logical U64 --resident N --start N --end N --frames N --seed U32 [--backend lut|float]\n\nDefaults:\n  logical=18446744073709551615 resident=1048576 frames=8 repeats=5 seed=303\n  workers=min(std::thread::available_parallelism(), 256)\n"
+}
+
+/// The range is over resident sample indices, whose global IDs are regenerated
+/// from the full resident geometry. No caller-supplied particle state is used.
+fn parse_range(args: &[String]) -> Result<(u64, usize, usize, usize, usize, u32, Backend), String> {
+    let (mut logical, mut resident, mut start, mut end, mut frames, mut seed, mut backend) =
+        (None, None, None, None, None, None, Backend::Lut);
+    let mut seen_backend = false;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("{flag} requires a value"))?;
+        match flag {
+            "--logical" if logical.is_none() => {
+                logical = Some(value.parse::<u64>().map_err(|_| "--logical must be u64")?)
+            }
+            "--resident" if resident.is_none() => {
+                resident = Some(value.parse::<usize>().map_err(|_| "--resident must be usize")?)
+            }
+            "--start" if start.is_none() => {
+                start = Some(value.parse::<usize>().map_err(|_| "--start must be usize")?)
+            }
+            "--end" if end.is_none() => {
+                end = Some(value.parse::<usize>().map_err(|_| "--end must be usize")?)
+            }
+            "--frames" if frames.is_none() => {
+                frames = Some(value.parse::<usize>().map_err(|_| "--frames must be usize")?)
+            }
+            "--seed" if seed.is_none() => {
+                seed = Some(value.parse::<u32>().map_err(|_| "--seed must be u32")?)
+            }
+            "--backend" if !seen_backend => {
+                seen_backend = true;
+                backend = match value.as_str() {
+                    "lut" => Backend::Lut,
+                    "float" => Backend::Float,
+                    _ => return Err("--backend must be lut or float".into()),
+                };
+            }
+            _ => return Err(format!("unknown or duplicate range option: {flag}")),
+        }
+        index += 2;
+    }
+    let logical = logical.ok_or("--logical is required")?;
+    let resident = resident.ok_or("--resident is required")?;
+    let start = start.ok_or("--start is required")?;
+    let end = end.ok_or("--end is required")?;
+    let frames = frames.ok_or("--frames is required")?;
+    let seed = seed.ok_or("--seed is required")?;
+    if logical == 0
+        || resident == 0
+        || resident > MAX_RESIDENT
+        || resident as u64 > logical
+        || start >= end
+        || end > resident
+        || frames == 0
+        || frames > MAX_FRAMES
+    {
+        return Err("invalid range geometry or frame count".into());
+    }
+    Ok((logical, resident, start, end, frames, seed, backend))
+}
+
+fn run_range(args: &[String]) -> Result<(), String> {
+    let (logical, resident, start, end, frames, seed, backend) = parse_range(args)?;
+    let particles = build_particles_range(logical, resident, start, end, seed)?;
+    let checksum = execute_range(&particles, frames, backend, &Lut::build());
+    println!(
+        "galaxy.cpu-range.v1\tlogical={logical}\tresident={resident}\tstart={start}\tend={end}\tframes={frames}\tseed={seed}\tbackend={}\tchecksum={checksum:016x}",
+        backend.name()
+    );
+    Ok(())
 }
 
 fn help_requested(args: &[String]) -> bool {
@@ -268,12 +342,25 @@ fn radians_to_bam(radians: f64) -> u32 {
 }
 
 fn build_particles(logical: u64, resident: usize, seed: u32) -> Result<Vec<Particle>, String> {
+    build_particles_range(logical, resident, 0, resident, seed)
+}
+
+fn build_particles_range(
+    logical: u64,
+    resident: usize,
+    start: usize,
+    end: usize,
+    seed: u32,
+) -> Result<Vec<Particle>, String> {
     if resident == 0 || resident > MAX_RESIDENT || resident as u64 > logical {
         return Err("invalid logical/resident population".into());
     }
+    if start >= end || end > resident {
+        return Err("invalid resident index range".into());
+    }
     let parameters = Parameters::default();
-    let mut particles = Vec::with_capacity(resident);
-    for index in 0..resident {
+    let mut particles = Vec::with_capacity(end - start);
+    for index in start..end {
         let id = logical_id(index, resident, logical);
         let u = unit24(address_word(id, seed, 0));
         let kind = unit24(address_word(id, seed, 4));
@@ -818,6 +905,11 @@ fn main() {
             Ok(())
         }
         Some("verify") => parse_verify_workers(&args[1..]).and_then(run_verify),
+        Some("range") if help_requested(&args[1..]) => {
+            print!("{}", usage());
+            Ok(())
+        }
+        Some("range") => run_range(&args[1..]),
         Some("bench") | Some("run") if help_requested(&args[1..]) => {
             print!("{}", usage());
             Ok(())
@@ -884,6 +976,25 @@ mod tests {
             let (parallel, _, _) = execute_parallel(&particles, 3, backend, &lut, 4).unwrap();
             assert_eq!(scalar, parallel);
         }
+    }
+
+    #[test]
+    fn range_regeneration_matches_both_full_backends_and_rejects_invalid_geometry() {
+        let logical = u64::MAX;
+        let resident = 257;
+        let particles = build_particles(logical, resident, 303).unwrap();
+        let lut = Lut::build();
+        for backend in [Backend::Float, Backend::Lut] {
+            let full = execute_scalar(&particles, 3, backend, &lut);
+            let mut partial = 0_u64;
+            for (start, end) in [(0, 63), (63, 129), (129, 257)] {
+                let range = build_particles_range(logical, resident, start, end, 303).unwrap();
+                partial = partial.wrapping_add(execute_range(&range, 3, backend, &lut));
+            }
+            assert_eq!(full, partial);
+        }
+        assert!(build_particles_range(logical, resident, 0, 258, 303).is_err());
+        assert!(parse_range(&["--logical".into(), "1".into()]).is_err());
     }
 
     #[test]
