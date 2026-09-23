@@ -83,6 +83,30 @@ jobs:
       - name: Verify exact u64 and parallel invariants
         shell: sh
         run: cargo run --manifest-path cpu-runtime/Cargo.toml --release --locked --offline -- verify --workers 4
+      - name: Verify GALAXY range command parity
+        shell: sh
+        run: |
+          python3 - <<'PY'
+          import subprocess
+
+          binary = "cpu-runtime/target/release/galaxy-cpu"
+          base = [binary, "range", "--logical", str(2**64 - 1),
+                  "--resident", "257", "--frames", "3", "--seed", "303",
+                  "--backend", "lut"]
+
+          def run(start, end):
+              output = subprocess.check_output(
+                  base + ["--start", str(start), "--end", str(end)], text=True
+              ).strip().split("\t")
+              assert output[0] == "galaxy.cpu-range.v1"
+              assert output[3:5] == [f"start={start}", f"end={end}"]
+              assert output[7] == "backend=bam-lut-q30"
+              return int(output[8].removeprefix("checksum="), 16)
+
+          full = run(0, 257)
+          partial = (run(0, 63) + run(63, 129) + run(129, 257)) % 2**64
+          assert full == partial
+          PY
       - name: Verify worker-local SoA parity
         shell: sh
         run: |
