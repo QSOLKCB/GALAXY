@@ -139,6 +139,11 @@ fn parse_range(args: &[String]) -> Result<(u64, usize, usize, usize, usize, u32,
         let value = args
             .get(index + 1)
             .ok_or_else(|| format!("{flag} requires a value"))?;
+        if flag != "--backend"
+            && (value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return Err(format!("{flag} must be unsigned decimal digits"));
+        }
         match flag {
             "--logical" if logical.is_none() => {
                 logical = Some(value.parse::<u64>().map_err(|_| "--logical must be u64")?)
@@ -995,6 +1000,11 @@ mod tests {
         }
         assert!(build_particles_range(logical, resident, 0, 258, 303).is_err());
         assert!(parse_range(&["--logical".into(), "1".into()]).is_err());
+        assert!(parse_range(&[
+            "--logical".into(), "+1".into(), "--resident".into(), "1".into(),
+            "--start".into(), "0".into(), "--end".into(), "1".into(),
+            "--frames".into(), "1".into(), "--seed".into(), "303".into(),
+        ]).is_err());
     }
 
     #[test]
