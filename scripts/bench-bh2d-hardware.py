@@ -51,6 +51,7 @@ RADIX_DIGITS = 16
 SYSTEM_PATH = "/usr/bin:/bin"
 BUILD_ENV_EXACT = {
     "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "LIBRARY_PATH", "COMPILER_PATH",
+    "VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_LAYER_PATH", "VK_INSTANCE_LAYERS",
     "GCC_EXEC_PREFIX", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
     "RUSTFLAGS",
     "CARGO_ENCODED_RUSTFLAGS",
@@ -814,14 +815,21 @@ def validate_force_errors(
 def adapter_identity(gpu: Any, adapter_selector: str | None = None) -> str:
     info = require_object(gpu, "receipt.gpu")
     index = require_int(info.get("index"), "receipt.gpu.index", minimum=0)
-    if adapter_selector is not None and re.fullmatch(r"[0-9]+", adapter_selector):
-        require(
-            index == int(adapter_selector),
-            "receipt.gpu.index does not match the numeric adapter selector",
-        )
+    name = require_string(info.get("name"), "receipt.gpu.name", nonempty=True)
+    if adapter_selector is not None:
+        if re.fullmatch(r"[0-9]+", adapter_selector):
+            require(
+                index == int(adapter_selector),
+                "receipt.gpu.index does not match the numeric adapter selector",
+            )
+        else:
+            require(
+                adapter_selector.lower() in name.lower(),
+                "receipt.gpu.name does not match the textual adapter selector",
+            )
     required = {
         "index": index,
-        "name": require_string(info.get("name"), "receipt.gpu.name", nonempty=True),
+        "name": name,
         "backend": require_string(info.get("backend"), "receipt.gpu.backend", nonempty=True),
         "device_type": require_string(
             info.get("device_type"), "receipt.gpu.device_type", nonempty=True
@@ -940,6 +948,14 @@ def validate_receipt(
     require(
         max_depth <= TREE_LEVELS - 1,
         "receipt.tree.max_depth exceeds the frozen Morton depth",
+    )
+    topology_capacity = sum(
+        min(particles, 4 ** depth)
+        for depth in range(max_depth + 1)
+    )
+    require(
+        active_cell_count <= topology_capacity,
+        "receipt.tree.active_cell_count exceeds per-depth quadtree occupancy",
     )
     require(
         active_cell_count >= max_depth + 1,
