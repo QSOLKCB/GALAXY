@@ -355,7 +355,8 @@ def toolchain_context(cargo_command: str, repo_root: Path) -> dict[str, Any]:
     system_tools: dict[str, dict[str, str]] = {}
     tool_directories: list[str] = []
     for name in candidates:
-        path = shutil.which(name, path=discovery_path)
+        search_path = base_path if name == "git" else discovery_path
+        path = shutil.which(name, path=search_path)
         if path:
             resolved = Path(path).resolve()
             system_tools[name] = {
@@ -1531,7 +1532,10 @@ def main() -> int:
             "host": {
                 "platform": platform.platform(),
                 "python": sys.version.split()[0],
+                "python_executable": str(Path(sys.executable).resolve()),
+                "python_sha256": sha256_file(Path(sys.executable).resolve()),
                 "machine": platform.machine(),
+                "launch_boundary": "clean-environment-launcher-v1",
             },
             "configuration": {
                 "particles": particles_list,
