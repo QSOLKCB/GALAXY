@@ -152,7 +152,7 @@
       const exactTerms = n * (n - 1);
       const reduction = exactTerms ? Math.max(0, 1 - terms / exactTerms) : 0;
       byId("nodeReadout").textContent = formatInt(state.latest.tree.nodeCount);
-      byId("depthReadout").textContent = state.latest.tree.maxDepth + " levels · " + formatInt(state.latest.tree.leafCount) + " leaves";
+      byId("depthReadout").textContent = (state.latest.tree.maxDepth + 1) + " levels · " + formatInt(state.latest.tree.leafCount) + " leaves";
       byId("termReadout").textContent = formatInt(terms);
       byId("reductionReadout").textContent = (reduction * 100).toFixed(1) + "% fewer force terms than direct";
     }
