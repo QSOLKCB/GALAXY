@@ -190,6 +190,8 @@ jobs:
           assert state["velocity_rms_relative_l2"] < 0.03
           assert state["velocity_max_relative"] < 0.30
           bench = receipt["tree_build_benchmark"]
+          assert bench["sample_scope"].startswith("complete rebuild call")
+          assert bench["stage_timings_are_diagnostics"] is True
           assert len(bench["parallel_samples_seconds"]) == 2
           assert bench["bh2c_serial"]["status"] == "executed"
           PY
