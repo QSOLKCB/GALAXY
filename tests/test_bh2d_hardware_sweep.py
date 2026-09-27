@@ -240,6 +240,46 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 with self.assertRaisesRegex(sweep.SweepError, "index flags"):
                     sweep.require_clean_source_tree(repo)
 
+    def test_cleanliness_uses_raw_bytes_instead_of_clean_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            source = repo / "source.rs"
+            source.write_text("original\n")
+            subprocess.run(["git", "add", "source.rs"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+
+            clean = root / "clean-filter.sh"
+            clean.write_text("#!/bin/sh\nsed 's/replacement/original/g'\n")
+            clean.chmod(0o755)
+            subprocess.run(
+                ["git", "config", "filter.hide.clean", str(clean)],
+                cwd=repo,
+                check=True,
+            )
+            info_attributes = repo / ".git" / "info" / "attributes"
+            info_attributes.write_text("source.rs filter=hide\n")
+            source.write_text("replacement\n")
+
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "diff", "--quiet", "--", "source.rs"],
+                    cwd=repo,
+                    check=False,
+                ).returncode,
+                0,
+            )
+            with self.assertRaisesRegex(sweep.SweepError, "raw bytes"):
+                sweep.require_clean_source_tree(repo)
+
     def test_cleanliness_allows_only_the_evidence_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -286,6 +326,39 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             with self.assertRaisesRegex(sweep.SweepError, "source revision changed"):
                 sweep.require_source_provenance(repo, revision)
 
+    def test_git_replacement_objects_cannot_rewrite_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            source = repo / "source.rs"
+            source.write_text("original\n")
+            subprocess.run(["git", "add", "source.rs"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "A"], cwd=repo, check=True)
+            revision_a = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+
+            source.write_text("replacement\n")
+            subprocess.run(["git", "add", "source.rs"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "B"], cwd=repo, check=True)
+            revision_b = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+            ).strip()
+
+            subprocess.run(["git", "checkout", "--detach", "-q", revision_a], cwd=repo, check=True)
+            subprocess.run(["git", "replace", revision_a, revision_b], cwd=repo, check=True)
+            subprocess.run(["git", "reset", "--hard", "-q", "HEAD"], cwd=repo, check=True)
+            self.assertEqual(source.read_text(), "replacement\n")
+            self.assertEqual(sweep.git_revision(repo), revision_a)
+            with self.assertRaisesRegex(sweep.SweepError, "differs from HEAD|raw bytes"):
+                sweep.require_clean_source_tree(repo)
+
     def test_cargo_config_context_detects_mid_sweep_change(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -323,6 +396,9 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
             "CARGO_PROFILE_RELEASE_LTO",
+            "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS",
+            "CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS",
+            "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL",
         ):
             with self.subTest(name=name), mock.patch.dict(
                 os.environ,
@@ -618,6 +694,35 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("at least 4", result.stderr)
 
+    def test_dry_run_normalizes_output_and_cargo_paths(self):
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_home = Path(tmp) / "home"
+            fake_home.mkdir()
+            env = dict(os.environ)
+            env["HOME"] = str(fake_home)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(MODULE_PATH),
+                    "--output",
+                    "~/evidence",
+                    "--particles",
+                    "512",
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        command = __import__("shlex").split(result.stdout.strip())
+        self.assertTrue(Path(command[0]).is_absolute())
+        expected = str((fake_home / "evidence" / "n000512" / "receipt.json").resolve())
+        self.assertIn(expected, command)
+        self.assertNotIn("~/evidence", result.stdout)
+
     def test_hardware_receipt_at_oracle_size_is_accepted(self):
         summary = sweep.validate_receipt(receipt_for(4096), **validation_kwargs(4096))
         self.assertEqual(summary["particles"], 4096)
@@ -741,6 +846,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt["tree"]["leaf_count"] = 1
         receipt["tree"]["max_depth"] = 0
         with self.assertRaisesRegex(sweep.SweepError, "internal cell"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 2
+        receipt["tree"]["leaf_count"] = 1
+        receipt["tree"]["max_depth"] = 16
+        with self.assertRaisesRegex(sweep.SweepError, "too small"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_executed_oracle_payloads_are_required(self):
