@@ -139,7 +139,7 @@ The Vulkan path executes the actual flat traversal in WGSL. It preserves:
 - deterministic child visitation order;
 - a bounded local DFS stack justified by the 16-level Morton cap.
 
-The evidence binary `galaxy-bh-gpu` reports CPU tree-build time, f32 packing time, GPU transfer, GPU dispatch, GPU readback, flat-CPU reference traversal, and direct-force reference time separately. Error fields compare GPU accelerations against both the flat f64 CPU oracle and the independent direct O(N²) oracle.
+The evidence binary `galaxy-bh-gpu` reports CPU tree-build time, f32 packing time, GPU transfer, GPU dispatch, GPU readback, flat-CPU reference traversal, and direct-force reference time separately. Error fields compare every GPU acceleration against the flat f64 CPU oracle and a bounded deterministic subset against the independent direct-force oracle. This keeps high-count GPU verification from requiring a complete O(N²) CPU solve.
 
 This phase does **not** perform GPU tree construction or evolve multiple self-gravity steps.
 
