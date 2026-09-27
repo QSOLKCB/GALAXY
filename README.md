@@ -281,7 +281,7 @@ BH #2D correctness is exercised through software Vulkan in CI, but **software-Vu
 The remaining BH #2D evidence item has a fail-closed real-GPU sweep runner:
 
 ```bash
-python3 -I scripts/bench-bh2d-hardware.py \
+sh scripts/bench-bh2d-hardware-launch.sh \
   --output runs/bh2d-hardware-sweep \
   --adapter 0
 ```
