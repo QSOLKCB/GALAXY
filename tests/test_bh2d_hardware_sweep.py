@@ -849,6 +849,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         with self.assertRaisesRegex(sweep.SweepError, "too small"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 2
+        receipt["tree"]["leaf_count"] = 1
+        receipt["tree"]["max_depth"] = 1
+        with self.assertRaisesRegex(sweep.SweepError, "bucket size"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
     def test_executed_oracle_payloads_are_required(self):
         receipt = receipt_for(512)
         receipt["gpu_oracles"] = {"status": "executed"}
