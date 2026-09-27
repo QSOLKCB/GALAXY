@@ -111,6 +111,7 @@ def receipt_for(
         "softening_kpc": softening_kpc,
         "gpu": {
             "index": 0,
+            "adapter_count": 1,
             "name": "Synthetic GPU",
             "backend": "Vulkan",
             "device_type": "DiscreteGpu",
@@ -487,6 +488,62 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             self.assertEqual(len(first), 1)
             self.assertEqual(first[0]["name"], "wgpu")
             self.assertNotEqual(first[0]["tree_sha256"], second[0]["tree_sha256"])
+
+    def test_in_repo_registry_dependency_is_still_hashed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            runtime = repo / "runtime"
+            runtime.mkdir()
+            (runtime / "Cargo.toml").write_text(
+                "[package]\nname='fixture'\nversion='0.1.0'\n"
+            )
+            dependency = (
+                repo
+                / "runtime"
+                / "target"
+                / "cargo-home"
+                / "registry"
+                / "src"
+                / "index"
+                / "wgpu-24.0.5"
+            )
+            dependency.mkdir(parents=True)
+            manifest = dependency / "Cargo.toml"
+            source = dependency / "src" / "lib.rs"
+            source.parent.mkdir()
+            manifest.write_text("[package]\nname='wgpu'\nversion='24.0.5'\n")
+            source.write_text("pub const VALUE: u32 = 1;\n")
+            metadata = {
+                "packages": [
+                    {
+                        "name": "fixture",
+                        "version": "0.1.0",
+                        "source": None,
+                        "manifest_path": str(runtime / "Cargo.toml"),
+                    },
+                    {
+                        "name": "wgpu",
+                        "version": "24.0.5",
+                        "source": "registry+https://github.com/rust-lang/crates.io-index",
+                        "manifest_path": str(manifest),
+                    },
+                ]
+            }
+            completed = subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=__import__("json").dumps(metadata).encode(),
+                stderr=b"",
+            )
+            toolchain = {
+                "cargo": {"executable": "/selected/cargo"},
+                "rustc": {"executable": "/selected/rustc"},
+            }
+            with mock.patch.object(sweep.subprocess, "run", return_value=completed):
+                context = sweep.dependency_source_context(repo, toolchain)
+            self.assertEqual(len(context), 1)
+            self.assertEqual(context[0]["name"], "wgpu")
+            self.assertTrue(context[0]["path"].startswith("runtime/target/cargo-home/"))
 
     def test_dependency_tree_hash_binds_file_modes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -990,6 +1047,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt0 = receipt_for(512)
         receipt1 = receipt_for(512)
         receipt1["gpu"]["index"] = 1
+        receipt1["gpu"]["adapter_count"] = 2
         summary0 = sweep.validate_receipt(receipt0, **validation_kwargs(512))
         summary1 = sweep.validate_receipt(receipt1, **validation_kwargs(512))
         self.assertNotEqual(summary0["adapter_identity"], summary1["adapter_identity"])
@@ -1022,6 +1080,19 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             **validation_kwargs(512, adapter_selector="radeon rx"),
         )
         self.assertEqual(summary["particles"], 512)
+
+        receipt = receipt_for(512)
+        receipt["gpu"]["name"] = "NVIDIA GeForce RTX 4090"
+        summary = sweep.validate_receipt(
+            receipt,
+            **validation_kwargs(512, adapter_selector="4090"),
+        )
+        self.assertEqual(summary["particles"], 512)
+
+        receipt = receipt_for(512)
+        receipt["gpu"]["backend"] = "Gl"
+        with self.assertRaisesRegex(sweep.SweepError, "not enabled by the producer"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_adapter_identity_is_mandatory_and_hardware_bound(self):
         for gpu in (
@@ -1187,6 +1258,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt = receipt_for(512)
         receipt["tree"]["active_cell_count"] = 100
         receipt["tree"]["leaf_count"] = 1
+        receipt["tree"]["max_depth"] = 16
+        with self.assertRaisesRegex(sweep.SweepError, "leaf-path capacity"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 34
+        receipt["tree"]["leaf_count"] = 2
         receipt["tree"]["max_depth"] = 16
         with self.assertRaisesRegex(sweep.SweepError, "leaf-path capacity"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
