@@ -1,6 +1,6 @@
-# GALAXY Roadmap — Memory First, Everything Else Deferred
+# GALAXY Roadmap — Evidence First, Self-Gravity Next
 
-GALAXY v0.5.0 freezes the completed CPU optimization ladder:
+GALAXY v0.6.0 freezes the completed CPU optimization and memory-wall ladder:
 
 ```text
 PR #10  SIMD/autovectorization feasibility
@@ -16,13 +16,59 @@ The governing rule remains:
 
 ## Current status
 
-**Only PE #15 is active. Everything else is deferred.**
+**PE #15 is frozen in immutable v0.6.0. The active experimental phase is BH #1: resident Barnes–Hut self-gravity.**
 
-The detailed pre-v0.5.0 roadmap remains permanently recoverable from the immutable `v0.5.0` tag. Main now records the actual execution order instead of presenting every interesting idea as simultaneous work.
+The existing prescribed-field, logical-u64, CPU and GPU execution contracts remain intact. Self-gravity is a separate resident execution family because forces couple bodies across the complete resident set.
 
 ---
 
-# PE #15 — Memory Wall: Stream → Reduce → Discard
+# BH #1 — Resident Barnes–Hut Self-Gravity Reference
+
+## Goal
+
+Establish a correctness-first mutually coupled N-body surface before any GPU promotion.
+
+The first rung contains:
+
+- deterministic planar quadtree construction;
+- mass and centre-of-mass aggregation;
+- classical `s / d < theta` opening control;
+- explicit rejection of aggregate cells containing the target;
+- Plummer-style softening;
+- kick–drift–kick leapfrog integration;
+- independent O(N²) direct-force verification;
+- browser quadtree visualization and deterministic error probes;
+- native receipts that state the resident-only claim boundary.
+
+### Acceptance
+
+1. `theta = 0` agrees with the independent direct-force oracle to floating reduction-order roundoff.
+2. The default `theta = 0.5` deterministic fixture stays inside explicit RMS and worst-relative error gates.
+3. Coincident bodies terminate under a bounded tree depth and remain finite with positive softening.
+4. The established UFF/test-particle browser and runtime interfaces are unchanged by default.
+5. No logical-u64 tiling claim is made for mutually coupled self-gravity.
+6. GPU speed claims are deferred until a GPU implementation is measured against this frozen CPU/direct reference.
+
+## BH #2 — Deferred GPU tree work
+
+After BH #1 closes, investigate:
+
+```text
+bounding box
+  -> Morton/Z-order keys
+  -> stable spatial ordering
+  -> flat tree / aggregate construction
+  -> GPU traversal
+  -> leapfrog update
+```
+
+Tree construction and traversal timing must be reported separately. Third-party benchmark numbers are research context, not GALAXY evidence.
+
+See `docs/BARNES-HUT.md` and `nbody/`.
+
+---
+
+# Historical PE #15 — Memory Wall: Stream → Reduce → Discard
 
 ## Goal
 
@@ -183,7 +229,7 @@ See `docs/CPU-MEMORY-WALL.md` and `scripts/bench-cpu-memory-wall.sh`.
 
 ---
 
-# Deferred backlog — do not implement until PE #15 closes
+# Historical PE #15 deferred backlog
 
 All of the following remain useful research directions, but they are explicitly deferred:
 
@@ -199,6 +245,6 @@ All of the following remain useful research directions, but they are explicitly 
 - symmetry/orbit compression;
 - memory-budgeted automatic execution selection.
 
-Deferral means **no implementation work and no promotion work** on these items while PE #15 is active, unless the roadmap is explicitly changed again.
+These items were deferred while PE #15 was active. v0.6.0 closed that phase; any future work now requires an explicit phase with its own evidence boundary.
 
 The previous detailed designs are preserved by the immutable `v0.5.0` source archive and tag; they are not discarded, only postponed.
