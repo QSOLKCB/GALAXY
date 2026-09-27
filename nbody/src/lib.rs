@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Deterministic planar Barnes-Hut reference for GALAXY.
 
+pub mod flat;
+
 pub const G_KPC3_PER_MSUN_MYR2: f64 = 4.498_502_151_575_286e-12;
 pub const DEFAULT_THETA: f64 = 0.5;
 pub const DEFAULT_SOFTENING_KPC: f64 = 0.05;
