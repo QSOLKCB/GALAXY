@@ -385,10 +385,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "galaxy-nbody"
+version = "0.1.0"
+
+[[package]]
 name = "galaxy-runtime"
 version = "0.3.0"
 dependencies = [
  "bytemuck",
+ "galaxy-nbody",
  "clap",
  "galaxy-sampler",
  "png",
