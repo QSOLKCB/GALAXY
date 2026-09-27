@@ -521,6 +521,44 @@ mod tests {
     }
 
     #[test]
+    fn canonical_transfer_fixture_matches_cuda_layout() {
+        let settings = BhSettings {
+            info: [1, 2, 3, 4],
+            physics: [0.5, 0.25, 1.0, 0.0],
+        };
+        let body = GpuBody {
+            position_mass: [1.0, -2.0, 3.0, 0.0],
+            meta: [4, 5, 6, 7],
+        };
+        let entry = GpuEntry {
+            data: [0x0123_4567, 8, 9, 10],
+        };
+        let cell = GpuCell {
+            center_half_mass: [1.0, 2.0, 3.0, 4.0],
+            com: [5.0, 6.0, 0.0, 0.0],
+            range_depth: [7, 8, 9, 0],
+            children: [10, 11, 12, u32::MAX],
+        };
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(bytemuck::bytes_of(&settings));
+        bytes.extend_from_slice(bytemuck::bytes_of(&body));
+        bytes.extend_from_slice(bytemuck::bytes_of(&entry));
+        bytes.extend_from_slice(bytemuck::bytes_of(&cell));
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(bytes.len(), 144);
+        assert_eq!(
+            hex,
+            "010000000200000003000000040000000000003f0000803e0000803f00000000\
+             0000803f000000c0000040400000000004000000050000000600000007000000\
+             6745230108000000090000000a0000000000803f000000400000404000008040\
+             0000a0400000c040000000000000000007000000080000000900000000000000\
+             0a0000000b0000000c000000ffffffff"
+                .replace(' ', "")
+                .replace('\n', "")
+        );
+    }
+
+    #[test]
     fn pack_preserves_ranges_children_and_target_positions() {
         let bodies = make_disc(128, 303, 5.0e10, 3.0).unwrap();
         let config = Config::default();
