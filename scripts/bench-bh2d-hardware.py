@@ -345,16 +345,19 @@ def dependency_source_context(
             )
         ).resolve()
         package_root = manifest.parent
-        if is_within(package_root, root):
-            continue
-        require(
-            package_root.is_dir(),
-            f"Cargo dependency source directory is missing: {package_root}",
-        )
         source = package.get("source")
         require(
             source is None or isinstance(source, str),
             f"Cargo metadata packages[{index}].source must be a string or null",
+        )
+        # Repository path/workspace packages are already bound by Git
+        # provenance. Registry/git packages remain external compiler inputs
+        # even when CARGO_HOME happens to live under the checkout.
+        if source is None and is_within(package_root, root):
+            continue
+        require(
+            package_root.is_dir(),
+            f"Cargo dependency source directory is missing: {package_root}",
         )
         result.append(
             {
@@ -851,10 +854,16 @@ def parse_adapter_index_selector(value: str) -> int | None:
 def adapter_identity(gpu: Any, adapter_selector: str | None = None) -> str:
     info = require_object(gpu, "receipt.gpu")
     index = require_int(info.get("index"), "receipt.gpu.index", minimum=0)
+    adapter_count = require_int(
+        info.get("adapter_count"),
+        "receipt.gpu.adapter_count",
+        minimum=1,
+    )
+    require(index < adapter_count, "receipt.gpu.index must be below adapter_count")
     name = require_string(info.get("name"), "receipt.gpu.name", nonempty=True)
     if adapter_selector is not None:
         selected_index = parse_adapter_index_selector(adapter_selector)
-        if selected_index is not None:
+        if selected_index is not None and selected_index < adapter_count:
             require(
                 index == selected_index,
                 "receipt.gpu.index does not match the numeric adapter selector",
@@ -879,10 +888,16 @@ def adapter_identity(gpu: Any, adapter_selector: str | None = None) -> str:
         not producer_classifies_software,
         "receipt.gpu contradicts the producer software-adapter classification",
     )
+    backend = require_string(info.get("backend"), "receipt.gpu.backend", nonempty=True)
+    require(
+        backend in {"Vulkan", "Metal", "Dx12"},
+        "receipt.gpu.backend is not enabled by the producer",
+    )
     required = {
         "index": index,
+        "adapter_count": adapter_count,
         "name": name,
-        "backend": require_string(info.get("backend"), "receipt.gpu.backend", nonempty=True),
+        "backend": backend,
         "device_type": device_type,
         "driver": require_string(info.get("driver"), "receipt.gpu.driver"),
         "driver_info": require_string(info.get("driver_info"), "receipt.gpu.driver_info"),
@@ -1036,8 +1051,12 @@ def validate_receipt(
         internal_cell_count >= max_depth,
         "receipt.tree has too few internal cells for the reported maximum depth",
     )
+    leaf_path_capacity = sum(
+        min(4 ** depth, leaf_count)
+        for depth in range(max_depth)
+    )
     require(
-        internal_cell_count <= leaf_count * max_depth,
+        internal_cell_count <= leaf_path_capacity,
         "receipt.tree has too many internal cells for its leaf-path capacity",
     )
     if max_depth < TREE_LEVELS - 1:
