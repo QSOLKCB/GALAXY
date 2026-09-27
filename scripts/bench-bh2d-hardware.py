@@ -78,6 +78,9 @@ BUILD_ENV_EXACT = {
     "LDFLAGS",
 }
 BUILD_ENV_PATTERNS = (
+    # Darwin dyld variables can inject or redirect libraries into evidence
+    # subprocesses. Fail closed for the namespace rather than chasing keys.
+    re.compile(r"^DYLD_.+$"),
     re.compile(r"^CARGO_TARGET_.+_(?:RUSTFLAGS|LINKER|RUNNER)$"),
     # Cargo exposes profile configuration through CARGO_PROFILE_<name>_*.
     # Fail closed for the whole namespace so newly added profile keys cannot
@@ -926,8 +929,18 @@ def validate_receipt(
         host_particle_readbacks == 0,
         "host particle readback occurred inside the evolution loop",
     )
-    require(root.get("force_solves") == steps + 1, "unexpected force-solve count")
-    require(root.get("evolution_tree_builds") == steps + 1, "unexpected tree-build count")
+    force_solves = require_int(
+        root.get("force_solves"),
+        "receipt.force_solves",
+        minimum=0,
+    )
+    require(force_solves == steps + 1, "unexpected force-solve count")
+    evolution_tree_builds = require_int(
+        root.get("evolution_tree_builds"),
+        "receipt.evolution_tree_builds",
+        minimum=0,
+    )
+    require(evolution_tree_builds == steps + 1, "unexpected tree-build count")
 
     identity = adapter_identity(root.get("gpu"), adapter_selector)
 
@@ -1422,57 +1435,60 @@ def main() -> int:
             )
             # Preserve every output byte, including non-UTF-8 driver diagnostics.
             log_path.write_bytes(completed.stdout)
-            if completed.returncode != 0:
-                manifest["runs"].append(
-                    {
-                        "particles": particles,
-                        "status": "failed",
-                        "exit_code": completed.returncode,
-                        "log": str(log_path.relative_to(output)),
-                        "log_sha256": sha256_file(log_path),
-                        "cargo_target_dir": str(target_dir.relative_to(output)),
-                    }
+            try:
+                require_source_provenance(
+                    repo_root,
+                    revision,
+                    output,
+                    expected_cargo_context=build_cargo_context,
+                    expected_toolchain_context=build_toolchain_context,
+                    expected_dependency_source_context=build_dependency_source_context,
+                    cargo_command=args.cargo,
                 )
+                if completed.returncode != 0:
+                    raise SweepError(
+                        f"BH #2D hardware run failed at {particles} particles; see {log_path}"
+                    )
+                if not receipt_path.is_file():
+                    raise SweepError(f"missing receipt after {particles}-particle run")
+
+                receipt = load_receipt(receipt_path)
+                summary = validate_receipt(
+                    receipt,
+                    particles=particles,
+                    preset=args.preset,
+                    steps=args.steps,
+                    dt_myr=args.dt_myr,
+                    seed=args.seed,
+                    theta=args.theta,
+                    softening_kpc=args.softening_kpc,
+                    direct_probes=args.direct_probes,
+                    oracle_limit=args.oracle_limit,
+                    benchmark_warmup=args.benchmark_warmup,
+                    benchmark_repeats=args.benchmark_repeats,
+                    adapter_selector=args.adapter,
+                )
+                if adapter is None:
+                    adapter = summary["adapter_identity"]
+                elif summary["adapter_identity"] != adapter:
+                    raise SweepError("adapter identity changed during the scaling sweep")
+            except (OSError, ValueError, SweepError):
+                failed_run = {
+                    "particles": particles,
+                    "status": "failed",
+                    "exit_code": completed.returncode,
+                    "log": str(log_path.relative_to(output)),
+                    "log_sha256": sha256_file(log_path),
+                    "cargo_target_dir": str(target_dir.relative_to(output)),
+                }
+                if receipt_path.is_file():
+                    failed_run["receipt"] = str(receipt_path.relative_to(output))
+                    failed_run["receipt_sha256"] = sha256_file(receipt_path)
+                manifest["runs"].append(failed_run)
                 manifest_path.write_text(
                     json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n"
                 )
-
-            require_source_provenance(
-                repo_root,
-                revision,
-                output,
-                expected_cargo_context=build_cargo_context,
-                expected_toolchain_context=build_toolchain_context,
-                expected_dependency_source_context=build_dependency_source_context,
-                cargo_command=args.cargo,
-            )
-            if completed.returncode != 0:
-                raise SweepError(
-                    f"BH #2D hardware run failed at {particles} particles; see {log_path}"
-                )
-            if not receipt_path.is_file():
-                raise SweepError(f"missing receipt after {particles}-particle run")
-
-            receipt = load_receipt(receipt_path)
-            summary = validate_receipt(
-                receipt,
-                particles=particles,
-                preset=args.preset,
-                steps=args.steps,
-                dt_myr=args.dt_myr,
-                seed=args.seed,
-                theta=args.theta,
-                softening_kpc=args.softening_kpc,
-                direct_probes=args.direct_probes,
-                oracle_limit=args.oracle_limit,
-                benchmark_warmup=args.benchmark_warmup,
-                benchmark_repeats=args.benchmark_repeats,
-                adapter_selector=args.adapter,
-            )
-            if adapter is None:
-                adapter = summary["adapter_identity"]
-            elif summary["adapter_identity"] != adapter:
-                raise SweepError("adapter identity changed during the scaling sweep")
+                raise
 
             summary.update(
                 {
