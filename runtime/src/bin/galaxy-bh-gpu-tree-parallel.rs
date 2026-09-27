@@ -7,7 +7,7 @@ use galaxy_nbody::{
 };
 use galaxy_runtime::{
     config::Result,
-    nbody_gpu::{pack_flat_tree, NbodyGpu, StageTiming, TreeBuildTiming},
+    nbody_gpu::{pack_flat_tree, NbodyGpu, StageTiming},
     nbody_parallel::{
         ParallelGpuTreeEvidence, ParallelTreeBuildTiming, ParallelTreeRuntime,
         MAX_PARALLEL_TREE_BODIES,
@@ -189,9 +189,7 @@ fn validate_parallel_order(evidence: &ParallelGpuTreeEvidence) -> Result<()> {
 fn add_parallel(total: &mut ParallelTreeBuildTiming, value: ParallelTreeBuildTiming) {
     total.bounds_seconds += value.bounds_seconds;
     total.morton_seconds += value.morton_seconds;
-    total.radix_histogram_seconds += value.radix_histogram_seconds;
-    total.radix_prefix_seconds += value.radix_prefix_seconds;
-    total.radix_scatter_seconds += value.radix_scatter_seconds;
+    total.radix_seconds += value.radix_seconds;
     total.positions_seconds += value.positions_seconds;
     total.topology_seconds += value.topology_seconds;
     total.aggregate_seconds += value.aggregate_seconds;
@@ -557,10 +555,7 @@ fn run() -> Result<()> {
             "gpu_state_create_transfer": state_create.transfer_seconds,
             "parallel_bounds_total": build_timing.bounds_seconds,
             "parallel_morton_total": build_timing.morton_seconds,
-            "parallel_radix_histogram_total": build_timing.radix_histogram_seconds,
-            "parallel_radix_prefix_total": build_timing.radix_prefix_seconds,
-            "parallel_radix_scatter_total": build_timing.radix_scatter_seconds,
-            "parallel_radix_total": build_timing.radix_seconds(),
+            "parallel_radix_total": build_timing.radix_seconds,
             "parallel_positions_total": build_timing.positions_seconds,
             "parallel_topology_total": build_timing.topology_seconds,
             "parallel_aggregate_total": build_timing.aggregate_seconds,
