@@ -68,6 +68,60 @@ pub struct GpuEvolveState {
     pub velocity: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct TreeSettings {
+    pub info: [u32; 4],
+    pub physics: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct TreeMeta {
+    pub data: [u32; 4],
+    pub bounds: [f32; 4],
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TreeBuildTiming {
+    pub bounds_seconds: f64,
+    pub morton_seconds: f64,
+    pub sort_seconds: f64,
+    pub positions_seconds: f64,
+    pub topology_seconds: f64,
+    pub aggregate_seconds: f64,
+}
+
+impl TreeBuildTiming {
+    pub fn total_seconds(&self) -> f64 {
+        self.bounds_seconds
+            + self.morton_seconds
+            + self.sort_seconds
+            + self.positions_seconds
+            + self.topology_seconds
+            + self.aggregate_seconds
+    }
+}
+
+#[derive(Debug)]
+pub struct GpuTree {
+    bodies: wgpu::Buffer,
+    entries: wgpu::Buffer,
+    cells: wgpu::Buffer,
+    meta: wgpu::Buffer,
+    count: u32,
+    padded_count: u32,
+    cell_capacity: u32,
+    bytes: u64,
+}
+
+#[derive(Debug)]
+pub struct GpuTreeEvidence {
+    pub meta: TreeMeta,
+    pub entries: Vec<GpuEntry>,
+    pub cells: Vec<GpuCell>,
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StageTiming {
     pub transfer_seconds: f64,
@@ -263,6 +317,13 @@ pub struct NbodyGpu {
     evolve_layout: wgpu::BindGroupLayout,
     kick_drift_pipeline: wgpu::ComputePipeline,
     final_kick_pipeline: wgpu::ComputePipeline,
+    tree_layout: wgpu::BindGroupLayout,
+    tree_bounds_pipeline: wgpu::ComputePipeline,
+    tree_morton_pipeline: wgpu::ComputePipeline,
+    tree_sort_pipeline: wgpu::ComputePipeline,
+    tree_positions_pipeline: wgpu::ComputePipeline,
+    tree_topology_pipeline: wgpu::ComputePipeline,
+    tree_aggregate_pipeline: wgpu::ComputePipeline,
 }
 
 impl NbodyGpu {
@@ -438,6 +499,106 @@ impl NbodyGpu {
             return Err(format!("Barnes-Hut GPU evolution shader validation: {error}").into());
         }
 
+        let tree_entries = [
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ];
+        let tree_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Barnes-Hut GPU tree build layout"),
+            entries: &tree_entries,
+        });
+        let tree_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Barnes-Hut GPU tree build pipeline layout"),
+                bind_group_layouts: &[&tree_layout],
+                push_constant_ranges: &[],
+            });
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let tree_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Barnes-Hut GPU tree construction"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("nbody_tree.wgsl").into()),
+        });
+        let make_tree_pipeline = |label: &'static str, entry: &'static str| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(&tree_pipeline_layout),
+                module: &tree_shader,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let tree_bounds_pipeline = make_tree_pipeline("bh_tree_bounds", "bh_tree_bounds");
+        let tree_morton_pipeline = make_tree_pipeline("bh_tree_morton", "bh_tree_morton");
+        let tree_sort_pipeline = make_tree_pipeline("bh_tree_sort", "bh_tree_sort");
+        let tree_positions_pipeline =
+            make_tree_pipeline("bh_tree_positions", "bh_tree_positions");
+        let tree_topology_pipeline =
+            make_tree_pipeline("bh_tree_topology", "bh_tree_topology");
+        let tree_aggregate_pipeline =
+            make_tree_pipeline("bh_tree_aggregate", "bh_tree_aggregate");
+        if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+            return Err(format!("Barnes-Hut GPU tree shader validation: {error}").into());
+        }
+
         Ok(Self {
             info,
             device,
@@ -447,6 +608,13 @@ impl NbodyGpu {
             evolve_layout,
             kick_drift_pipeline,
             final_kick_pipeline,
+            tree_layout,
+            tree_bounds_pipeline,
+            tree_morton_pipeline,
+            tree_sort_pipeline,
+            tree_positions_pipeline,
+            tree_topology_pipeline,
+            tree_aggregate_pipeline,
         })
     }
 
@@ -946,6 +1114,320 @@ impl NbodyGpu {
     pub fn evolving_buffer_bytes(&self, evolving: &EvolvingState) -> u64 {
         evolving.bytes
     }
+
+    fn dispatch_tree_stage(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        bind: &wgpu::BindGroup,
+        workgroups: u32,
+        label: &'static str,
+    ) -> f64 {
+        let started = Instant::now();
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some(label),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(label),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        self.device.poll(wgpu::Maintain::Wait);
+        started.elapsed().as_secs_f64()
+    }
+
+    pub fn create_gpu_tree(&self, evolving: &EvolvingState) -> Result<GpuTree> {
+        const MAX_GPU_TREE_BODIES: u32 = 4096;
+        if evolving.count < 2 || evolving.count > MAX_GPU_TREE_BODIES {
+            return Err(format!(
+                "BH #2C correctness-first GPU tree supports 2..={MAX_GPU_TREE_BODIES} resident bodies"
+            )
+            .into());
+        }
+        let padded_count = evolving.count.next_power_of_two();
+        let cell_capacity = evolving
+            .count
+            .checked_mul(16)
+            .and_then(|value| value.checked_add(1))
+            .ok_or("GPU tree cell capacity overflow")?;
+
+        let body_bytes = self.checked_storage(
+            evolving.count as usize,
+            std::mem::size_of::<GpuBody>(),
+            "BH #2C GPU tree bodies",
+        )?;
+        let entry_bytes = self.checked_storage(
+            padded_count as usize,
+            std::mem::size_of::<GpuEntry>(),
+            "BH #2C GPU tree entries",
+        )?;
+        let cell_bytes = self.checked_storage(
+            cell_capacity as usize,
+            std::mem::size_of::<GpuCell>(),
+            "BH #2C GPU tree cells",
+        )?;
+        let meta_bytes = std::mem::size_of::<TreeMeta>() as u64;
+
+        let bodies = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("BH #2C GPU tree bodies"),
+            size: body_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let entries = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("BH #2C GPU tree Morton entries"),
+            size: entry_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let cells = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("BH #2C GPU tree cells"),
+            size: cell_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let meta = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("BH #2C GPU tree metadata"),
+            size: meta_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        Ok(GpuTree {
+            bodies,
+            entries,
+            cells,
+            meta,
+            count: evolving.count,
+            padded_count,
+            cell_capacity,
+            bytes: body_bytes + entry_bytes + cell_bytes + meta_bytes,
+        })
+    }
+
+    pub fn rebuild_gpu_tree(
+        &self,
+        evolving: &EvolvingState,
+        tree: &GpuTree,
+        config: Config,
+    ) -> Result<TreeBuildTiming> {
+        if tree.count != evolving.count {
+            return Err("GPU tree count does not match evolving state".into());
+        }
+        config.validate()?;
+        let settings = TreeSettings {
+            info: [
+                tree.count,
+                tree.padded_count,
+                config.bucket as u32,
+                config.max_depth.min(16) as u32,
+            ],
+            physics: [
+                checked_f32(config.theta, "theta")?,
+                checked_f32(config.softening_kpc, "softening_kpc")?,
+                checked_f32(config.g, "G")?,
+                0.0,
+            ],
+        };
+        let settings = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BH #2C GPU tree settings"),
+            contents: bytemuck::bytes_of(&settings),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("BH #2C GPU tree build bindings"),
+            layout: &self.tree_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: settings.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: evolving.state.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: tree.bodies.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: tree.entries.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: tree.cells.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: tree.meta.as_entire_binding() },
+            ],
+        });
+
+        let bounds_seconds = self.dispatch_tree_stage(
+            &self.tree_bounds_pipeline,
+            &bind,
+            1,
+            "BH #2C bounds reduction",
+        );
+        let morton_seconds = self.dispatch_tree_stage(
+            &self.tree_morton_pipeline,
+            &bind,
+            tree.padded_count.div_ceil(128),
+            "BH #2C Morton generation",
+        );
+        let sort_seconds = self.dispatch_tree_stage(
+            &self.tree_sort_pipeline,
+            &bind,
+            1,
+            "BH #2C deterministic Morton sort",
+        );
+        let positions_seconds = self.dispatch_tree_stage(
+            &self.tree_positions_pipeline,
+            &bind,
+            tree.count.div_ceil(128),
+            "BH #2C target-position assignment",
+        );
+        let topology_seconds = self.dispatch_tree_stage(
+            &self.tree_topology_pipeline,
+            &bind,
+            1,
+            "BH #2C flat topology construction",
+        );
+        let aggregate_seconds = self.dispatch_tree_stage(
+            &self.tree_aggregate_pipeline,
+            &bind,
+            1,
+            "BH #2C bottom-up aggregates",
+        );
+
+        Ok(TreeBuildTiming {
+            bounds_seconds,
+            morton_seconds,
+            sort_seconds,
+            positions_seconds,
+            topology_seconds,
+            aggregate_seconds,
+        })
+    }
+
+    pub fn force_from_gpu_tree(
+        &self,
+        evolving: &EvolvingState,
+        tree: &GpuTree,
+        config: Config,
+    ) -> Result<StageTiming> {
+        if tree.count != evolving.count {
+            return Err("GPU tree count does not match evolving state".into());
+        }
+        config.validate()?;
+        let settings = BhSettings {
+            info: [tree.count, tree.cell_capacity, 0, 0],
+            physics: [
+                checked_f32(config.theta, "theta")?,
+                checked_f32(config.softening_kpc, "softening_kpc")?,
+                checked_f32(config.g, "G")?,
+                0.0,
+            ],
+        };
+        let transfer_started = Instant::now();
+        let settings = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BH #2C force settings"),
+            contents: bytemuck::bytes_of(&settings),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        let transfer_seconds = transfer_started.elapsed().as_secs_f64();
+
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("BH #2C force bindings"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: settings.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: tree.bodies.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: tree.entries.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: tree.cells.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: evolving.acceleration.as_entire_binding(),
+                },
+            ],
+        });
+
+        let dispatch_started = Instant::now();
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("BH #2C force traversal"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("BH #2C force traversal"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(tree.count.div_ceil(128), 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        self.device.poll(wgpu::Maintain::Wait);
+        Ok(StageTiming {
+            transfer_seconds,
+            dispatch_seconds: dispatch_started.elapsed().as_secs_f64(),
+            ..StageTiming::default()
+        })
+    }
+
+    fn read_buffer_bytes(&self, source: &wgpu::Buffer, bytes: u64, label: &'static str) -> Result<Vec<u8>> {
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(source, 0, &readback, 0, bytes);
+        self.queue.submit(Some(encoder.finish()));
+        let slice = readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()??;
+        let view = slice.get_mapped_range();
+        let bytes = view.to_vec();
+        drop(view);
+        readback.unmap();
+        Ok(bytes)
+    }
+
+    pub fn read_gpu_tree_evidence(&self, tree: &GpuTree) -> Result<GpuTreeEvidence> {
+        let meta_bytes = self.read_buffer_bytes(
+            &tree.meta,
+            std::mem::size_of::<TreeMeta>() as u64,
+            "BH #2C metadata readback",
+        )?;
+        let meta = bytemuck::pod_read_unaligned::<TreeMeta>(&meta_bytes);
+        if meta.data[3] != 0 {
+            return Err("BH #2C GPU tree reported cell-capacity overflow".into());
+        }
+        let cell_count = meta.data[0] as usize;
+        if cell_count == 0 || cell_count > tree.cell_capacity as usize {
+            return Err(format!("BH #2C GPU tree reported invalid cell count {cell_count}").into());
+        }
+
+        let entry_bytes = self.read_buffer_bytes(
+            &tree.entries,
+            tree.count as u64 * std::mem::size_of::<GpuEntry>() as u64,
+            "BH #2C entry readback",
+        )?;
+        let entries = entry_bytes
+            .chunks_exact(std::mem::size_of::<GpuEntry>())
+            .map(bytemuck::pod_read_unaligned::<GpuEntry>)
+            .collect();
+
+        let cell_bytes = self.read_buffer_bytes(
+            &tree.cells,
+            cell_count as u64 * std::mem::size_of::<GpuCell>() as u64,
+            "BH #2C cell readback",
+        )?;
+        let cells = cell_bytes
+            .chunks_exact(std::mem::size_of::<GpuCell>())
+            .map(bytemuck::pod_read_unaligned::<GpuCell>)
+            .collect();
+
+        Ok(GpuTreeEvidence { meta, entries, cells })
+    }
+
+    pub fn gpu_tree_buffer_bytes(&self, tree: &GpuTree) -> u64 {
+        tree.bytes
+    }
 }
 
 #[cfg(test)]
@@ -962,6 +1444,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<GpuAccel>(), 16);
         assert_eq!(std::mem::size_of::<EvolveSettings>(), 32);
         assert_eq!(std::mem::size_of::<GpuEvolveState>(), 32);
+        assert_eq!(std::mem::size_of::<TreeSettings>(), 32);
+        assert_eq!(std::mem::size_of::<TreeMeta>(), 32);
     }
 
     #[test]

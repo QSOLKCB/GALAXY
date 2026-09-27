@@ -223,6 +223,23 @@ For small workloads, the full GPU trajectory is compared against a separate f64 
 
 The matched CUDA source is `runtime/cuda/barnes_hut_flat.cu`. CI runs `runtime/cuda/check_barnes_hut_layout.py` to verify the BH #2B1 records plus the 32-byte evolution settings/state records and traversal/kick/drift/final-kick source contracts. That is ABI/source parity evidence, **not CUDA execution evidence**.
 
+### BH #2C GPU tree construction
+
+`galaxy-bh-gpu-tree` removes the BH #2B2 per-step host particle/tree rebuild for up to 4,096 bodies:
+
+```bash
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -- \
+  --preset disc --particles 128 --steps 3 --dt-myr 0.01 \
+  --theta 0.5 --allow-software \
+  --receipt runs/barnes-hut-gpu-tree/receipt.json
+```
+
+The persistent GPU state feeds a device-owned flat-tree buffer set. Bounds, deterministic Morton ordering, cell topology and aggregates are constructed on the selected compute adapter; the existing BH traversal consumes those buffers directly. There is no host state readback or CPU tree build inside the step loop.
+
+The current tree builder is deliberately a correctness reference: bounds, bitonic ordering, topology and aggregation use serialized GPU control kernels, while Morton generation and body-position assignment are parallel. Its 4,096-body cap is an explicit phase boundary, not a general GPU capacity claim.
+
+Receipts separate each build stage and record full final-force comparison to BH #2A, direct probes, full BH #2A trajectory comparison and a same-state repeat tree checksum. Hardware-performance conclusions must wait for a parallel BH #2D builder and real hardware measurements.
+
 ## Physics and numerical behavior
 
 The source remains UFF commit
@@ -331,6 +348,7 @@ python3 runtime/cuda/check_barnes_hut_layout.py
 bash scripts/run-gpu.sh verify
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- --particles 256 --theta 0.5 --allow-software
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
 ```
 
 `verify` executes the compiled GPU kernels against 195 predictions from UFF's
