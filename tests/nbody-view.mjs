@@ -32,7 +32,7 @@ function boot(reduced = false) {
     stepLeapfrog(b,dt,o){steps++; bodies=b;latest=solver.stepLeapfrog(b,dt,o);return latest;} };
   vm.runInContext(read('nbody-clock.js'),ctx);
   vm.runInContext(read('nbody-viz.js'),ctx);
-  return {elements, doc, motion, frame(now){currentNow=now;scheduled(now);}, steps:()=>steps, draws:()=>draws,
+  return {elements, doc, motion, frame(now){currentNow=now;scheduled(now);}, setNow(now){currentNow=now;}, steps:()=>steps, draws:()=>draws,
     bodies:()=>JSON.parse(JSON.stringify(bodies)), latest:()=>latest, click:id=>elements.get(id).emit('click'),
     set(id,value,event='input'){elements.get(id).value=String(value);elements.get(id).emit(event);} };
 }
@@ -67,9 +67,9 @@ a.frame(3000); assert.notEqual(a.elements.get('errorReadout').textContent,'—')
 a.click('playToggle');a.frame(4000);a.frame(4020);
 assert.equal(a.elements.get('errorReadout').textContent,'—','advancing invalidates audit');
 a.doc.hidden=true; a.doc.emit('visibilitychange'); const hidden=a.steps();a.frame(100000); assert.equal(a.steps(),hidden);
-a.doc.hidden=false; a.doc.emit('visibilitychange');a.frame(100000);
+a.doc.hidden=false; a.setNow(200000); a.doc.emit('visibilitychange');a.frame(200000);
+assert.equal(a.steps(),hidden,'hidden tab does not catch up');
 assert.notEqual(a.elements.get('fpsReadout').textContent,'0 FPS','visibility resume must not include hidden time in FPS');
-a.frame(200000);assert.equal(a.steps(),hidden,'hidden tab does not catch up');
 a.frame(200017);assert.equal(a.steps(),hidden+1);
 a.motion.emit('change',{matches:true});assert.equal(a.elements.get('runBadge').textContent,'PAUSED');
 assert.equal(a.elements.get('trails').checked,false);
