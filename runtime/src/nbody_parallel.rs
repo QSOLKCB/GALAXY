@@ -46,23 +46,17 @@ struct RadixSettings {
 pub struct ParallelTreeBuildTiming {
     pub bounds_seconds: f64,
     pub morton_seconds: f64,
-    pub radix_histogram_seconds: f64,
-    pub radix_prefix_seconds: f64,
-    pub radix_scatter_seconds: f64,
+    pub radix_seconds: f64,
     pub positions_seconds: f64,
     pub topology_seconds: f64,
     pub aggregate_seconds: f64,
 }
 
 impl ParallelTreeBuildTiming {
-    pub fn radix_seconds(&self) -> f64 {
-        self.radix_histogram_seconds + self.radix_prefix_seconds + self.radix_scatter_seconds
-    }
-
     pub fn total_seconds(&self) -> f64 {
         self.bounds_seconds
             + self.morton_seconds
-            + self.radix_seconds()
+            + self.radix_seconds
             + self.positions_seconds
             + self.topology_seconds
             + self.aggregate_seconds
@@ -338,12 +332,27 @@ impl ParallelTreeRuntime {
         started.elapsed().as_secs_f64()
     }
 
-    fn clear_buffer(&self, gpu: &NbodyGpu, buffer: &wgpu::Buffer, label: &'static str) -> f64 {
-        let started = Instant::now();
-        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    fn encode_pass(
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::ComputePipeline,
+        bind: &wgpu::BindGroup,
+        workgroups: u32,
+        label: &'static str,
+    ) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(label),
+            timestamp_writes: None,
         });
-        encoder.clear_buffer(buffer, 0, None);
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind, &[]);
+        pass.dispatch_workgroups(workgroups, 1, 1);
+    }
+
+    fn submit_wait(
+        gpu: &NbodyGpu,
+        encoder: wgpu::CommandEncoder,
+        started: Instant,
+    ) -> f64 {
         gpu.queue.submit(Some(encoder.finish()));
         gpu.device.poll(wgpu::Maintain::Wait);
         started.elapsed().as_secs_f64()
@@ -563,7 +572,13 @@ impl ParallelTreeRuntime {
 
         let mut timing = ParallelTreeBuildTiming::default();
 
-        // Workgroup-reduced bounds: state -> scratch, then scratch -> scratch until one record.
+        // Bounds reduction is one ordered command buffer: state -> workgroup
+        // records, recursive workgroup reduction, then root-bound finalization.
+        let bounds_started = Instant::now();
+        let mut bounds_encoder =
+            gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("BH #2D batched bounds reduction"),
+            });
         let first_settings = BoundsSettings {
             info: [tree.count, 0, 0, 0],
         };
@@ -580,8 +595,8 @@ impl ParallelTreeRuntime {
             &tree.bounds_a,
             tree,
         );
-        timing.bounds_seconds += self.dispatch(
-            gpu,
+        Self::encode_pass(
+            &mut bounds_encoder,
             &self.bounds_state_pipeline,
             &first_bind,
             tree.blocks,
@@ -590,14 +605,15 @@ impl ParallelTreeRuntime {
 
         let mut current_count = tree.blocks;
         let mut current_is_a = true;
+        let mut bounds_resources: Vec<(wgpu::Buffer, wgpu::BindGroup)> = Vec::new();
         while current_count > 1 {
             let next_count = current_count.div_ceil(WORKGROUP_SIZE);
-            let settings = BoundsSettings {
+            let settings_value = BoundsSettings {
                 info: [current_count, 0, 0, 0],
             };
             let settings = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("BH #2D bounds reduce settings"),
-                contents: bytemuck::bytes_of(&settings),
+                contents: bytemuck::bytes_of(&settings_value),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let (input, output) = if current_is_a {
@@ -606,21 +622,22 @@ impl ParallelTreeRuntime {
                 (&tree.bounds_b, &tree.bounds_a)
             };
             let bind = self.bounds_bind(gpu, &settings, evolving, input, output, tree);
-            timing.bounds_seconds += self.dispatch(
-                gpu,
+            Self::encode_pass(
+                &mut bounds_encoder,
                 &self.bounds_reduce_pipeline,
                 &bind,
                 next_count,
                 "BH #2D recursive bounds reduction",
             );
+            bounds_resources.push((settings, bind));
             current_count = next_count;
             current_is_a = !current_is_a;
         }
 
-        let final_settings = BoundsSettings { info: [1, 0, 0, 0] };
+        let final_settings_value = BoundsSettings { info: [1, 0, 0, 0] };
         let final_settings = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BH #2D bounds finalize settings"),
-            contents: bytemuck::bytes_of(&final_settings),
+            contents: bytemuck::bytes_of(&final_settings_value),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let (final_input, final_output) = if current_is_a {
@@ -630,22 +647,25 @@ impl ParallelTreeRuntime {
         };
         let final_bind =
             self.bounds_bind(gpu, &final_settings, evolving, final_input, final_output, tree);
-        timing.bounds_seconds += self.dispatch(
-            gpu,
+        Self::encode_pass(
+            &mut bounds_encoder,
             &self.bounds_finalize_pipeline,
             &final_bind,
             1,
             "BH #2D bounds finalize",
         );
+        timing.bounds_seconds = Self::submit_wait(gpu, bounds_encoder, bounds_started);
+        drop(bounds_resources);
 
-        let base_settings = Self::tree_settings(config, tree.count, 0)?;
+        // Morton generation remains one parallel dispatch and one synchronization.
+        let base_settings_value = Self::tree_settings(config, tree.count, 0)?;
         let base_settings = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BH #2D Morton settings"),
-            contents: bytemuck::bytes_of(&base_settings),
+            contents: bytemuck::bytes_of(&base_settings_value),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let base_bind = self.topology_bind(gpu, &base_settings, evolving, tree);
-        timing.morton_seconds += self.dispatch(
+        timing.morton_seconds = self.dispatch(
             gpu,
             &self.topology_morton_pipeline,
             &base_bind,
@@ -653,17 +673,22 @@ impl ParallelTreeRuntime {
             "BH #2D parallel Morton generation",
         );
 
-        // Stable LSD radix on Morton code. Morton input starts in resident body order,
-        // and every scatter is stable, so equal Morton keys retain body-index order.
+        // All eight stable LSD radix passes are ordered inside one command buffer.
+        // Command-buffer ordering supplies the inter-pass storage dependency.
+        let radix_started = Instant::now();
+        let mut radix_encoder =
+            gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("BH #2D batched stable radix sort"),
+            });
+        let mut radix_resources: Vec<(wgpu::Buffer, wgpu::BindGroup)> = Vec::new();
         for pass in 0..RADIX_PASSES {
-            timing.radix_histogram_seconds +=
-                self.clear_buffer(gpu, &tree.histogram, "BH #2D clear radix histogram");
-            let settings = RadixSettings {
+            radix_encoder.clear_buffer(&tree.histogram, 0, None);
+            let settings_value = RadixSettings {
                 info: [tree.count, tree.blocks, pass * 4, pass & 1],
             };
             let settings = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("BH #2D radix settings"),
-                contents: bytemuck::bytes_of(&settings),
+                contents: bytemuck::bytes_of(&settings_value),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -677,37 +702,40 @@ impl ParallelTreeRuntime {
                     wgpu::BindGroupEntry { binding: 4, resource: tree.offsets.as_entire_binding() },
                 ],
             });
-            timing.radix_histogram_seconds += self.dispatch(
-                gpu,
+            Self::encode_pass(
+                &mut radix_encoder,
                 &self.radix_histogram_pipeline,
                 &bind,
                 tree.blocks,
                 "BH #2D radix histogram",
             );
-            timing.radix_prefix_seconds += self.dispatch(
-                gpu,
+            Self::encode_pass(
+                &mut radix_encoder,
                 &self.radix_prefix_pipeline,
                 &bind,
                 1,
                 "BH #2D radix prefix",
             );
-            timing.radix_scatter_seconds += self.dispatch(
-                gpu,
+            Self::encode_pass(
+                &mut radix_encoder,
                 &self.radix_scatter_pipeline,
                 &bind,
                 tree.blocks,
                 "BH #2D radix scatter",
             );
+            radix_resources.push((settings, bind));
         }
+        timing.radix_seconds = Self::submit_wait(gpu, radix_encoder, radix_started);
+        drop(radix_resources);
 
-        let position_settings = Self::tree_settings(config, tree.count, 0)?;
+        let position_settings_value = Self::tree_settings(config, tree.count, 0)?;
         let position_settings = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BH #2D position settings"),
-            contents: bytemuck::bytes_of(&position_settings),
+            contents: bytemuck::bytes_of(&position_settings_value),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let position_bind = self.topology_bind(gpu, &position_settings, evolving, tree);
-        timing.positions_seconds += self.dispatch(
+        timing.positions_seconds = self.dispatch(
             gpu,
             &self.topology_positions_pipeline,
             &position_bind,
@@ -715,61 +743,84 @@ impl ParallelTreeRuntime {
             "BH #2D target-position assignment",
         );
 
-        timing.topology_seconds +=
-            self.clear_buffer(gpu, &tree.cells, "BH #2D clear sparse cells");
-
+        // Sparse cell creation and link construction are ordered by depth but
+        // submitted as one command buffer, eliminating per-depth CPU waits.
         let max_depth = config.max_depth.min(MORTON_TREE_DEPTH as usize) as u32;
+        let topology_started = Instant::now();
+        let mut topology_encoder =
+            gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("BH #2D batched sparse topology"),
+            });
+        topology_encoder.clear_buffer(&tree.cells, 0, None);
+        let mut topology_resources: Vec<(wgpu::Buffer, wgpu::BindGroup)> = Vec::new();
         for depth in 0..=max_depth {
-            let settings = Self::tree_settings(config, tree.count, depth)?;
+            let settings_value = Self::tree_settings(config, tree.count, depth)?;
             let settings = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("BH #2D cell level settings"),
-                contents: bytemuck::bytes_of(&settings),
+                contents: bytemuck::bytes_of(&settings_value),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let bind = self.topology_bind(gpu, &settings, evolving, tree);
-            timing.topology_seconds += self.dispatch(
-                gpu,
+            Self::encode_pass(
+                &mut topology_encoder,
                 &self.topology_cells_pipeline,
                 &bind,
                 tree.blocks,
                 "BH #2D parallel cell ranges",
             );
+            topology_resources.push((settings, bind));
 
             if depth > 0 {
-                let parent_settings = Self::tree_settings(config, tree.count, depth - 1)?;
+                let parent_value = Self::tree_settings(config, tree.count, depth - 1)?;
                 let parent_settings =
                     gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("BH #2D parent-link settings"),
-                        contents: bytemuck::bytes_of(&parent_settings),
+                        contents: bytemuck::bytes_of(&parent_value),
                         usage: wgpu::BufferUsages::UNIFORM,
                     });
-                let parent_bind = self.topology_bind(gpu, &parent_settings, evolving, tree);
-                timing.topology_seconds += self.dispatch(
-                    gpu,
+                let parent_bind =
+                    self.topology_bind(gpu, &parent_settings, evolving, tree);
+                Self::encode_pass(
+                    &mut topology_encoder,
                     &self.topology_links_pipeline,
                     &parent_bind,
                     tree.blocks,
                     "BH #2D parallel child links",
                 );
+                topology_resources.push((parent_settings, parent_bind));
             }
         }
+        timing.topology_seconds =
+            Self::submit_wait(gpu, topology_encoder, topology_started);
+        drop(topology_resources);
 
+        // Reverse-depth aggregate construction is similarly one ordered submit.
+        let aggregate_started = Instant::now();
+        let mut aggregate_encoder =
+            gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("BH #2D batched parallel aggregates"),
+            });
+        let mut aggregate_resources: Vec<(wgpu::Buffer, wgpu::BindGroup)> = Vec::new();
         for depth in (0..=max_depth).rev() {
-            let settings = Self::tree_settings(config, tree.count, depth)?;
+            let settings_value = Self::tree_settings(config, tree.count, depth)?;
             let settings = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("BH #2D aggregate-level settings"),
-                contents: bytemuck::bytes_of(&settings),
+                contents: bytemuck::bytes_of(&settings_value),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let bind = self.topology_bind(gpu, &settings, evolving, tree);
-            timing.aggregate_seconds += self.dispatch(
-                gpu,
+            Self::encode_pass(
+                &mut aggregate_encoder,
                 &self.topology_aggregate_pipeline,
                 &bind,
                 tree.blocks,
                 "BH #2D parallel aggregates",
             );
+            aggregate_resources.push((settings, bind));
         }
+        timing.aggregate_seconds =
+            Self::submit_wait(gpu, aggregate_encoder, aggregate_started);
+        drop(aggregate_resources);
 
         Ok(timing)
     }
