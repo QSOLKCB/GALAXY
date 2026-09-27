@@ -12,6 +12,8 @@ use galaxy_runtime::{
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf, time::Instant};
 
+const CPU_REFERENCE_MAX_BODY_STEPS: usize = 1_000_000;
+
 #[derive(Parser, Debug)]
 #[command(about = "BH #2B2 evolving Barnes-Hut self-gravity on the native GPU runtime")]
 struct Args {
@@ -321,7 +323,10 @@ fn run() -> Result<()> {
         .into());
     }
 
-    let cpu_reference = if args.particles <= args.cpu_reference_limit {
+    let reference_work = args.particles.checked_mul(args.steps);
+    let reference_allowed = args.particles <= args.cpu_reference_limit
+        && reference_work.is_some_and(|work| work <= CPU_REFERENCE_MAX_BODY_STEPS);
+    let cpu_reference = if reference_allowed {
         let started = Instant::now();
         let reference =
             cpu_flat_evolve(initial_bodies.clone(), args.steps, args.dt_myr, config)?;
@@ -344,14 +349,18 @@ fn run() -> Result<()> {
         json!({
             "status": "executed",
             "particle_limit": args.cpu_reference_limit,
+            "body_step_limit": CPU_REFERENCE_MAX_BODY_STEPS,
+            "body_steps": reference_work.unwrap(),
             "state_error": error,
             "final_checksum_fnv_mix64": format!("{:016x}", state_checksum(&reference))
         })
     } else {
         json!({
-            "status": "skipped-particle-limit",
+            "status": "skipped-bounded-reference",
             "particle_limit": args.cpu_reference_limit,
-            "reason": "full multi-step flat-CPU trajectory reference is bounded so large GPU runs are not dominated by CPU verification"
+            "body_step_limit": CPU_REFERENCE_MAX_BODY_STEPS,
+            "body_steps": reference_work,
+            "reason": "full multi-step flat-CPU trajectory reference is bounded by both particles and particle×step work so large GPU runs are not dominated by CPU verification"
         })
     };
 
