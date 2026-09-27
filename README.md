@@ -17,7 +17,8 @@ It began as an adaptation of the VORTEX 2.1.0 particle lab and now combines:
 - an opt-in Barnes–Hut resident self-gravity laboratory with a direct-force oracle and live quadtree visualization;
 - a GPU-oriented BH #2A Morton/Z-order + flat-cell CPU substrate with repeatable topology receipts;
 - a BH #2B1 explicit f32/u32 transfer ABI with executable Vulkan/WGSL flat-tree traversal and matched CUDA traversal source;
-- BH #2B2 multi-step resident self-gravity with persistent GPU state, GPU kick/drift/final-kick kernels, and an explicit CPU tree-rebuild boundary.
+- BH #2B2 multi-step resident self-gravity with persistent GPU state, GPU kick/drift/final-kick kernels, and an explicit CPU tree-rebuild boundary;
+- BH #2C correctness-first GPU tree construction, removing host particle/tree rebuilds from the evolution loop for bounded resident workloads.
 
 The current immutable software release is **v0.6.0**. The v0.4.0 native-CPU evidence baseline remains archived at Zenodo as:
 
@@ -41,10 +42,11 @@ The current immutable software release is **v0.6.0**. The v0.4.0 native-CPU evid
 | Barnes–Hut self-gravity | Separate resident planar N-body reference, exact O(N²) oracle, leapfrog integration, browser tree overlay |
 | Barnes–Hut flat substrate | Stable 32-bit Morton ordering, pointer-free flat cells, bottom-up aggregates, flat traversal receipts |
 | Barnes–Hut GPU traversal | CPU-built flat tree packed to frozen f32/u32 records; Vulkan/WGSL traversal verified against the full flat CPU oracle plus bounded direct-force probes; CUDA ABI/source parity |
-| Barnes–Hut GPU evolution | Persistent f32 GPU state; GPU force + leapfrog kick/drift/final-kick; one host tree rebuild per drift; multi-step receipts and diagnostics |
+| Barnes–Hut GPU evolution | Persistent f32 GPU state; GPU force + leapfrog kick/drift/final-kick; BH #2B2 host rebuild oracle plus BH #2C device-only rebuild path |
+| Barnes–Hut GPU tree build | GPU bounds, Morton generation, deterministic bitonic ordering, flat topology and aggregates; correctness-first cap 4,096 |
 | Formal release | Immutable `v0.6.0`, commit `fa1c76fb49664ae4cdd6dc090cccd702399c2b60` |
 | CPU baseline archival record | Zenodo DOI `10.5281/zenodo.22756969` |
-| Active experimental phase | BH #2B2 evolving GPU self-gravity with a host-visible CPU tree rebuild boundary |
+| Active experimental phase | BH #2C correctness-first GPU tree construction; parallel production optimization remains deferred |
 
 v0.6.0 freezes the Stream → Reduce → Discard memory-wall result. The earlier v0.4.0 archive remains the **before-state** for the CPU architecture ladder.
 
@@ -213,10 +215,15 @@ cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- 
   --theta 0.5 --allow-software \
   --receipt runs/barnes-hut-evolve/receipt.json
 
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -- \
+  --preset disc --particles 128 --steps 3 --dt-myr 0.01 \
+  --theta 0.5 --allow-software \
+  --receipt runs/barnes-hut-gpu-tree/receipt.json
+
 python3 runtime/cuda/check_barnes_hut_layout.py
 ```
 
-The evolution path keeps acceleration and state buffers resident across force/integration stages. Drifted state is read back only at the explicit host rebuild boundary and for final evidence. `--allow-software` is for validation through software Vulkan, not performance evidence. The CUDA checker freezes ABI/source parity without claiming CUDA execution.
+The BH #2B2 evolution path keeps acceleration and state buffers resident across force/integration stages while using an explicit host rebuild boundary. BH #2C removes that per-step host boundary: the drifted persistent state feeds GPU bounds, Morton ordering, flat-cell construction and aggregate kernels directly. The current GPU builder is intentionally serialized in its control-heavy stages and capped at 4,096 bodies; this is correctness evidence, not a speed claim. `--allow-software` is for validation through software Vulkan, not performance evidence. The CUDA checker freezes ABI/source parity without claiming CUDA execution.
 
 See:
 
@@ -335,7 +342,8 @@ retro integer math      -> Rust + JS portability / vector checks
 native CPU runtime      -> Linux / macOS / Windows correctness and receipts
 native GPU / u64        -> Vulkan/CUDA host contracts and tiled-runtime checks
 Barnes–Hut GPU traversal -> packed ABI + WGSL execution against flat/direct CPU oracles
-Barnes–Hut GPU evolution -> persistent GPU state + multi-step leapfrog with CPU tree rebuild boundary
+Barnes–Hut GPU evolution -> persistent GPU state + multi-step leapfrog
+Barnes–Hut GPU tree build -> device-only rebuild loop checked against BH #2A/B2B2 oracles
 ```
 
 Useful local checks include:
@@ -360,6 +368,7 @@ cargo test --manifest-path runtime/Cargo.toml --locked
 python3 runtime/cuda/check_barnes_hut_layout.py
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- --particles 256 --theta 0.5 --allow-software
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
 
 # Native CPU
 sh scripts/test-cpu-runtime.sh
@@ -396,7 +405,7 @@ The root Rust toolchain is pinned in `rust-toolchain.toml`. Generated Wasm paylo
 
 ## 8. Roadmap
 
-The v0.4.0 → v0.6.0 CPU architecture ladder is frozen. BH #1 is frozen by merged PR #18, BH #2A by merged PR #19, and BH #2B1 by merged PR #20. The active rung is BH #2B2: evolve persistent resident state on the GPU while keeping the scientifically auditable BH #2A tree rebuild on the host.
+The v0.4.0 → v0.6.0 CPU architecture ladder is frozen. BH #1 is frozen by merged PR #18, BH #2A by merged PR #19, BH #2B1 by merged PR #20, and BH #2B2 by merged PR #21. The active rung is BH #2C: remove the host tree-rebuild boundary with a correctness-first GPU-built flat tree, while retaining BH #2A/B2B2 as scientific oracles.
 
 The historical native-CPU investigation areas were:
 
