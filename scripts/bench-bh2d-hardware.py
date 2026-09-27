@@ -998,6 +998,8 @@ def main() -> int:
             revision,
             output,
             expected_cargo_context=build_cargo_context,
+            expected_toolchain_context=build_toolchain_context,
+            cargo_command=args.cargo,
         )
         manifest["status"] = "complete"
         manifest["completed_run_count"] = len(manifest["runs"])
