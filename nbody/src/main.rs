@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 use galaxy_nbody::{
-    barnes_hut_accelerations, compare_to_direct, leapfrog_step, make_collision, make_disc,
-    probe_error, state_checksum, Config, DEFAULT_SOFTENING_KPC,
+    barnes_hut_accelerations, compare_to_direct, leapfrog_step_from_acceleration, make_collision,
+    make_disc, probe_error, state_checksum, Config, DEFAULT_SOFTENING_KPC,
 };
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const MAX_PARTICLES: usize = 1_000_000;
@@ -99,6 +99,14 @@ fn json_escape(text: &str) -> String {
     out
 }
 
+fn ensure_parent(path: &Path) -> Result<(), String> {
+    let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("could not create output directory {}: {e}", parent.display()))
+}
+
 fn write_snapshot(path: &PathBuf, bodies: &[galaxy_nbody::Body]) -> Result<(), String> {
     let mut csv = String::from("index,x_kpc,y_kpc,vx_kpc_per_myr,vy_kpc_per_myr,mass_msun\n");
     for (i, b) in bodies.iter().enumerate() {
@@ -181,10 +189,21 @@ fn run(args: &[String]) -> Result<(), String> {
         make_disc(particles, seed, 5.0e10, 3.0)?
     };
 
+    let snapshot_path = map.get("--snapshot").map(PathBuf::from);
+    let receipt_path = map.get("--receipt").map(PathBuf::from);
+    if let Some(path) = snapshot_path.as_deref() {
+        ensure_parent(path)?;
+    }
+    if let Some(path) = receipt_path.as_deref() {
+        ensure_parent(path)?;
+    }
+
     let started = Instant::now();
     let mut latest = barnes_hut_accelerations(&bodies, config)?;
     for _ in 0..steps {
-        latest = leapfrog_step(&mut bodies, dt_myr, config)?;
+        let next =
+            leapfrog_step_from_acceleration(&mut bodies, dt_myr, config, &latest.accelerations)?;
+        latest = next;
     }
     let elapsed = started.elapsed();
     let probe_count = 12.min(particles);
@@ -198,8 +217,8 @@ fn run(args: &[String]) -> Result<(), String> {
         1.0 - (force_terms as f64 / exact_terms as f64)
     };
 
-    if let Some(path) = map.get("--snapshot") {
-        write_snapshot(&PathBuf::from(path), &bodies)?;
+    if let Some(path) = snapshot_path.as_ref() {
+        write_snapshot(path, &bodies)?;
     }
 
     let receipt = format!(
@@ -250,8 +269,9 @@ fn run(args: &[String]) -> Result<(), String> {
         checksum
     );
 
-    if let Some(path) = map.get("--receipt") {
-        fs::write(path, &receipt).map_err(|e| format!("could not write receipt {path}: {e}"))?;
+    if let Some(path) = receipt_path.as_ref() {
+        fs::write(path, &receipt)
+            .map_err(|e| format!("could not write receipt {}: {e}", path.display()))?;
     }
     print!("{receipt}");
     Ok(())
