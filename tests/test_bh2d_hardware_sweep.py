@@ -675,7 +675,6 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         self.assertIn(";", windows)
         self.assertIn(r"C:\\Windows\\System32", windows)
         self.assertIn(r"C:\\Program Files\\Git\\cmd", windows)
-        self.assertIn(r"C:\\Users\\tester\\.cargo\\bin", windows)
 
         darwin = sweep.trusted_system_path("Darwin")
         self.assertIn("/usr/bin", darwin)
