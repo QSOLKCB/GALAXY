@@ -399,3 +399,7 @@ All of the following remain useful research directions, but they are explicitly 
 These items were deferred while PE #15 was active. v0.6.0 closed that phase; any future work now requires an explicit phase with its own evidence boundary.
 
 The previous detailed designs are preserved by the immutable `v0.5.0` source archive and tag; they are not discarded, only postponed.
+
+## Browser N-body observatory
+
+The home page now runs the existing planar Barnes–Hut solver with a modest 768-body default, selectable 128–2,048 bodies, fixed-rate integration, glow/trails and camera controls. The original prescribed-field visual is preserved at `rotation-lab.html`; `barnes-hut.html` retains the detailed tree lab. This UI upgrade supplies no native GPU timing evidence and does not change BH #2D evidence-pending or BH #2E promotion gates.

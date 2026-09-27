@@ -29,6 +29,7 @@ jobs:
           node tests/physics.mjs
           node tests/app.mjs
           node tests/barnes-hut.mjs
+          node tests/nbody-view.mjs
           cargo test --manifest-path nbody/Cargo.toml --locked --offline
           cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify
           node scripts/build-site.mjs

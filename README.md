@@ -7,14 +7,15 @@
 
 It began as an adaptation of the VORTEX 2.1.0 particle lab and now combines:
 
-- interactive rotation-curve visualization;
+- a lightweight default N-body simulator: 768 real interacting bodies, luminous sprites and short orbital trails;
+- interactive rotation-curve visualization in the preserved rotation-law instrument;
 - UFF, Newtonian, NFW, Burkert, MOND/RAR, and authored visual rotation laws;
 - deterministic Rust/WebAssembly sampling in the browser;
 - native Rust CPU execution with Float/libm and BAM32/Q2.30 LUT backends;
 - Vulkan/`wgpu` and NVIDIA CUDA compute paths;
 - memory-bounded exact-u64 logical addressing;
 - reproducible benchmark receipts, topology evidence, and archived scaling studies;
-- an opt-in Barnes–Hut resident self-gravity laboratory with a direct-force oracle and live quadtree visualization;
+- a Barnes–Hut resident self-gravity laboratory with a direct-force oracle and live quadtree visualization;
 - a GPU-oriented BH #2A Morton/Z-order + flat-cell CPU substrate with repeatable topology receipts;
 - a BH #2B1 explicit f32/u32 transfer ABI with executable Vulkan/WGSL flat-tree traversal and matched CUDA traversal source;
 - BH #2B2 multi-step resident self-gravity with persistent GPU state, GPU kick/drift/final-kick kernels, and an explicit CPU tree-rebuild boundary;
@@ -37,9 +38,10 @@ The v0.4.0 native-CPU evidence baseline remains archived at Zenodo as:
 
 | Layer | Current state |
 | --- | --- |
-| Browser instrument | Offline HTML/CSS/JS + bundled Rust/Wasm; no server or CDN required |
-| Browser logical population | Up to `2^32 = 4,294,967,296` logical stars on the Rust/Wasm path |
-| Browser rendered sample | Up to 65,536 stars per frame on Rust/Wasm + WebGL |
+| Browser N-body home page | 128–2,048 interacting bodies (768 default); planar Barnes–Hut gravity, leapfrog integration, glow/trails and orbit/zoom controls |
+| Rotation-law instrument | Preserved at `rotation-lab.html`; offline HTML/CSS/JS + bundled Rust/Wasm |
+| Rotation-law logical population | Up to `2^32 = 4,294,967,296` logical stars on the Rust/Wasm path |
+| Rotation-law rendered sample | Up to 65,536 stars per frame on Rust/Wasm + WebGL |
 | Native CPU runtime | Exact positive-u64 logical population, bounded resident sample up to 16,777,216 particles |
 | CPU projection backends | `float-libm` and `bam-lut-q30` |
 | Native GPU runtime | Rust/`wgpu`/Vulkan plus NVIDIA CUDA/CuPy RawKernel |
@@ -61,7 +63,11 @@ The earlier v0.4.0 archive remains the **before-state** for the CPU architecture
 
 ## 1. Browser instrument
 
-Open **`index.html`** directly in a modern browser. No install, local server, CDN, or network connection is required, including for the bundled Rust/WebAssembly engine.
+Open **`index.html`** directly in a modern browser for the N-body simulator. No install, local server, CDN, or network connection is required. The default 768 bodies all contribute mass; reducing the resident count reduces computation. Glow sprites and ten-step trails add visual density without adding simulated particles. The camera tilts a planar physical system; it is not a 3D force solver.
+
+Choose a binary encounter, rotating disc or cold collapse. Pause, single-step, change the seed, inspect the tree, or pause for a direct-force audit. Physics uses a fixed time step on a 60 Hz schedule, independent of monitor refresh rate. Overload drops catch-up work rather than enlarging the time step or changing the body count. Reduced-motion preference starts paused and disables trails.
+
+The original prescribed-field instrument, including its Rust/WebAssembly sampling, UFF controls and exports, is preserved at **`rotation-lab.html`**. The detailed tree laboratory remains at **`barnes-hut.html`**. The following logical-population and sampling controls describe the rotation-law instrument.
 
 The separate **`barnes-hut.html`** entrypoint is an opt-in resident self-gravity lab with a live quadtree overlay and direct-force error probes. It does not change the default rotation-law instrument.
 
@@ -275,7 +281,7 @@ BH #2D correctness is exercised through software Vulkan in CI, but **software-Vu
 The remaining BH #2D evidence item has a fail-closed real-GPU sweep runner:
 
 ```bash
-python3 scripts/bench-bh2d-hardware.py \
+python3 -I scripts/bench-bh2d-hardware.py \
   --output runs/bh2d-hardware-sweep \
   --adapter 0
 ```

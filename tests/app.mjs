@@ -31,7 +31,7 @@ class Element {
 }
 
 async function boot({ rust = true, gpu = true, brokenWasm = false, reducedMotion = false } = {}) {
-  const html = read("index.html"), elements = new Map();
+  const html = read("rotation-lab.html"), elements = new Map();
   for (const match of html.matchAll(/<(\w+)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const el = new Element(match[1], match[2]);
     el.value = match[0].match(/\bvalue="([^"]*)"/)?.[1] || "";

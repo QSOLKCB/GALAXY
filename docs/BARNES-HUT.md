@@ -2,7 +2,7 @@
 
 GALAXY now has two deliberately distinct dynamics families:
 
-1. **Prescribed-field / test-particle modes** — the existing browser, CPU and GPU paths. These retain huge logical address spaces because individual resident particles do not affect one another.
+1. **Prescribed-field / test-particle modes** — the rotation-law browser instrument (`rotation-lab.html`), CPU and GPU paths. These retain huge logical address spaces because individual resident particles do not affect one another.
 2. **Resident self-gravity** — the Barnes–Hut laboratory. Every resident body's mass contributes to the force field, so the complete interacting resident set is explicit and cannot be substituted by independent logical-u64 tiles.
 
 ## Why Barnes–Hut
@@ -54,6 +54,9 @@ The native and browser references include:
 A future GPU implementation should preserve this CPU/direct reference as its correctness oracle.
 
 ## Visualization
+
+`index.html` is the default lightweight N-body observatory. It reuses the verified browser force solver with 768 resident bodies by default (128–2,048 selectable), fixed-rate leapfrog scheduling, seeded presets, optional trails and luminous sprites. Rendering contributes no additional gravitational mass. Orbit/zoom controls project the planar dynamics without modifying them. The scheduler caps catch-up at four steps per frame, discards overload debt, and suspends in hidden tabs; under load simulated time advances more slowly. Force probes pause the simulation so their result remains attached to the displayed state.
+
 
 `barnes-hut.html` is an offline browser laboratory. It renders the resident bodies and can overlay quadtree cells while the system evolves. Controls expose:
 
@@ -304,7 +307,7 @@ Counts through 4,096 retain repeat-matched BH #2C timing. Larger points explicit
 Example on a real GPU:
 
 ```bash
-python3 scripts/bench-bh2d-hardware.py \
+python3 -I scripts/bench-bh2d-hardware.py \
   --output runs/bh2d-hardware-sweep \
   --adapter 0
 ```
@@ -314,3 +317,9 @@ A completed scaling manifest is hardware evidence for the exact recorded source,
 ## Next rung
 
 After real-hardware BH #2D receipts exist, BH #2E can evaluate scaling, memory/capacity limits and production promotion while retaining BH #2A/B2B2/B2C as frozen oracles.
+
+### Hardware harness launch and toolchain boundary
+
+Launch with `python3 -I scripts/bench-bh2d-hardware.py ...`. Non-isolated direct invocation is rejected before optional imports. This prevents repository/PYTHONPATH modules from entering the standalone harness import path. Imported use by the unit-test runner is for host validation only.
+
+The hardware capture harness currently uses a POSIX system build PATH (`/usr/bin:/bin`). It records selected Cargo/rustc binaries separately from rustup proxies, executes the selected Cargo binary with an explicit recorded `RUSTC`, and fingerprints available system compiler/linker tools. The OS, installed system libraries and toolchain are trusted host prerequisites; this is provenance checking, not a sandbox against a hostile host. Git checks clear ambient `GIT_*` selectors and bind the checkout explicitly, including linked worktrees. Relative `CARGO_HOME` is interpreted from Cargo's repository working directory. Logs preserve raw bytes, receipt parser failures enter the failed-manifest path, and workload values are validated before any output is created. Manifests serialize strict JSON.
