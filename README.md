@@ -18,7 +18,8 @@ It began as an adaptation of the VORTEX 2.1.0 particle lab and now combines:
 - a GPU-oriented BH #2A Morton/Z-order + flat-cell CPU substrate with repeatable topology receipts;
 - a BH #2B1 explicit f32/u32 transfer ABI with executable Vulkan/WGSL flat-tree traversal and matched CUDA traversal source;
 - BH #2B2 multi-step resident self-gravity with persistent GPU state, GPU kick/drift/final-kick kernels, and an explicit CPU tree-rebuild boundary;
-- BH #2C correctness-first GPU tree construction, removing host particle/tree rebuilds from the evolution loop for bounded resident workloads.
+- BH #2C correctness-first GPU tree construction, removing host particle/tree rebuilds from the evolution loop for bounded resident workloads;
+- BH #2D parallel GPU tree construction with workgroup bounds reduction, stable radix/Morton ordering, parallel sparse topology/aggregates, and fail-closed hardware benchmarking.
 
 The current immutable software release is **v0.7.0**:
 
@@ -47,7 +48,7 @@ The v0.4.0 native-CPU evidence baseline remains archived at Zenodo as:
 | Barnes–Hut flat substrate | Stable 32-bit Morton ordering, pointer-free flat cells, bottom-up aggregates, flat traversal receipts |
 | Barnes–Hut GPU traversal | CPU-built flat tree packed to frozen f32/u32 records; Vulkan/WGSL traversal verified against the full flat CPU oracle plus bounded direct-force probes; CUDA ABI/source parity |
 | Barnes–Hut GPU evolution | Persistent f32 GPU state; GPU force + leapfrog kick/drift/final-kick; BH #2B2 host rebuild oracle plus BH #2C device-only rebuild path |
-| Barnes–Hut GPU tree build | GPU bounds, Morton generation, deterministic bitonic ordering, flat topology and aggregates; correctness-first cap 4,096 |
+| Barnes–Hut GPU tree build | BH #2C serialized correctness oracle plus BH #2D parallel bounds/radix/sparse-topology/aggregate path; BH #2D cap 65,536 |
 | Formal release | Immutable `v0.7.0`, commit `7fe4dc63d40bb4afbb93f51c07d05b49f21e9756` |
 | CPU baseline archival record | Zenodo DOI `10.5281/zenodo.22756969` |
 | Active experimental phase | BH #2D parallel GPU tree construction and hardware performance validation |
@@ -232,6 +233,12 @@ cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -
   --theta 0.5 --allow-software \
   --receipt runs/barnes-hut-gpu-tree/receipt.json
 
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree-parallel -- \
+  --preset disc --particles 512 --steps 3 --dt-myr 0.01 \
+  --theta 0.5 --allow-software \
+  --benchmark-warmup 0 --benchmark-repeats 2 \
+  --receipt runs/barnes-hut-gpu-tree-parallel/receipt.json
+
 python3 runtime/cuda/check_barnes_hut_layout.py
 ```
 
@@ -239,7 +246,7 @@ The BH #2B2 path keeps acceleration and state buffers resident across force/inte
 
 BH #2C removes that per-step host boundary: the persistent drifted state feeds GPU bounds, Morton generation, deterministic ordering, flat-cell construction, aggregate construction, and Barnes–Hut traversal directly.
 
-The v0.7.0 BH #2C builder is deliberately correctness-first:
+The immutable v0.7.0 BH #2C builder is deliberately correctness-first:
 
 - 4,096-body resident cap;
 - serialized GPU bounds reduction;
@@ -251,7 +258,19 @@ The v0.7.0 BH #2C builder is deliberately correctness-first:
 - zero host particle readbacks during evolution steps;
 - zero CPU tree rebuilds during evolution steps.
 
-This establishes device ownership and correctness. It is **not** presented as a production GPU-tree performance architecture.
+BH #2D is the active optimization path. It retains BH #2C and BH #2B2 as executable oracles while adding:
+
+- workgroup-parallel bounds reduction;
+- stable block-parallel 4-bit LSD radix ordering over 32-bit Morton keys;
+- deterministic sparse level-order cells using `slot = depth * N + group_start`;
+- parallel per-depth range and parent/child-link construction;
+- reverse-depth parallel aggregates;
+- a 65,536-body phase cap;
+- zero host tree rebuilds and zero per-step particle readbacks;
+- bounded BH #2A/B2B2/B2C oracle execution;
+- fail-closed `--require-hardware` benchmark receipts.
+
+BH #2D correctness is exercised through software Vulkan in CI, but **software-Vulkan timings are not hardware performance evidence**. A hardware speed claim requires a non-software adapter receipt.
 
 `--allow-software` enables verification through software Vulkan and must not be interpreted as hardware GPU performance evidence.
 
@@ -372,6 +391,8 @@ BH #2B1 GPU transfer ABI + executable force traversal
 BH #2B2 persistent GPU leapfrog with host tree rebuild
    |
 BH #2C  GPU-built flat tree + device-only evolution rebuild loop
+   |
+BH #2D  parallel GPU bounds/radix/topology/aggregate construction
 ```
 
 GALAXY still does **not** implement:
@@ -403,7 +424,7 @@ native CPU runtime         -> Linux / macOS / Windows correctness and receipts
 native GPU / u64           -> Vulkan/CUDA host contracts and tiled-runtime checks
 Barnes–Hut GPU traversal   -> packed ABI + WGSL execution against flat/direct CPU oracles
 Barnes–Hut GPU evolution   -> persistent GPU state + multi-step leapfrog
-Barnes–Hut GPU tree build  -> device-only rebuild loop checked against BH #2A/B2B2 oracles
+Barnes–Hut GPU tree build  -> BH #2C serialized + BH #2D parallel rebuild paths checked against BH #2A/B2B2
 ```
 
 Useful local checks include:
@@ -435,6 +456,10 @@ cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- 
 
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -- \
   --particles 128 --steps 3 --dt-myr 0.01 --allow-software
+
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree-parallel -- \
+  --particles 512 --steps 3 --dt-myr 0.01 --allow-software \
+  --benchmark-warmup 0 --benchmark-repeats 2
 
 # Native CPU
 sh scripts/test-cpu-runtime.sh
@@ -483,19 +508,21 @@ PR #21  BH #2B2 persistent multi-step GPU evolution
 PR #22  BH #2C  GPU tree construction
 ```
 
-The next experimental rung is **BH #2D — parallel GPU tree construction**.
+The active experimental rung is **BH #2D — parallel GPU tree construction and hardware validation**.
 
-BH #2C proves that bounds, Morton generation, deterministic spatial ordering, flat topology, bottom-up aggregates, traversal, and multi-step integration can remain on the device without per-step host particle readback or CPU tree reconstruction.
+BH #2C proved that bounds, Morton generation, deterministic spatial ordering, flat topology, bottom-up aggregates, traversal, and multi-step integration can remain on the device without per-step host particle readback or CPU tree reconstruction.
 
-BH #2D can now optimize that verified device-owned boundary:
+BH #2D replaces the serialized construction bottlenecks with:
 
 ```text
-parallel bounds reduction
-  -> scalable radix / Morton ordering
-  -> parallel range and topology construction
-  -> parallel cell aggregates
-  -> real hardware GPU measurements
+workgroup-parallel bounds reduction
+  -> stable 4-bit LSD radix / Morton ordering
+  -> parallel sparse level-order topology
+  -> reverse-depth parallel cell aggregates
+  -> frozen GPU traversal
 ```
+
+The BH #2D parallel representation supports up to 65,536 resident bodies in this phase. Software-Vulkan CI validates correctness and reproducibility; it does not establish hardware acceleration. Hardware timing is accepted only from a non-software adapter receipt produced with `--require-hardware`.
 
 The frozen correctness oracles remain:
 
@@ -504,7 +531,7 @@ The frozen correctness oracles remain:
 - BH #2B2 host-built GPU evolution;
 - BH #2C correctness-first GPU-built tree.
 
-Performance promotion should occur only after the parallel alternatives reproduce the established force, trajectory, deterministic-ordering, and receipt evidence.
+The next promotion decision occurs only after real-hardware BH #2D receipts reproduce the established force, trajectory, deterministic-ordering, and receipt evidence.
 
 The historical native-CPU investigation areas were:
 
