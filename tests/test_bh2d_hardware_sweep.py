@@ -104,6 +104,7 @@ def receipt_for(
         "theta": theta,
         "softening_kpc": softening_kpc,
         "gpu": {
+            "index": 0,
             "name": "Synthetic GPU",
             "backend": "Vulkan",
             "device_type": "DiscreteGpu",
@@ -160,6 +161,7 @@ def validation_kwargs(particles: int, **overrides):
         "oracle_limit": 4096,
         "benchmark_warmup": 2,
         "benchmark_repeats": 7,
+        "adapter_selector": None,
     }
     values.update(overrides)
     return values
@@ -395,6 +397,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
 
     def test_build_environment_overrides_are_rejected(self):
         for name in (
+            "LD_AUDIT",
             "RUSTFLAGS",
             "CARGO_BUILD_RUSTFLAGS",
             "RUSTC",
@@ -553,6 +556,8 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         self.assertEqual(env["PATH"], "/usr/bin:/bin")
         self.assertEqual(env["RUSTC"], "/selected/bin/rustc")
         self.assertNotIn("GIT_WORK_TREE", env)
+        self.assertNotIn("LD_AUDIT", env)
+        self.assertNotIn("LD_PRELOAD", env)
 
     def test_git_invocation_binds_checkout_and_clears_selectors(self):
         with mock.patch.dict(os.environ, {"GIT_WORK_TREE": "/other", "GIT_DIR": "/other/.git",
@@ -703,6 +708,36 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("at least 4", result.stderr)
 
+    def test_dry_run_does_not_execute_cargo(self):
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "executed"
+            fake_cargo = root / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + repr(str(marker)) + "\n"
+            )
+            fake_cargo.chmod(0o755)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(MODULE_PATH),
+                    "--output",
+                    str(root / "plan"),
+                    "--particles",
+                    "512",
+                    "--cargo",
+                    str(fake_cargo),
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(marker.exists())
+            self.assertTrue(result.stdout.startswith(str(fake_cargo)))
+
     def test_dry_run_normalizes_output_and_cargo_paths(self):
         import sys
         result = subprocess.run(
@@ -775,6 +810,20 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt["tree_build_benchmark"]["repeats"] = 6
         with self.assertRaisesRegex(sweep.SweepError, "repeat count"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_adapter_index_is_bound_into_identity_and_numeric_selector(self):
+        receipt0 = receipt_for(512)
+        receipt1 = receipt_for(512)
+        receipt1["gpu"]["index"] = 1
+        summary0 = sweep.validate_receipt(receipt0, **validation_kwargs(512))
+        summary1 = sweep.validate_receipt(receipt1, **validation_kwargs(512))
+        self.assertNotEqual(summary0["adapter_identity"], summary1["adapter_identity"])
+
+        with self.assertRaisesRegex(sweep.SweepError, "numeric adapter selector"):
+            sweep.validate_receipt(
+                receipt1,
+                **validation_kwargs(512, adapter_selector="0"),
+            )
 
     def test_adapter_identity_is_mandatory_and_hardware_bound(self):
         for gpu in (
@@ -882,6 +931,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         with self.assertRaisesRegex(sweep.SweepError, "fan-out"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 17
+        receipt["tree"]["leaf_count"] = 12
+        receipt["tree"]["max_depth"] = 16
+        with self.assertRaisesRegex(sweep.SweepError, "internal cells"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
     def test_force_rms_cannot_exceed_reported_maximum(self):
         receipt = receipt_for(512)
         receipt["final_force"]["direct_probe_rms_relative"] = 0.03
@@ -901,6 +957,27 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 receipt["gpu_oracles"][key]["force_rms_relative"] = 0.03
                 receipt["gpu_oracles"][key]["force_max_relative"] = 0.001
                 with self.assertRaisesRegex(sweep.SweepError, "force RMS cannot exceed force maximum"):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_force_maximum_has_lower_rms_bound(self):
+        receipt = receipt_for(512)
+        receipt["final_force"]["direct_probe_rms_relative"] = 0.0
+        receipt["final_force"]["direct_probe_max_relative"] = 0.29
+        with self.assertRaisesRegex(sweep.SweepError, "probe count"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["final_force"]["gpu_vs_bh2a_flat_rms_relative"] = 0.0
+        receipt["final_force"]["gpu_vs_bh2a_flat_max_relative"] = 0.29
+        with self.assertRaisesRegex(sweep.SweepError, "particle count"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        for key in ("bh2c_serial_gpu", "bh2b2_host_tree_gpu"):
+            with self.subTest(key=key):
+                receipt = receipt_for(512)
+                receipt["gpu_oracles"][key]["force_rms_relative"] = 0.0
+                receipt["gpu_oracles"][key]["force_max_relative"] = 0.29
+                with self.assertRaisesRegex(sweep.SweepError, "sample count"):
                     sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_executed_oracle_payloads_are_required(self):
