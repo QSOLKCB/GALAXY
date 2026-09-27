@@ -12,7 +12,7 @@ struct BhSettings {
 
 struct BhBody {
     position_mass: vec4<f32>, // x, y, mass, reserved
-    meta: vec4<u32>,          // Morton entry position, reserved...
+    index_data: vec4<u32>,    // Morton entry position, reserved...
 }
 
 struct BhEntry {
@@ -49,7 +49,7 @@ fn bh_traverse(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let target_body = bodies[target_index];
     let target = target_body.position_mass.xy;
-    let target_position = target_body.meta.x;
+    let target_position = target_body.index_data.x;
     var total = vec2<f32>(0.0, 0.0);
 
     // A quadtree DFS has at most 1 + 3*depth pending nodes. BH #2A caps
