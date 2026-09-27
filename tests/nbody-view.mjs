@@ -14,7 +14,7 @@ class Element {
   setPointerCapture() {}
 }
 function boot(reduced = false) {
-  const elements = new Map(); let scheduled, bodies, latest, steps = 0, draws = 0;
+  const elements = new Map(); let scheduled, bodies, latest, steps = 0, draws = 0, currentNow = 0;
   for (const m of read('index.html').matchAll(/<(\w+)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const el = new Element(m[1]); el.value = m[0].match(/value="([^"]*)"/)?.[1] || '';
     el.checked = m[0].includes(' checked'); elements.set(m[2], el);
@@ -24,7 +24,7 @@ function boot(reduced = false) {
   const doc = new Element(); doc.hidden = false; doc.getElementById = id => elements.get(id);
   doc.createElement = () => ({getContext:()=>paint});
   const motion = new Element(); motion.matches = reduced;
-  const ctx = vm.createContext({document:doc, performance:{now:()=>0}, matchMedia:()=>motion,
+  const ctx = vm.createContext({document:doc, performance:{now:()=>currentNow}, matchMedia:()=>motion,
     requestAnimationFrame(fn){scheduled=fn;}, devicePixelRatio:1, addEventListener(){}, console});
   vm.runInContext(read('barnes-hut.js'),ctx);
   const solver = ctx.GalaxyBarnesHut;
@@ -32,7 +32,7 @@ function boot(reduced = false) {
     stepLeapfrog(b,dt,o){steps++; bodies=b;latest=solver.stepLeapfrog(b,dt,o);return latest;} };
   vm.runInContext(read('nbody-clock.js'),ctx);
   vm.runInContext(read('nbody-viz.js'),ctx);
-  return {elements, doc, motion, frame:now=>scheduled(now), steps:()=>steps, draws:()=>draws,
+  return {elements, doc, motion, frame(now){currentNow=now;scheduled(now);}, steps:()=>steps, draws:()=>draws,
     bodies:()=>JSON.parse(JSON.stringify(bodies)), latest:()=>latest, click:id=>elements.get(id).emit('click'),
     set(id,value,event='input'){elements.get(id).value=String(value);elements.get(id).emit(event);} };
 }
@@ -66,8 +66,10 @@ a.click('audit');assert.match(a.elements.get('auditStatus').textContent,/Direct 
 a.frame(3000); assert.notEqual(a.elements.get('errorReadout').textContent,'—');
 a.click('playToggle');a.frame(4000);a.frame(4020);
 assert.equal(a.elements.get('errorReadout').textContent,'—','advancing invalidates audit');
-a.doc.hidden=true; const hidden=a.steps();a.frame(100000); assert.equal(a.steps(),hidden);
-a.doc.hidden=false;a.frame(200000);assert.equal(a.steps(),hidden,'hidden tab does not catch up');
+a.doc.hidden=true; a.doc.emit('visibilitychange'); const hidden=a.steps();a.frame(100000); assert.equal(a.steps(),hidden);
+a.doc.hidden=false; a.doc.emit('visibilitychange');a.frame(100000);
+assert.notEqual(a.elements.get('fpsReadout').textContent,'0 FPS','visibility resume must not include hidden time in FPS');
+a.frame(200000);assert.equal(a.steps(),hidden,'hidden tab does not catch up');
 a.frame(200017);assert.equal(a.steps(),hidden+1);
 a.motion.emit('change',{matches:true});assert.equal(a.elements.get('runBadge').textContent,'PAUSED');
 assert.equal(a.elements.get('trails').checked,false);
