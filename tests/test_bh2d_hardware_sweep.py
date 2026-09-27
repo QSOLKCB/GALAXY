@@ -489,6 +489,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             toolchain = {
                 "cargo": {"executable": "/selected/cargo"},
                 "rustc": {"executable": "/selected/rustc"},
+                "build_path": "/usr/bin:/bin",
             }
             with mock.patch.object(sweep.subprocess, "run", return_value=completed):
                 first = sweep.dependency_source_context(repo, toolchain)
@@ -547,6 +548,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             toolchain = {
                 "cargo": {"executable": "/selected/cargo"},
                 "rustc": {"executable": "/selected/rustc"},
+                "build_path": "/usr/bin:/bin",
             }
             with mock.patch.object(sweep.subprocess, "run", return_value=completed):
                 context = sweep.dependency_source_context(repo, toolchain)
@@ -673,8 +675,8 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         ):
             windows = sweep.trusted_system_path("Windows")
         self.assertIn(";", windows)
-        self.assertIn(r"C:\\Windows\\System32", windows)
-        self.assertIn(r"C:\\Program Files\\Git\\cmd", windows)
+        self.assertIn(r"C:\Windows\System32", windows)
+        self.assertIn(r"C:\Program Files\Git\cmd", windows)
 
         darwin = sweep.trusted_system_path("Darwin")
         self.assertIn("/usr/bin", darwin)
