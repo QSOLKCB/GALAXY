@@ -408,7 +408,12 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             "VK_ADD_DRIVER_FILES",
             "VK_ICD_FILENAMES",
             "VK_LAYER_PATH",
+            "VK_ADD_LAYER_PATH",
             "VK_INSTANCE_LAYERS",
+            "VK_LOADER_LAYERS_ENABLE",
+            "VK_LOADER_LAYERS_DISABLE",
+            "VK_LOADER_DRIVERS_SELECT",
+            "VK_LOADER_DRIVERS_DISABLE",
             "RUSTFLAGS",
             "CARGO_BUILD_RUSTFLAGS",
             "RUSTC",
@@ -573,7 +578,12 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 "VK_ADD_DRIVER_FILES": "/tmp/additional-icd.json",
                 "VK_ICD_FILENAMES": "/tmp/legacy-icd.json",
                 "VK_LAYER_PATH": "/tmp/layers",
+                "VK_ADD_LAYER_PATH": "/tmp/additional-layers",
                 "VK_INSTANCE_LAYERS": "VK_LAYER_SYNTHETIC",
+                "VK_LOADER_LAYERS_ENABLE": "VK_LAYER_SYNTHETIC",
+                "VK_LOADER_LAYERS_DISABLE": "~implicit~",
+                "VK_LOADER_DRIVERS_SELECT": "*synthetic*",
+                "VK_LOADER_DRIVERS_DISABLE": "*other*",
             },
         ):
             env = sweep.build_environment({"rustc": {"executable": "/selected/bin/rustc"}})
@@ -587,7 +597,12 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             "VK_ADD_DRIVER_FILES",
             "VK_ICD_FILENAMES",
             "VK_LAYER_PATH",
+            "VK_ADD_LAYER_PATH",
             "VK_INSTANCE_LAYERS",
+            "VK_LOADER_LAYERS_ENABLE",
+            "VK_LOADER_LAYERS_DISABLE",
+            "VK_LOADER_DRIVERS_SELECT",
+            "VK_LOADER_DRIVERS_DISABLE",
         ):
             self.assertNotIn(name, env)
 
@@ -685,8 +700,17 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                  mock.patch.object(sweep.platform, "platform", return_value="fixture"), \
                  mock.patch.object(sweep.subprocess, "run", return_value=                     subprocess.CompletedProcess([], 1, b"driver: \xff\n")):
                 self.assertEqual(sweep.main(), 1)
-            self.assertEqual((output / "n000512/run.log").read_bytes(), b"driver: \xff\n")
-            self.assertEqual(json.loads((output / "manifest.json").read_text())["status"], "failed")
+            log_path = output / "n000512/run.log"
+            self.assertEqual(log_path.read_bytes(), b"driver: \xff\n")
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(manifest["status"], "failed")
+            self.assertEqual(len(manifest["runs"]), 1)
+            failed = manifest["runs"][0]
+            self.assertEqual(failed["particles"], 512)
+            self.assertEqual(failed["status"], "failed")
+            self.assertEqual(failed["exit_code"], 1)
+            self.assertEqual(failed["log"], "n000512/run.log")
+            self.assertEqual(failed["log_sha256"], sweep.sha256_file(log_path))
 
     def test_receipt_rejects_nonstandard_json_constants(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -900,6 +924,21 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 receipt = receipt_for(512)
                 receipt["gpu"] = gpu
                 with self.assertRaises(sweep.SweepError):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_producer_software_adapter_classification_is_enforced(self):
+        receipt = receipt_for(512)
+        receipt["gpu"]["device_type"] = "Cpu"
+        receipt["gpu"]["software"] = False
+        with self.assertRaisesRegex(sweep.SweepError, "software-adapter classification"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        for name in ("llvmpipe", "lavapipe GPU", "SwiftShader Device", "Software Rasterizer"):
+            with self.subTest(name=name):
+                receipt = receipt_for(512)
+                receipt["gpu"]["name"] = name
+                receipt["gpu"]["software"] = False
+                with self.assertRaisesRegex(sweep.SweepError, "software-adapter classification"):
                     sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_software_receipt_is_rejected(self):
