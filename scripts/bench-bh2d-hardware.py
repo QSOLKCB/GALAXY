@@ -40,6 +40,7 @@ BENCHMARK_SAMPLE_SCOPE = (
 )
 WORKGROUP_SIZE = 128
 TREE_LEVELS = 17
+TREE_BUCKET_SIZE = 4
 GPU_BODY_BYTES = 32
 GPU_ENTRY_BYTES = 16
 GPU_CELL_BYTES = 64
@@ -250,6 +251,94 @@ def build_environment(context: dict[str, Any]) -> dict[str, str]:
     return env
 
 
+def dependency_source_context(
+    repo_root: Path,
+    toolchain: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Bind the exact non-repository dependency trees Cargo will compile."""
+    command = [
+        toolchain["cargo"]["executable"],
+        "metadata",
+        "--manifest-path",
+        "runtime/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--format-version",
+        "1",
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=repo_root,
+        env=build_environment(toolchain),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        raise SweepError(f"could not resolve locked offline Cargo dependency sources: {detail}")
+    try:
+        metadata = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SweepError("Cargo metadata is not valid UTF-8 JSON") from exc
+
+    root = repo_root.resolve()
+    packages = require_list(
+        require_object(metadata, "Cargo metadata").get("packages"),
+        "Cargo metadata packages",
+    )
+    result: list[dict[str, Any]] = []
+    for index, value in enumerate(packages):
+        package = require_object(value, f"Cargo metadata packages[{index}]")
+        manifest = Path(
+            require_string(
+                package.get("manifest_path"),
+                f"Cargo metadata packages[{index}].manifest_path",
+                nonempty=True,
+            )
+        ).resolve()
+        package_root = manifest.parent
+        if is_within(package_root, root):
+            continue
+        require(
+            package_root.is_dir(),
+            f"Cargo dependency source directory is missing: {package_root}",
+        )
+        source = package.get("source")
+        require(
+            source is None or isinstance(source, str),
+            f"Cargo metadata packages[{index}].source must be a string or null",
+        )
+        result.append(
+            {
+                "name": require_string(
+                    package.get("name"),
+                    f"Cargo metadata packages[{index}].name",
+                    nonempty=True,
+                ),
+                "version": require_string(
+                    package.get("version"),
+                    f"Cargo metadata packages[{index}].version",
+                    nonempty=True,
+                ),
+                "source": source,
+                "path": path_label(package_root, repo_root),
+                "tree_sha256": sha256_directory(package_root),
+            }
+        )
+    result.sort(
+        key=lambda item: (
+            item["name"],
+            item["version"],
+            item["source"] or "",
+            item["path"],
+        )
+    )
+    return result
+
+
 def reject_cargo_config_redirects(document: Any, path: Path) -> None:
     root = require_object(document, f"Cargo config {path}")
 
@@ -399,6 +488,7 @@ def require_source_provenance(
     allowed_untracked_root: Path | None = None,
     expected_cargo_context: list[dict[str, str]] | None = None,
     expected_toolchain_context: dict[str, Any] | None = None,
+    expected_dependency_source_context: list[dict[str, Any]] | None = None,
     cargo_command: str = "cargo",
 ) -> None:
     current = git_revision(repo_root)
@@ -416,6 +506,17 @@ def require_source_provenance(
         and current_toolchain_context != expected_toolchain_context
     ):
         raise SweepError("Cargo/Rust toolchain changed during hardware evidence capture")
+    current_dependency_source_context = dependency_source_context(
+        repo_root,
+        current_toolchain_context,
+    )
+    if (
+        expected_dependency_source_context is not None
+        and current_dependency_source_context != expected_dependency_source_context
+    ):
+        raise SweepError(
+            "Cargo dependency source cache changed during hardware evidence capture"
+        )
 
 
 def load_receipt(path: Path) -> Any:
@@ -428,6 +529,25 @@ def load_receipt(path: Path) -> Any:
         return json.loads(text)
     except ValueError as exc:
         raise SweepError(f"receipt is not valid JSON: {path}") from exc
+
+
+def sha256_directory(path: Path) -> str:
+    digest = hashlib.sha256()
+    root = path.resolve()
+    entries = sorted(root.rglob("*"), key=lambda entry: entry.relative_to(root).as_posix())
+    for entry in entries:
+        relative = entry.relative_to(root)
+        if entry.is_symlink():
+            raise SweepError(f"Cargo dependency source contains unsupported symlink: {entry}")
+        if entry.is_dir():
+            continue
+        require(entry.is_file(), f"Cargo dependency source contains non-file entry: {entry}")
+        relative_bytes = os.fsencode(str(relative))
+        file_digest = bytes.fromhex(sha256_file(entry))
+        digest.update(len(relative_bytes).to_bytes(8, "big"))
+        digest.update(relative_bytes)
+        digest.update(file_digest)
+    return digest.hexdigest()
 
 
 def sha256_file(path: Path) -> str:
@@ -703,6 +823,15 @@ def validate_receipt(
         max_depth <= TREE_LEVELS - 1,
         "receipt.tree.max_depth exceeds the frozen Morton depth",
     )
+    if particles > TREE_BUCKET_SIZE:
+        require(
+            active_cell_count > leaf_count,
+            "receipt.tree must contain an internal cell when particles exceed the frozen bucket size",
+        )
+        require(
+            max_depth > 0,
+            "receipt.tree.max_depth must be positive when particles exceed the frozen bucket size",
+        )
 
     force = require_object(root.get("final_force"), "receipt.final_force")
     expected_probe_count = min(direct_probes, particles)
@@ -979,6 +1108,11 @@ def main() -> int:
     manifest: dict[str, Any] | None = None
     try:
         particles_list = parse_particles(args.particles)
+        if args.preset == "collision":
+            require(
+                particles_list[0] >= 4,
+                "collision preset requires every particle count to be at least 4",
+            )
         require(1 <= args.steps <= 256, "--steps must be in 1..=256")
         require(2 <= args.oracle_limit <= BH2C_CAP, "--oracle-limit must be in 2..=4096")
         require(1 <= args.benchmark_repeats <= 31, "--benchmark-repeats must be in 1..=31")
@@ -1009,11 +1143,16 @@ def main() -> int:
         require_clean_source_tree(repo_root)
         build_cargo_context = cargo_config_context(repo_root)
         build_toolchain_context = toolchain_context(args.cargo, repo_root)
+        build_dependency_source_context = dependency_source_context(
+            repo_root,
+            build_toolchain_context,
+        )
         require_source_provenance(
             repo_root,
             revision,
             expected_cargo_context=build_cargo_context,
             expected_toolchain_context=build_toolchain_context,
+            expected_dependency_source_context=build_dependency_source_context,
             cargo_command=args.cargo,
         )
 
@@ -1030,6 +1169,7 @@ def main() -> int:
             "build_context": {
                 "cargo_configuration": build_cargo_context,
                 "toolchain": build_toolchain_context,
+                "dependency_sources": build_dependency_source_context,
                 "environment_overrides": [],
             },
             "host": {
@@ -1063,6 +1203,7 @@ def main() -> int:
                 output,
                 expected_cargo_context=build_cargo_context,
                 expected_toolchain_context=build_toolchain_context,
+                expected_dependency_source_context=build_dependency_source_context,
                 cargo_command=args.cargo,
             )
 
@@ -1095,6 +1236,7 @@ def main() -> int:
                 output,
                 expected_cargo_context=build_cargo_context,
                 expected_toolchain_context=build_toolchain_context,
+                expected_dependency_source_context=build_dependency_source_context,
                 cargo_command=args.cargo,
             )
             if completed.returncode != 0:
@@ -1144,6 +1286,7 @@ def main() -> int:
             output,
             expected_cargo_context=build_cargo_context,
             expected_toolchain_context=build_toolchain_context,
+            expected_dependency_source_context=build_dependency_source_context,
             cargo_command=args.cargo,
         )
         manifest["status"] = "complete"
