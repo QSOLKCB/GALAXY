@@ -49,6 +49,7 @@ impl FlatCell {
 #[derive(Debug)]
 pub struct FlatTree {
     pub entries: Vec<MortonEntry>,
+    pub entry_position_by_body: Vec<u32>,
     pub cells: Vec<FlatCell>,
     pub root: u32,
     pub stats: TreeStats,
@@ -133,6 +134,7 @@ fn build_topology(
     half: f64,
     depth: usize,
     bucket: usize,
+    max_depth: usize,
     stats: &mut TreeStats,
 ) -> u32 {
     let cell_index = cells.len() as u32;
@@ -140,7 +142,7 @@ fn build_topology(
     stats.node_count += 1;
     stats.max_depth = stats.max_depth.max(depth);
 
-    if end - start <= bucket || depth >= MORTON_TREE_DEPTH {
+    if end - start <= bucket || depth >= max_depth {
         stats.leaf_count += 1;
         return cell_index;
     }
@@ -165,6 +167,7 @@ fn build_topology(
             child_half,
             depth + 1,
             bucket,
+            max_depth,
             stats,
         );
         cells[cell_index as usize].children[quadrant] = child;
@@ -230,6 +233,12 @@ pub fn build_flat_tree(bodies: &[Body], config: Config) -> Result<FlatTree, Stri
     // sort_by_key is stable: equal Morton keys retain BH #1 resident order.
     entries.sort_by_key(|entry| entry.code);
 
+    let mut entry_position_by_body = vec![0_u32; bodies.len()];
+    for (position, entry) in entries.iter().enumerate() {
+        entry_position_by_body[entry.body_index as usize] = position as u32;
+    }
+
+    let max_depth = config.max_depth.min(MORTON_TREE_DEPTH);
     let mut cells = Vec::new();
     let mut stats = TreeStats::default();
     let root = build_topology(
@@ -242,26 +251,20 @@ pub fn build_flat_tree(bodies: &[Body], config: Config) -> Result<FlatTree, Stri
         half,
         0,
         config.bucket,
+        max_depth,
         &mut stats,
     );
     fill_aggregates(bodies, &entries, &mut cells);
 
     Ok(FlatTree {
         entries,
+        entry_position_by_body,
         cells,
         root,
         stats,
         body_count: bodies.len(),
         morton_axis_bits: MORTON_AXIS_BITS,
     })
-}
-
-#[inline]
-fn contains(cell: &FlatCell, body: Body) -> bool {
-    body.x >= cell.cx - cell.half
-        && body.x <= cell.cx + cell.half
-        && body.y >= cell.cy - cell.half
-        && body.y <= cell.cy + cell.half
 }
 
 pub fn flat_acceleration_for(
@@ -274,11 +277,15 @@ pub fn flat_acceleration_for(
     if target_index >= bodies.len() {
         return Err("body index is out of range".into());
     }
-    if tree.body_count != bodies.len() || tree.entries.len() != bodies.len() {
+    if tree.body_count != bodies.len()
+        || tree.entries.len() != bodies.len()
+        || tree.entry_position_by_body.len() != bodies.len()
+    {
         return Err("flat tree body count does not match resident bodies".into());
     }
 
     let target = bodies[target_index];
+    let target_position = tree.entry_position_by_body[target_index];
     let mut acceleration = Accel::default();
     let mut stack = Vec::with_capacity(tree.stats.max_depth.saturating_mul(3) + 8);
     stack.push(tree.root);
@@ -311,7 +318,9 @@ pub fn flat_acceleration_for(
         let dy = cell.com_y - target.y;
         let distance = dx.hypot(dy);
         let width = cell.half * 2.0;
-        if !contains(cell, target) && distance > 0.0 && width / distance < config.theta {
+        let contains_target =
+            target_position >= cell.start && target_position < cell.end;
+        if !contains_target && distance > 0.0 && width / distance < config.theta {
             add_point_mass(
                 &mut acceleration,
                 target,
@@ -448,6 +457,30 @@ mod tests {
     }
 
     #[test]
+    fn configured_max_depth_is_honored_below_morton_cap() {
+        let body = Body {
+            x: 0.0,
+            y: 0.0,
+            vx: 0.0,
+            vy: 0.0,
+            mass: 1.0,
+        };
+        let bodies = vec![body; 8];
+        let tree = build_flat_tree(
+            &bodies,
+            Config {
+                bucket: 1,
+                max_depth: 1,
+                softening_kpc: 0.1,
+                ..Config::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(tree.stats.max_depth, 1);
+        assert!(tree.cells.iter().all(|cell| cell.depth <= 1));
+    }
+
+    #[test]
     fn stable_equal_morton_keys_preserve_resident_order() {
         let body = Body {
             x: 0.0,
@@ -501,6 +534,33 @@ mod tests {
             .map(|(a, b)| relative(a, b))
             .fold(0.0_f64, f64::max);
         assert!(worst < 2e-12, "worst flat theta=0 mismatch {worst}");
+    }
+
+    #[test]
+    fn target_membership_uses_morton_range_not_geometric_rounding() {
+        let bodies = vec![
+            Body { x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, mass: 1.0 },
+            Body { x: f64::EPSILON, y: 0.0, vx: 0.0, vy: 0.0, mass: 2.0 },
+            Body { x: 1.0, y: 1.0, vx: 0.0, vy: 0.0, mass: 3.0 },
+            Body { x: -1.0, y: -1.0, vx: 0.0, vy: 0.0, mass: 4.0 },
+        ];
+        let config = Config {
+            theta: 2.0,
+            bucket: 1,
+            max_depth: 16,
+            softening_kpc: 0.01,
+            ..Config::default()
+        };
+        let flat = flat_barnes_hut_accelerations(&bodies, config).unwrap();
+        let direct = direct_accelerations(&bodies, config).unwrap();
+        let worst = flat
+            .accelerations
+            .iter()
+            .copied()
+            .zip(direct)
+            .map(|(a, b)| relative(a, b))
+            .fold(0.0_f64, f64::max);
+        assert!(worst < 0.5, "boundary self-mass contamination detected: {worst}");
     }
 
     #[test]
