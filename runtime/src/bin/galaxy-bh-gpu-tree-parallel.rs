@@ -155,14 +155,30 @@ fn checksum_word(hash: &mut u64, word: u64) {
 
 fn parallel_tree_checksum(evidence: &ParallelGpuTreeEvidence) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for entry in &evidence.entries {
-        checksum_word(&mut hash, entry.data[0] as u64);
-        checksum_word(&mut hash, entry.data[1] as u64);
+
+    for value in evidence.meta.data {
+        checksum_word(&mut hash, value as u64);
     }
+    for value in evidence.meta.bounds {
+        checksum_word(&mut hash, value.to_bits() as u64);
+    }
+
+    for entry in &evidence.entries {
+        for value in entry.data {
+            checksum_word(&mut hash, value as u64);
+        }
+    }
+
     for cell in &evidence.cells {
-        checksum_word(&mut hash, cell.range_depth[0] as u64);
-        checksum_word(&mut hash, cell.range_depth[1] as u64);
-        checksum_word(&mut hash, cell.range_depth[2] as u64);
+        for value in cell.center_half_mass {
+            checksum_word(&mut hash, value.to_bits() as u64);
+        }
+        for value in cell.com {
+            checksum_word(&mut hash, value.to_bits() as u64);
+        }
+        for value in cell.range_depth {
+            checksum_word(&mut hash, value as u64);
+        }
         for child in cell.children {
             checksum_word(&mut hash, child as u64);
         }
@@ -464,7 +480,9 @@ fn run() -> Result<()> {
     }
     let mut parallel_samples = Vec::with_capacity(args.benchmark_repeats);
     for _ in 0..args.benchmark_repeats {
-        parallel_samples.push(runtime.rebuild(&gpu, &evolving, &tree, config)?.total_seconds());
+        let started = Instant::now();
+        let _stage_diagnostics = runtime.rebuild(&gpu, &evolving, &tree, config)?;
+        parallel_samples.push(started.elapsed().as_secs_f64());
     }
     let parallel_median = median(parallel_samples.clone());
 
@@ -475,10 +493,10 @@ fn run() -> Result<()> {
         }
         let mut serial_samples = Vec::with_capacity(args.benchmark_repeats);
         for _ in 0..args.benchmark_repeats {
-            serial_samples.push(
-                gpu.rebuild_gpu_tree(&evolving, &serial_tree, config)?
-                    .total_seconds(),
-            );
+            let started = Instant::now();
+            let _stage_diagnostics =
+                gpu.rebuild_gpu_tree(&evolving, &serial_tree, config)?;
+            serial_samples.push(started.elapsed().as_secs_f64());
         }
         let serial_median = median(serial_samples.clone());
         json!({
@@ -545,6 +563,8 @@ fn run() -> Result<()> {
         },
         "gpu_oracles": oracle_evidence,
         "tree_build_benchmark": {
+            "sample_scope": "complete rebuild call including host-side uniform/bind-group setup, command encoding, submit and synchronization",
+            "stage_timings_are_diagnostics": true,
             "warmup": args.benchmark_warmup,
             "repeats": args.benchmark_repeats,
             "parallel_samples_seconds": parallel_samples,
