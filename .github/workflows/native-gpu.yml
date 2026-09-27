@@ -147,7 +147,9 @@ jobs:
           assert force["gpu_vs_bh2a_flat_max_relative"] < 0.30
           assert force["direct_probe_rms_relative"] < 0.04
           assert force["direct_probe_max_relative"] < 0.30
-          state = receipt["trajectory_vs_bh2a_flat_f64"]
+          trajectory = receipt["trajectory_vs_bh2a_flat_f64"]
+          assert trajectory["status"] == "executed"
+          state = trajectory["state_error"]
           assert state["position_rms_relative_l2"] < 0.03
           assert state["position_max_relative"] < 0.30
           assert state["velocity_rms_relative_l2"] < 0.03
