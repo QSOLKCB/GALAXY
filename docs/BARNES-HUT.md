@@ -307,7 +307,7 @@ Counts through 4,096 retain repeat-matched BH #2C timing. Larger points explicit
 Example on a real GPU:
 
 ```bash
-python3 -I scripts/bench-bh2d-hardware.py \
+sh scripts/bench-bh2d-hardware-launch.sh \
   --output runs/bh2d-hardware-sweep \
   --adapter 0
 ```
@@ -320,6 +320,6 @@ After real-hardware BH #2D receipts exist, BH #2E can evaluate scaling, memory/c
 
 ### Hardware harness launch and toolchain boundary
 
-Launch with `python3 -I scripts/bench-bh2d-hardware.py ...`. Non-isolated direct invocation is rejected before optional imports. This prevents repository/PYTHONPATH modules from entering the standalone harness import path. Imported use by the unit-test runner is for host validation only.
+Launch real evidence capture through the clean launcher: `sh scripts/bench-bh2d-hardware-launch.sh ...` on POSIX or `scripts\\bench-bh2d-hardware-launch.cmd ...` on native Windows. The launcher starts isolated Python under a newly constructed environment so inherited loader-injection variables are not resident in the evidence process. Direct Python execution is rejected. Imported use by the unit-test runner is for host validation only.
 
-The hardware capture harness currently uses a POSIX system build PATH (`/usr/bin:/bin`). It records selected Cargo/rustc binaries separately from rustup proxies, executes the selected Cargo binary with an explicit recorded `RUSTC`, and fingerprints available system compiler/linker tools. The OS, installed system libraries and toolchain are trusted host prerequisites; this is provenance checking, not a sandbox against a hostile host. Git checks clear ambient `GIT_*` selectors and bind the checkout explicitly, including linked worktrees. Relative `CARGO_HOME` is interpreted from Cargo's repository working directory. Logs preserve raw bytes, receipt parser failures enter the failed-manifest path, and workload values are validated before any output is created. Manifests serialize strict JSON.
+The harness now selects and records a platform-specific tool boundary. Linux uses the system compiler/linker/Git path, macOS uses the native system paths plus standard Homebrew locations, and Windows records Git plus any active MSVC/LLVM linker tools before narrowing the build PATH to those resolved tool directories. Cargo and rustc are recorded separately from rustup proxies and invoked through their resolved binaries. The OS, installed system libraries and toolchain are trusted host prerequisites; this is provenance checking, not a sandbox against a hostile host. Git checks clear ambient `GIT_*` selectors and bind the checkout explicitly, including linked worktrees. Relative `CARGO_HOME` is interpreted from Cargo's repository working directory. Logs preserve raw bytes, receipt parser failures enter the failed-manifest path, and workload values are validated before any output is created. Manifests serialize strict JSON.
