@@ -134,6 +134,8 @@ def receipt_for(
         "evolution_tree_builds": steps + 1,
         "parallel_tree_buffer_bytes": sweep.expected_parallel_tree_buffer_bytes(particles),
         "tree": {
+            "ordering": sweep.TREE_ORDERING,
+            "layout": sweep.TREE_LAYOUT,
             "initial_checksum_fnv_mix64": "1111111111111111",
             "final_checksum_fnv_mix64": "2222222222222222",
             "repeat_checksum_fnv_mix64": "2222222222222222",
@@ -1257,6 +1259,17 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 receipt = receipt_for(512)
                 receipt[field] = 4.0
                 with self.assertRaisesRegex(sweep.SweepError, field):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_tree_representation_declarations_are_frozen(self):
+        for field, value, message in (
+            ("ordering", "not-stable-or-morton", "stable Morton ordering"),
+            ("layout", "arbitrary-layout", "sparse level-order layout"),
+        ):
+            with self.subTest(field=field):
+                receipt = receipt_for(512)
+                receipt["tree"][field] = value
+                with self.assertRaisesRegex(sweep.SweepError, message):
                     sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_repeat_tree_mismatch_is_rejected(self):
