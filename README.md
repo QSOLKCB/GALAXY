@@ -69,7 +69,7 @@ Choose a binary encounter, rotating disc or cold collapse. Pause, single-step, c
 
 The original prescribed-field instrument, including its Rust/WebAssembly sampling, UFF controls and exports, is preserved at **`rotation-lab.html`**. The detailed tree laboratory remains at **`barnes-hut.html`**. The following logical-population and sampling controls describe the rotation-law instrument.
 
-The separate **`barnes-hut.html`** entrypoint is an opt-in resident self-gravity lab with a live quadtree overlay and direct-force error probes. It does not change the default rotation-law instrument.
+The separate **`barnes-hut.html`** entrypoint is an opt-in resident self-gravity lab with a live quadtree overlay and direct-force error probes. The default browser entrypoint is the N-body simulator at **`index.html`**, while the preserved rotation-law instrument remains at **`rotation-lab.html`**.
 
 The browser instrument lets you change morphology, mass model, viewing geometry, and time while watching the galaxy and its rotation curve respond together.
 
