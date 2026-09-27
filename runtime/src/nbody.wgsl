@@ -32,8 +32,8 @@ struct BhCell {
 @group(0) @binding(3) var<storage, read> cells: array<BhCell>;
 @group(0) @binding(4) var<storage, read_write> accelerations: array<vec4<f32>>;
 
-fn point_mass(target: vec2<f32>, point: vec2<f32>, mass: f32) -> vec2<f32> {
-    let delta = point - target;
+fn point_mass(target_xy: vec2<f32>, source_xy: vec2<f32>, mass: f32) -> vec2<f32> {
+    let delta = source_xy - target_xy;
     let r2 = dot(delta, delta) + settings.physics.y * settings.physics.y;
     let inv_r = inverseSqrt(r2);
     let scale = settings.physics.z * mass * inv_r * inv_r * inv_r;
@@ -48,7 +48,7 @@ fn bh_traverse(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let target_body = bodies[target_index];
-    let target = target_body.position_mass.xy;
+    let target_xy = target_body.position_mass.xy;
     let target_position = target_body.index_data.x;
     var total = vec2<f32>(0.0, 0.0);
 
@@ -81,21 +81,21 @@ fn bh_traverse(@builtin(global_invocation_id) id: vec3<u32>) {
                 let other_index = entry.data.y;
                 if other_index != target_index {
                     let other = bodies[other_index].position_mass;
-                    total += point_mass(target, other.xy, other.z);
+                    total += point_mass(target_xy, other.xy, other.z);
                 }
                 position += 1u;
             }
             continue;
         }
 
-        let delta = cell.com.xy - target;
+        let delta = cell.com.xy - target_xy;
         let distance2 = dot(delta, delta);
         let contains_target =
             target_position >= cell.range_depth.x && target_position < cell.range_depth.y;
         if !contains_target && distance2 > 0.0 {
             let distance = sqrt(distance2);
             if (2.0 * cell.center_half_mass.z) / distance < settings.physics.x {
-                total += point_mass(target, cell.com.xy, cell.center_half_mass.w);
+                total += point_mass(target_xy, cell.com.xy, cell.center_half_mass.w);
                 continue;
             }
         }
