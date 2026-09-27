@@ -16,7 +16,7 @@ The governing rule remains:
 
 ## Current status
 
-**PE #15 is frozen in immutable v0.6.0. BH #1 is frozen by merged PR #18, BH #2A by merged PR #19, and BH #2B1 by merged PR #20. The active experimental phase is BH #2B2: evolving GPU self-gravity with a host-visible tree-rebuild boundary.**
+**PE #15 is frozen in immutable v0.6.0. BH #1 is frozen by merged PR #18, BH #2A by merged PR #19, BH #2B1 by merged PR #20, and BH #2B2 by merged PR #21. The active experimental phase is BH #2C: correctness-first GPU tree construction.**
 
 The existing prescribed-field, logical-u64, CPU and GPU execution contracts remain intact. Self-gravity is a separate resident execution family because forces couple bodies across the complete resident set.
 
@@ -126,20 +126,50 @@ CPU-built flat tree
 9. Rust/WGSL/CUDA agree on the additional 32-byte evolution settings/state records; CUDA source parity is not presented as executed CUDA evidence.
 10. No GPU tree-construction or host-independent performance claim is made.
 
-## BH #2C — GPU Tree Construction
+## BH #2C — Correctness-First GPU Tree Construction
 
-After BH #2B2 closes, investigate moving the current host rebuild boundary itself onto the device:
+BH #2B2 is frozen by merged PR #21. BH #2C removes the host particle/tree rebuild boundary for a bounded resident workload:
 
 ```text
-drifted persistent GPU state
-  -> GPU bounds reduction
-  -> Morton key generation
-  -> stable GPU spatial sort
-  -> flat cell / aggregate construction
-  -> force traversal without host rebuild
+persistent drifted GPU state
+  -> serialized GPU bounds reduction
+  -> parallel GPU Morton key generation
+  -> deterministic GPU bitonic ordering by (Morton code, body index)
+  -> serialized GPU flat-cell topology construction
+  -> serialized GPU bottom-up aggregates
+  -> existing GPU traversal
 ```
 
-That phase must preserve BH #2A topology/range semantics or document a new representation with its own direct-force and reproducibility gates. Tree construction, traversal, integration and synchronization timing remain separate evidence.
+The initial implementation is deliberately correctness-first. Control-heavy bounds, sort, topology and aggregate stages run as GPU kernels but are not yet parallel-performance candidates. The resident cap is 4,096 bodies while this representation is being validated.
+
+### Acceptance
+
+1. Evolution performs zero host particle readbacks and zero host tree rebuilds inside the step loop.
+2. N steps perform N+1 GPU tree builds for evolution and N+1 force solves, preserving leapfrog boundary reuse.
+3. Equal Morton codes are deterministically ordered by resident body index, matching the stable-order intent of BH #2A.
+4. GPU-built tree buffers feed the existing BH traversal directly.
+5. Final GPU force remains inside explicit BH #2A flat-oracle and direct-force gates.
+6. Multi-step GPU evolution remains inside explicit BH #2A f64 trajectory gates.
+7. Rebuilding an unchanged final GPU state produces the same discrete GPU tree checksum.
+8. Cell capacity overflow fails closed.
+9. Tree-build timing is separated into bounds, Morton generation, ordering, target-position assignment, topology and aggregate stages.
+10. No claim is made that the serialized-control GPU builder is fast, optimal, or equivalent to a production parallel GPU sort/tree algorithm.
+
+BH #2C defines a new f32 GPU topology contract rather than requiring bit-identical cell numbering with the f64 host builder. Scientific correctness remains grounded by force and trajectory comparisons to BH #2A.
+
+## BH #2D — Parallel GPU Tree Construction
+
+After BH #2C closes, optimize the now-verified device-only rebuild boundary:
+
+```text
+parallel bounds reduction
+  -> scalable radix/Morton ordering
+  -> parallel range/topology construction
+  -> parallel cell aggregates
+  -> hardware GPU measurements
+```
+
+The BH #2C serialized GPU builder and BH #2B2 host-built path remain oracles until each parallel replacement proves force, trajectory and reproducibility parity.
 
 See `docs/BARNES-HUT.md` and `nbody/`.
 
