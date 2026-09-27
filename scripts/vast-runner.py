@@ -28,6 +28,8 @@ STREAM_CHUNK_BYTES = 64 * 1024
 def source_files(root=ROOT):
     fixed = ["runtime/Cargo.toml", "runtime/Cargo.lock", "runtime/build.rs",
              "runtime/tests/compact-reference.json", "rust/Cargo.toml", "rust/Cargo.lock",
+             "nbody/Cargo.toml", "nbody/Cargo.lock",
+             "runtime/cuda/barnes_hut_flat.cu", "runtime/cuda/check_barnes_hut_layout.py",
              "rust-toolchain.toml", "data/uff/DEMO_GALAXY.csv", "data/uff/provenance.json",
              "data/uff/NOTICE", "tests/uff-reference.json", "scripts/run-gpu.sh", "scripts/bootstrap-gpu.sh", "LICENSE", "NOTICE.md"]
     files = [root / name for name in fixed]
@@ -39,6 +41,7 @@ def source_files(root=ROOT):
     files += sorted((root / "runtime/src/bin").glob("*.rs"))
     files += sorted((root / "runtime/src/bin").glob("*.wgsl"))
     files += sorted((root / "rust/src").glob("*.rs"))
+    files += sorted((root / "nbody/src").glob("*.rs"))
     for path in files:
         if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
             raise ValueError(f"Expected a regular source file inside the checkout: {path}")
