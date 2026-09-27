@@ -38,6 +38,13 @@ def receipt_for(
     warmup: int = 2,
     repeats: int = 7,
 ):
+    # Synthetic tree statistics scale with the workload so the shared fixture
+    # remains structurally valid as validator invariants tighten. These are
+    # test-only values, not measured GPU topology evidence.
+    leaf_count = particles
+    active_cell_count = 2 * leaf_count - 1
+    max_depth = (particles - 1).bit_length()
+
     oracle_status = "executed" if particles <= oracle_limit else "skipped-particle-limit"
     if oracle_status == "executed":
         oracles = {
@@ -114,9 +121,9 @@ def receipt_for(
             "final_checksum_fnv_mix64": "2222222222222222",
             "repeat_checksum_fnv_mix64": "2222222222222222",
             "repeat_rebuild_matches": True,
-            "active_cell_count": 17,
-            "leaf_count": 8,
-            "max_depth": 6,
+            "active_cell_count": active_cell_count,
+            "leaf_count": leaf_count,
+            "max_depth": max_depth,
         },
         "final_force": {
             "bh2a_flat_status": oracle_status,
@@ -717,6 +724,15 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         self.assertIn(expected, command)
         self.assertNotIn("~/evidence", result.stdout)
 
+    def test_shared_receipt_fixture_is_valid_across_sweep_sizes(self):
+        for particles in (512, 4096, 8192, 65536):
+            with self.subTest(particles=particles):
+                summary = sweep.validate_receipt(
+                    receipt_for(particles),
+                    **validation_kwargs(particles),
+                )
+                self.assertEqual(summary["particles"], particles)
+
     def test_hardware_receipt_at_oracle_size_is_accepted(self):
         summary = sweep.validate_receipt(receipt_for(4096), **validation_kwargs(4096))
         self.assertEqual(summary["particles"], 4096)
@@ -839,7 +855,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt["tree"]["active_cell_count"] = 1
         receipt["tree"]["leaf_count"] = 1
         receipt["tree"]["max_depth"] = 0
-        with self.assertRaisesRegex(sweep.SweepError, "internal cell"):
+        with self.assertRaisesRegex(sweep.SweepError, "bucket size"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
         receipt = receipt_for(512)
