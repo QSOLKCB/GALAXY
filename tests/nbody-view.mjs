@@ -36,6 +36,17 @@ function boot(reduced = false) {
     bodies:()=>JSON.parse(JSON.stringify(bodies)), click:id=>elements.get(id).emit('click'),
     set(id,value,event='input'){elements.get(id).value=String(value);elements.get(id).emit(event);} };
 }
+function clockSteps(hz, speed) {
+  const ctx = vm.createContext({});
+  vm.runInContext(read('nbody-clock.js'), ctx);
+  const clock = new ctx.GalaxyNBodyClock();
+  let total = 0;
+  for (let i = 0; i <= hz; i++) total += clock.advance(i * 1000 / hz, true, speed);
+  return total;
+}
+assert.equal(clockSteps(50, 4), 240);
+assert.equal(clockSteps(100, 4), 240);
+
 // Same simulated wall time on 60 and 144 Hz displays gives the same trajectory.
 const a=boot(), b=boot();
 a.set('count',128,'change'); b.set('count',128,'change');
@@ -69,4 +80,4 @@ for(const page of ['index.html','rotation-lab.html','barnes-hut.html']) {
   if(!asset.startsWith('http'))assert.ok(fs.existsSync(new URL('../'+asset,import.meta.url)),asset);
  }
 }
-console.log('PASS: N-body refresh-rate invariance, pause/step, view isolation, audits, reduced motion, hidden tabs, presets and offline links.');
+console.log('PASS: N-body refresh-rate invariance through 4x speed, pause/step, view isolation, audits, reduced motion, hidden tabs, presets and offline links.');
