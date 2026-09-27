@@ -22,6 +22,7 @@ COPY --from=build /opt/galaxy/runtime/target/release/galaxy-runtime /usr/local/b
 COPY --from=build /opt/galaxy/runtime/target/release/galaxy-u64 /usr/local/bin/galaxy-u64
 COPY --from=build /opt/galaxy/runtime/target/release/galaxy-bh-gpu /usr/local/bin/galaxy-bh-gpu
 COPY --from=build /opt/galaxy/runtime/target/release/galaxy-bh-evolve /usr/local/bin/galaxy-bh-evolve
+COPY --from=build /opt/galaxy/runtime/target/release/galaxy-bh-gpu-tree /usr/local/bin/galaxy-bh-gpu-tree
 COPY runtime/jobs/ /opt/galaxy/jobs/
 COPY --from=build /opt/dependency-licenses/ /usr/share/doc/galaxy-runtime/dependencies/
 COPY LICENSE NOTICE.md /usr/share/doc/galaxy-runtime/
