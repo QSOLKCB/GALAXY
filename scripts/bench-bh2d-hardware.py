@@ -111,9 +111,6 @@ def trusted_system_path(system_name: str | None = None) -> str:
         if local:
             base = PureWindowsPath(local) / "Programs" / "Git"
             candidates.extend((str(base / "cmd"), str(base / "bin")))
-        home = os.environ.get("USERPROFILE")
-        if home:
-            candidates.append(str(PureWindowsPath(home) / ".cargo" / "bin"))
         separator = ";"
     elif system_name == "Darwin":
         candidates = [
