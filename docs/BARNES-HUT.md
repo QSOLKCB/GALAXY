@@ -289,6 +289,28 @@ Kernel families are batched into command buffers to avoid measuring one CPU/GPU 
 
 Receipts classify the selected adapter as either `software-validation` or `hardware`. `--require-hardware` rejects software adapters. Mesa/llvmpipe timing is therefore correctness and diagnostic evidence only; a hardware performance claim requires a receipt from a real GPU.
 
+### Real-hardware sweep
+
+`scripts/bench-bh2d-hardware.py` is the evidence runner for the remaining BH #2D hardware item. It executes a strictly increasing resident-body sweep through `galaxy-bh-gpu-tree-parallel --require-hardware`, refuses a dirty tracked source tree or an existing evidence directory, validates every receipt, requires one adapter identity for the complete sweep, and hashes each receipt/log into `manifest.json`.
+
+The default sweep is:
+
+```text
+512 -> 1024 -> 2048 -> 4096 -> 8192 -> 16384 -> 32768 -> 65536
+```
+
+Counts through 4,096 retain repeat-matched BH #2C timing. Larger points explicitly require the BH #2C and bounded full-oracle skips already encoded by the verifier; they do not silently drop those gates.
+
+Example on a real GPU:
+
+```bash
+python3 scripts/bench-bh2d-hardware.py \
+  --output runs/bh2d-hardware-sweep \
+  --adapter 0
+```
+
+A completed scaling manifest is hardware evidence for the exact recorded source, workload and adapter. It does **not** by itself promote BH #2D to production or establish a host-independent speed claim.
+
 ## Next rung
 
 After real-hardware BH #2D receipts exist, BH #2E can evaluate scaling, memory/capacity limits and production promotion while retaining BH #2A/B2B2/B2C as frozen oracles.
