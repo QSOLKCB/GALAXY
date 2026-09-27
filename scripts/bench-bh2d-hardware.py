@@ -962,9 +962,10 @@ def validate_receipt(
         max_depth <= TREE_LEVELS - 1,
         "receipt.tree.max_depth exceeds the frozen Morton depth",
     )
-    topology_capacity = sum(
-        min(particles, 4 ** depth)
-        for depth in range(max_depth + 1)
+    internal_cells_per_depth = particles // (TREE_BUCKET_SIZE + 1)
+    topology_capacity = leaf_count + sum(
+        min(4 ** depth, internal_cells_per_depth)
+        for depth in range(max_depth)
     )
     require(
         active_cell_count <= topology_capacity,
