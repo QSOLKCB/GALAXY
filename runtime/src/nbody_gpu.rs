@@ -8,7 +8,7 @@
 use crate::config::Result;
 use bytemuck::{Pod, Zeroable};
 use galaxy_nbody::{
-    flat::{FlatTree, NO_CHILD},
+    flat::FlatTree,
     Accel, Body, Config,
 };
 use serde_json::{json, Value};
@@ -577,6 +577,6 @@ mod tests {
             assert_eq!(gpu.range_depth[2], source.depth as u32);
             assert_eq!(gpu.children, source.children);
         }
-        assert!(packed.cells.iter().any(|cell| cell.children != [NO_CHILD; 4]));
+        assert!(packed.cells.iter().any(|cell| cell.children != [u32::MAX; 4]));
     }
 }
