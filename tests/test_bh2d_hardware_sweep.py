@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "bench-bh2d-hardware.py"
@@ -209,6 +211,35 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             with self.assertRaisesRegex(sweep.SweepError, "Cargo configuration"):
                 sweep.cargo_config_context(repo)
 
+    def test_cleanliness_rejects_assume_unchanged_and_skip_worktree(self):
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+                subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+                subprocess.run(
+                    ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                    cwd=repo,
+                    check=True,
+                )
+                path = repo / "tracked.txt"
+                path.write_text("one\n")
+                subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+                subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+                subprocess.run(["git", "update-index", flag, "tracked.txt"], cwd=repo, check=True)
+                path.write_text("two\n")
+
+                self.assertEqual(
+                    subprocess.run(
+                        ["git", "diff", "--quiet", "--"],
+                        cwd=repo,
+                        check=False,
+                    ).returncode,
+                    0,
+                )
+                with self.assertRaisesRegex(sweep.SweepError, "index flags"):
+                    sweep.require_clean_source_tree(repo)
+
     def test_cleanliness_allows_only_the_evidence_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -281,6 +312,56 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                     revision,
                     expected_cargo_context=context,
                 )
+
+    def test_build_environment_overrides_are_rejected(self):
+        for name in (
+            "RUSTFLAGS",
+            "CARGO_BUILD_RUSTFLAGS",
+            "RUSTC",
+            "RUSTC_WRAPPER",
+            "RUSTUP_TOOLCHAIN",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "CARGO_PROFILE_RELEASE_LTO",
+        ):
+            with self.subTest(name=name), mock.patch.dict(
+                os.environ,
+                {name: "evidence-changing-value"},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(sweep.SweepError, name):
+                    sweep.require_no_build_environment_overrides()
+
+    def test_toolchain_context_records_resolved_binaries_and_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            cargo = bin_dir / "cargo-custom"
+            rustc = bin_dir / "rustc"
+            cargo.write_text("#!/bin/sh\necho 'cargo 9.9.9 (fixture)'\n")
+            rustc.write_text("#!/bin/sh\necho 'rustc 9.9.9 (fixture)'\n")
+            cargo.chmod(0o755)
+            rustc.chmod(0o755)
+
+            with mock.patch.dict(
+                os.environ,
+                {"PATH": str(bin_dir)},
+                clear=True,
+            ):
+                context = sweep.toolchain_context("cargo-custom", root)
+
+            self.assertEqual(context["cargo"]["requested"], "cargo-custom")
+            self.assertEqual(context["cargo"]["version_verbose"], "cargo 9.9.9 (fixture)")
+            self.assertEqual(context["rustc"]["version_verbose"], "rustc 9.9.9 (fixture)")
+            self.assertEqual(len(context["cargo"]["sha256"]), 64)
+            self.assertEqual(len(context["rustc"]["sha256"]), 64)
+
+    def test_invalid_utf8_receipt_is_normalized_to_sweep_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "receipt.json"
+            path.write_bytes(b"{\xff}")
+            with self.assertRaisesRegex(sweep.SweepError, "not valid UTF-8"):
+                sweep.load_receipt(path)
 
     def test_hardware_receipt_at_oracle_size_is_accepted(self):
         summary = sweep.validate_receipt(receipt_for(4096), **validation_kwargs(4096))
@@ -375,6 +456,23 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt = receipt_for(512)
         receipt["tree"]["repeat_checksum_fnv_mix64"] = "NOT-A-CHECKSUM"
         with self.assertRaisesRegex(sweep.SweepError, "16-digit lowercase hexadecimal"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_tree_structure_is_bounded_by_frozen_sparse_representation(self):
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = sweep.TREE_LEVELS * 512 + 1
+        with self.assertRaisesRegex(sweep.SweepError, "sparse-cell capacity"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 17
+        receipt["tree"]["leaf_count"] = 18
+        with self.assertRaisesRegex(sweep.SweepError, "cannot exceed active_cell_count"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["max_depth"] = 17
+        with self.assertRaisesRegex(sweep.SweepError, "frozen Morton depth"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_executed_oracle_payloads_are_required(self):
