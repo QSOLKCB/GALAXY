@@ -363,31 +363,47 @@ fn run() -> Result<()> {
         .into());
     }
 
-    let cpu_tree_started = Instant::now();
-    let cpu_tree = build_flat_tree(&final_bodies, config)?;
-    let cpu_tree_seconds = cpu_tree_started.elapsed().as_secs_f64();
-    let cpu_force_started = Instant::now();
-    let (cpu_force, _) = flat_accelerations_from_tree(&final_bodies, &cpu_tree, config)?;
-    let cpu_force_seconds = cpu_force_started.elapsed().as_secs_f64();
-    let (parallel_cpu_rms, parallel_cpu_max) = force_error(&final_acceleration, &cpu_force)?;
-    if parallel_cpu_rms >= 0.04 || parallel_cpu_max >= 0.30 {
-        return Err(format!(
-            "BH #2D force diverged from BH #2A flat oracle: rms={parallel_cpu_rms} max={parallel_cpu_max}"
-        )
-        .into());
-    }
+    let mut cpu_tree_seconds = 0.0;
+    let mut cpu_force_seconds = 0.0;
+    let mut cpu_trajectory_seconds = 0.0;
+    let mut parallel_cpu_rms: Option<f64> = None;
+    let mut parallel_cpu_max: Option<f64> = None;
+    let mut cpu_state_error: Option<Error4> = None;
 
-    let cpu_trajectory_started = Instant::now();
-    let cpu_trajectory = cpu_flat_evolve(initial.clone(), args.steps, args.dt_myr, config)?;
-    let cpu_trajectory_seconds = cpu_trajectory_started.elapsed().as_secs_f64();
-    let cpu_state_error = state_error(&final_bodies, &cpu_trajectory)?;
-    if cpu_state_error.position_rms >= 0.03
-        || cpu_state_error.position_max >= 0.30
-        || cpu_state_error.velocity_rms >= 0.03
-        || cpu_state_error.velocity_max >= 0.30
-    {
-        return Err(format!("BH #2D trajectory diverged from BH #2A: {cpu_state_error:?}").into());
-    }
+    let cpu_reference_status = if args.particles <= args.oracle_limit {
+        let cpu_tree_started = Instant::now();
+        let cpu_tree = build_flat_tree(&final_bodies, config)?;
+        cpu_tree_seconds = cpu_tree_started.elapsed().as_secs_f64();
+
+        let cpu_force_started = Instant::now();
+        let (cpu_force, _) = flat_accelerations_from_tree(&final_bodies, &cpu_tree, config)?;
+        cpu_force_seconds = cpu_force_started.elapsed().as_secs_f64();
+        let (rms, max) = force_error(&final_acceleration, &cpu_force)?;
+        parallel_cpu_rms = Some(rms);
+        parallel_cpu_max = Some(max);
+        if rms >= 0.04 || max >= 0.30 {
+            return Err(format!(
+                "BH #2D force diverged from BH #2A flat oracle: rms={rms} max={max}"
+            )
+            .into());
+        }
+
+        let cpu_trajectory_started = Instant::now();
+        let cpu_trajectory = cpu_flat_evolve(initial.clone(), args.steps, args.dt_myr, config)?;
+        cpu_trajectory_seconds = cpu_trajectory_started.elapsed().as_secs_f64();
+        let error = state_error(&final_bodies, &cpu_trajectory)?;
+        if error.position_rms >= 0.03
+            || error.position_max >= 0.30
+            || error.velocity_rms >= 0.03
+            || error.velocity_max >= 0.30
+        {
+            return Err(format!("BH #2D trajectory diverged from BH #2A: {error:?}").into());
+        }
+        cpu_state_error = Some(error);
+        "executed"
+    } else {
+        "skipped-particle-limit"
+    };
 
     let oracle_evidence = if args.particles <= args.oracle_limit {
         let (serial_state, serial_accel) =
@@ -514,13 +530,21 @@ fn run() -> Result<()> {
             "layout": "sparse-level-order-slot=depth*N+group_start"
         },
         "final_force": {
+            "bh2a_flat_status": cpu_reference_status,
             "gpu_vs_bh2a_flat_rms_relative": parallel_cpu_rms,
             "gpu_vs_bh2a_flat_max_relative": parallel_cpu_max,
             "direct_probe_count": direct_count,
             "direct_probe_rms_relative": direct.rms_relative,
             "direct_probe_max_relative": direct.max_relative
         },
-        "trajectory_vs_bh2a_flat_f64": error4_json(cpu_state_error),
+        "trajectory_vs_bh2a_flat_f64": match cpu_state_error {
+            Some(error) => json!({"status": "executed", "state_error": error4_json(error)}),
+            None => json!({
+                "status": "skipped-particle-limit",
+                "limit": args.oracle_limit,
+                "reason": "large BH #2D runs keep CPU trajectory evidence bounded"
+            })
+        },
         "gpu_oracles": oracle_evidence,
         "tree_build_benchmark": {
             "warmup": args.benchmark_warmup,
