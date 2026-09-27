@@ -404,6 +404,10 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
     def test_build_environment_overrides_are_rejected(self):
         for name in (
             "LD_AUDIT",
+            "VK_DRIVER_FILES",
+            "VK_ICD_FILENAMES",
+            "VK_LAYER_PATH",
+            "VK_INSTANCE_LAYERS",
             "RUSTFLAGS",
             "CARGO_BUILD_RUSTFLAGS",
             "RUSTC",
@@ -564,6 +568,10 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 "GIT_WORK_TREE": "/other",
                 "LD_AUDIT": "/tmp/audit.so",
                 "LD_PRELOAD": "/tmp/preload.so",
+                "VK_DRIVER_FILES": "/tmp/icd.json",
+                "VK_ICD_FILENAMES": "/tmp/legacy-icd.json",
+                "VK_LAYER_PATH": "/tmp/layers",
+                "VK_INSTANCE_LAYERS": "VK_LAYER_SYNTHETIC",
             },
         ):
             env = sweep.build_environment({"rustc": {"executable": "/selected/bin/rustc"}})
@@ -572,6 +580,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         self.assertNotIn("GIT_WORK_TREE", env)
         self.assertNotIn("LD_AUDIT", env)
         self.assertNotIn("LD_PRELOAD", env)
+        for name in (
+            "VK_DRIVER_FILES",
+            "VK_ICD_FILENAMES",
+            "VK_LAYER_PATH",
+            "VK_INSTANCE_LAYERS",
+        ):
+            self.assertNotIn(name, env)
 
     def test_git_invocation_binds_checkout_and_clears_selectors(self):
         with mock.patch.dict(os.environ, {"GIT_WORK_TREE": "/other", "GIT_DIR": "/other/.git",
@@ -839,6 +854,20 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 **validation_kwargs(512, adapter_selector="0"),
             )
 
+        receipt = receipt_for(512)
+        receipt["gpu"]["name"] = "AMD Radeon RX 7900 XTX"
+        with self.assertRaisesRegex(sweep.SweepError, "textual adapter selector"):
+            sweep.validate_receipt(
+                receipt,
+                **validation_kwargs(512, adapter_selector="NVIDIA"),
+            )
+
+        summary = sweep.validate_receipt(
+            receipt,
+            **validation_kwargs(512, adapter_selector="radeon rx"),
+        )
+        self.assertEqual(summary["particles"], 512)
+
     def test_adapter_identity_is_mandatory_and_hardware_bound(self):
         for gpu in (
             {},
@@ -915,6 +944,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt = receipt_for(512)
         receipt["tree"]["max_depth"] = 17
         with self.assertRaisesRegex(sweep.SweepError, "frozen Morton depth"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 6742
+        receipt["tree"]["leaf_count"] = 512
+        receipt["tree"]["max_depth"] = 16
+        with self.assertRaisesRegex(sweep.SweepError, "per-depth quadtree occupancy"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
         receipt = receipt_for(512)
