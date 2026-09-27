@@ -42,8 +42,18 @@ def main() -> None:
         "entry": struct.calcsize("<4I"),
         "cell": struct.calcsize("<8f8I"),
         "acceleration": struct.calcsize("<4f"),
+        "evolve_settings": struct.calcsize("<4I4f"),
+        "evolve_state": struct.calcsize("<8f"),
     }
-    expected = {"settings": 32, "body": 32, "entry": 16, "cell": 64, "acceleration": 16}
+    expected = {
+        "settings": 32,
+        "body": 32,
+        "entry": 16,
+        "cell": 64,
+        "acceleration": 16,
+        "evolve_settings": 32,
+        "evolve_state": 32,
+    }
     if sizes != expected:
         raise SystemExit(f"layout size mismatch: {sizes}")
 
@@ -57,9 +67,15 @@ def main() -> None:
         "static_assert(sizeof(BhBody) == 32",
         "static_assert(sizeof(BhEntry) == 16",
         "static_assert(sizeof(BhCell) == 64",
+        "static_assert(sizeof(EvolveSettings) == 32",
+        "static_assert(sizeof(EvolveState) == 32",
         'extern "C" __global__ void bh_traverse',
+        'extern "C" __global__ void bh_kick_drift',
+        'extern "C" __global__ void bh_final_kick',
         "target_position >= cell.range_depth[0]",
         "target_position < cell.range_depth[1]",
+        "state.position_mass[0] += dt * vx_half",
+        "state.velocity[0] += 0.5f * dt * accelerations[i].x",
     ]
     missing = [needle for needle in required if needle not in source]
     if missing:
@@ -67,11 +83,12 @@ def main() -> None:
 
     print(json.dumps({
         "status": "pass",
-        "schema": "galaxy.barnes-hut-gpu-layout.v1",
+        "schema": "galaxy.barnes-hut-gpu-layout.v2",
         "record_bytes": sizes,
         "canonical_fixture_bytes": len(fixture),
         "canonical_fixture_hex": EXPECTED_HEX,
         "cuda_execution_claimed": False,
+        "evolution_kernels_checked": True,
     }, indent=2))
 
 if __name__ == "__main__":
