@@ -5,7 +5,7 @@ use galaxy_nbody::flat::{
 };
 use galaxy_nbody::{
     barnes_hut_accelerations, compare_to_direct, leapfrog_step_from_acceleration, make_collision,
-    make_disc, probe_error, state_checksum, Accel, Config, DEFAULT_SOFTENING_KPC,
+    make_disc, probe_error, state_checksum, Accel, Body, Config, DEFAULT_SOFTENING_KPC,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -160,9 +160,67 @@ fn relative_difference(a: Accel, b: Accel) -> f64 {
 }
 
 fn verify_flat() -> Result<(), String> {
+    if std::mem::size_of::<MortonEntry>() != 8 || std::mem::size_of::<FlatCell>() != 80 {
+        return Err(format!(
+            "flat host record sizes changed: MortonEntry={} FlatCell={}",
+            std::mem::size_of::<MortonEntry>(),
+            std::mem::size_of::<FlatCell>()
+        ));
+    }
+
+    let coincident = vec![
+        Body { x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, mass: 1.0 };
+        8
+    ];
+    let ordering_tree = build_flat_tree(
+        &coincident,
+        Config {
+            bucket: 1,
+            max_depth: MORTON_AXIS_BITS as usize,
+            softening_kpc: 0.1,
+            ..Config::default()
+        },
+    )?;
+    let ordering: Vec<u32> = ordering_tree
+        .entries
+        .iter()
+        .map(|entry| entry.body_index)
+        .collect();
+    if ordering != (0_u32..8).collect::<Vec<_>>() {
+        return Err("equal Morton keys no longer preserve resident order".into());
+    }
+
+    let shallow_tree = build_flat_tree(
+        &coincident,
+        Config {
+            bucket: 1,
+            max_depth: 1,
+            softening_kpc: 0.1,
+            ..Config::default()
+        },
+    )?;
+    if shallow_tree.stats.max_depth != 1 {
+        return Err(format!(
+            "configured max_depth=1 was not honored: observed {}",
+            shallow_tree.stats.max_depth
+        ));
+    }
+
     let bodies = make_disc(256, 303, 5.0e10, 3.0)?;
     let config = Config::default();
     let (flat, error) = compare_flat_to_direct(&bodies, config)?;
+    let root = &flat.tree.cells[flat.tree.root as usize];
+    if root.start != 0 || root.end as usize != bodies.len() {
+        return Err(format!(
+            "flat root range is invalid: [{}..{}) for {} bodies",
+            root.start,
+            root.end,
+            bodies.len()
+        ));
+    }
+    if (root.mass - 5.0e10).abs() >= 1e-3 {
+        return Err(format!("flat root mass is invalid: {}", root.mass));
+    }
     if error.rms_relative >= 0.03 || error.max_relative >= 0.25 {
         return Err(format!(
             "flat theta=0.5 reference error too large: rms={} max={}",
