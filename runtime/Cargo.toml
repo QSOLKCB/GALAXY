@@ -10,6 +10,7 @@ default-run = "galaxy-runtime"
 
 [dependencies]
 galaxy-sampler = { path = "../rust" }
+galaxy-nbody = { path = "../nbody" }
 wgpu = { version = "=24.0.5", default-features = false, features = ["wgsl", "metal", "dx12"] }
 pollster = "=0.4.0"
 bytemuck = { version = "=1.21.0", features = ["derive"] }
