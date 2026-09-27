@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 use clap::Parser;
 use galaxy_nbody::{
-    direct_accelerations,
     flat::{build_flat_tree, flat_accelerations_from_tree},
-    make_disc, Accel, Config,
+    make_disc, probe_error, Accel, Config,
 };
 use galaxy_runtime::{
     config::Result,
@@ -21,6 +20,8 @@ struct Args {
     seed: u64,
     #[arg(long, default_value_t = 0.5)]
     theta: f64,
+    #[arg(long, default_value_t = 12)]
+    direct_probes: usize,
     #[arg(long)]
     adapter: Option<String>,
     #[arg(long)]
@@ -59,6 +60,9 @@ fn run() -> Result<()> {
     if !args.theta.is_finite() || !(0.0..=2.0).contains(&args.theta) {
         return Err("--theta must be finite and in [0, 2]".into());
     }
+    if !(1..=64).contains(&args.direct_probes) {
+        return Err("--direct-probes must be in 1..=64".into());
+    }
 
     let bodies = make_disc(args.particles, args.seed, 5.0e10, 3.0)?;
     let config = Config {
@@ -78,14 +82,21 @@ fn run() -> Result<()> {
     let (flat_reference, _) = flat_accelerations_from_tree(&bodies, &tree, config)?;
     let cpu_flat_traversal_seconds = cpu_started.elapsed().as_secs_f64();
 
-    let direct_started = Instant::now();
-    let direct = direct_accelerations(&bodies, config)?;
-    let direct_seconds = direct_started.elapsed().as_secs_f64();
-
     let gpu = NbodyGpu::new(args.adapter.as_deref(), args.allow_software)?;
     let result = gpu.traverse(&packed)?;
     let (gpu_flat_rms, gpu_flat_max) = error_summary(&result.accelerations, &flat_reference)?;
-    let (gpu_direct_rms, gpu_direct_max) = error_summary(&result.accelerations, &direct)?;
+
+    let direct_probe_count = args.direct_probes.min(args.particles);
+    let direct_started = Instant::now();
+    let direct_probe = probe_error(
+        &bodies,
+        &result.accelerations,
+        config,
+        direct_probe_count,
+    )?;
+    let direct_probe_seconds = direct_started.elapsed().as_secs_f64();
+    let gpu_direct_rms = direct_probe.rms_relative;
+    let gpu_direct_max = direct_probe.max_relative;
 
     // The direct-force gates preserve the BH #1 accuracy contract with a small
     // allowance for the deliberate f64 -> f32 transfer boundary.
@@ -115,11 +126,12 @@ fn run() -> Result<()> {
             "cpu_tree_build": cpu_tree_build_seconds,
             "cpu_pack_f32": cpu_pack_seconds,
             "cpu_flat_traversal_reference": cpu_flat_traversal_seconds,
-            "direct_reference": direct_seconds,
+            "direct_probe_reference": direct_probe_seconds,
             "gpu_transfer": result.transfer_seconds,
             "gpu_dispatch": result.dispatch_seconds,
             "gpu_readback": result.readback_seconds
         },
+        "direct_probe_count": direct_probe_count,
         "errors": {
             "gpu_vs_flat_cpu_rms_relative": gpu_flat_rms,
             "gpu_vs_flat_cpu_max_relative": gpu_flat_max,
@@ -133,7 +145,7 @@ fn run() -> Result<()> {
             "cell": 64,
             "acceleration": 16
         },
-        "scope": "CPU-built BH #2A flat tree packed to f32/u32 and traversed on GPU; no GPU tree construction, evolving leapfrog state, or host-independent performance claim"
+        "scope": "CPU-built BH #2A flat tree packed to f32/u32 and traversed on GPU; full GPU-vs-flat comparison plus bounded direct-force probes; no GPU tree construction, evolving leapfrog state, or host-independent performance claim"
     });
 
     if let Some(path) = args.receipt {
