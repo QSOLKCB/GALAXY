@@ -95,7 +95,7 @@ represent a 2³² logical population. WebGL context loss stops the current recor
 and switches to a fresh Canvas element with the smaller sample.
 
 The payload is base64 in an external classic script, avoiding fetch and file-URL
-CORS restrictions when opening `index.html` directly. It needs no `eval`, no
+CORS restrictions when opening `rotation-lab.html` directly. It needs no `eval`, no
 worker, no remote package, and no cross-origin-isolation headers. CSP explicitly
 permits Wasm compilation using `wasm-unsafe-eval`. Compilation failure uses the
 bounded JavaScript fallback and is reported in the interface.
