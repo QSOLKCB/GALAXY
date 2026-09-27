@@ -51,7 +51,7 @@ RADIX_DIGITS = 16
 SYSTEM_PATH = "/usr/bin:/bin"
 BUILD_ENV_EXACT = {
     "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "LIBRARY_PATH", "COMPILER_PATH",
-    "VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_LAYER_PATH", "VK_INSTANCE_LAYERS",
+    "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_LAYER_PATH", "VK_INSTANCE_LAYERS",
     "GCC_EXEC_PREFIX", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
     "RUSTFLAGS",
     "CARGO_ENCODED_RUSTFLAGS",
@@ -612,8 +612,11 @@ def load_receipt(path: Path) -> Any:
         text = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise SweepError(f"receipt is not valid UTF-8: {path}") from exc
+    def reject_nonstandard_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON constant: {value}")
+
     try:
-        return json.loads(text)
+        return json.loads(text, parse_constant=reject_nonstandard_constant)
     except ValueError as exc:
         raise SweepError(f"receipt is not valid JSON: {path}") from exc
 
@@ -892,9 +895,19 @@ def validate_receipt(
         root.get("hardware_performance_claim_allowed") is True,
         "receipt does not authorize hardware performance evidence",
     )
-    require(root.get("host_tree_rebuilds") == 0, "host tree rebuild occurred")
+    host_tree_rebuilds = require_int(
+        root.get("host_tree_rebuilds"),
+        "receipt.host_tree_rebuilds",
+        minimum=0,
+    )
+    require(host_tree_rebuilds == 0, "host tree rebuild occurred")
+    host_particle_readbacks = require_int(
+        root.get("host_particle_readbacks_during_steps"),
+        "receipt.host_particle_readbacks_during_steps",
+        minimum=0,
+    )
     require(
-        root.get("host_particle_readbacks_during_steps") == 0,
+        host_particle_readbacks == 0,
         "host particle readback occurred inside the evolution loop",
     )
     require(root.get("force_solves") == steps + 1, "unexpected force-solve count")
