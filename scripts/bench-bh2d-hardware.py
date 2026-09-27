@@ -621,8 +621,20 @@ def load_receipt(path: Path) -> Any:
     def reject_nonstandard_constant(value: str) -> None:
         raise ValueError(f"non-standard JSON constant: {value}")
 
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON object key: {key}")
+            result[key] = value
+        return result
+
     try:
-        return json.loads(text, parse_constant=reject_nonstandard_constant)
+        return json.loads(
+            text,
+            parse_constant=reject_nonstandard_constant,
+            object_pairs_hook=reject_duplicate_keys,
+        )
     except ValueError as exc:
         raise SweepError(f"receipt is not valid JSON: {path}") from exc
 
@@ -635,14 +647,18 @@ def sha256_directory(path: Path) -> str:
         relative = entry.relative_to(root)
         if entry.is_symlink():
             raise SweepError(f"Cargo dependency source contains unsupported symlink: {entry}")
-        if entry.is_dir():
-            continue
-        require(entry.is_file(), f"Cargo dependency source contains non-file entry: {entry}")
+        mode = entry.lstat().st_mode
+        require(
+            entry.is_dir() or entry.is_file(),
+            f"Cargo dependency source contains unsupported entry: {entry}",
+        )
         relative_bytes = os.fsencode(str(relative))
-        file_digest = bytes.fromhex(sha256_file(entry))
+        mode_bits = stat.S_IFMT(mode) | stat.S_IMODE(mode)
         digest.update(len(relative_bytes).to_bytes(8, "big"))
         digest.update(relative_bytes)
-        digest.update(file_digest)
+        digest.update(mode_bits.to_bytes(4, "big"))
+        if entry.is_file():
+            digest.update(bytes.fromhex(sha256_file(entry)))
     return digest.hexdigest()
 
 
@@ -821,14 +837,26 @@ def validate_force_errors(
     return rms, maximum
 
 
+def parse_adapter_index_selector(value: str) -> int | None:
+    # Mirror Rust usize::from_str closely enough for the producer contract:
+    # optional leading '+', ASCII decimal digits, no whitespace/sign-minus,
+    # and overflow falls back to textual name selection.
+    if re.fullmatch(r"\+?[0-9]+", value) is None:
+        return None
+    parsed = int(value, 10)
+    usize_max = (sys.maxsize << 1) | 1
+    return parsed if parsed <= usize_max else None
+
+
 def adapter_identity(gpu: Any, adapter_selector: str | None = None) -> str:
     info = require_object(gpu, "receipt.gpu")
     index = require_int(info.get("index"), "receipt.gpu.index", minimum=0)
     name = require_string(info.get("name"), "receipt.gpu.name", nonempty=True)
     if adapter_selector is not None:
-        if re.fullmatch(r"[0-9]+", adapter_selector):
+        selected_index = parse_adapter_index_selector(adapter_selector)
+        if selected_index is not None:
             require(
-                index == int(adapter_selector),
+                index == selected_index,
                 "receipt.gpu.index does not match the numeric adapter selector",
             )
         else:
@@ -1007,6 +1035,10 @@ def validate_receipt(
     require(
         internal_cell_count >= max_depth,
         "receipt.tree has too few internal cells for the reported maximum depth",
+    )
+    require(
+        internal_cell_count <= leaf_count * max_depth,
+        "receipt.tree has too many internal cells for its leaf-path capacity",
     )
     if max_depth < TREE_LEVELS - 1:
         minimum_leaf_count = (particles + TREE_BUCKET_SIZE - 1) // TREE_BUCKET_SIZE
