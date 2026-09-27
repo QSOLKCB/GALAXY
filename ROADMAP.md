@@ -199,6 +199,8 @@ Stable radix ordering starts from resident-body order and preserves that order f
 
 The initial CI fixture proves correctness through Mesa Vulkan but does not establish a hardware speedup. Real GPU performance evidence remains an explicit BH #2D completion item.
 
+The repository now includes `scripts/bench-bh2d-hardware.py` to capture that evidence without weakening the boundary. The runner requires a clean tracked source tree and `--require-hardware`, validates the BH #2D correctness/determinism gates at every point, preserves repeat-matched BH #2C comparison through 4,096 bodies, and emits a source-pinned scaling manifest with receipt/log hashes. The harness is implementation support; BH #2D remains evidence-pending until a real-GPU manifest exists.
+
 ## BH #2E — Hardware Promotion and Scaling
 
 After BH #2D obtains real-hardware receipts, the next promotion rung is:
