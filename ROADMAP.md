@@ -16,7 +16,7 @@ The governing rule remains:
 
 ## Current status
 
-**PE #15 is frozen in immutable v0.6.0. BH #1 is frozen by merged PR #18 and BH #2A by merged PR #19. The active experimental phase is BH #2B1: explicit GPU transfer ABI + traversal.**
+**PE #15 is frozen in immutable v0.6.0. BH #1 is frozen by merged PR #18, BH #2A by merged PR #19, and BH #2B1 by merged PR #20. The active experimental phase is BH #2B2: evolving GPU self-gravity with a host-visible tree-rebuild boundary.**
 
 The existing prescribed-field, logical-u64, CPU and GPU execution contracts remain intact. Self-gravity is a separate resident execution family because forces couple bodies across the complete resident set.
 
@@ -100,18 +100,46 @@ BH #2A f64/u32 flat tree
 
 ## BH #2B2 — Evolving GPU Self-Gravity
 
-After BH #2B1 closes:
+BH #2B1 is frozen by merged PR #20. This phase keeps the BH #2A tree build on the host while moving leapfrog state evolution onto persistent GPU buffers:
 
 ```text
-verified GPU force traversal
-  -> GPU kick / drift
-  -> host-visible rebuild boundary
-  -> second GPU force solve
-  -> final kick
-  -> multi-step receipt + drift diagnostics
+CPU-built flat tree
+  -> GPU force solve into persistent acceleration buffer
+  -> GPU half-kick + drift on persistent state
+  -> read drifted state at the explicit rebuild boundary
+  -> CPU Morton/tree rebuild + f32 pack
+  -> GPU boundary force solve
+  -> GPU final half-kick
+  -> reuse boundary acceleration on the next step
 ```
 
-A later phase may investigate GPU-side Morton sorting/tree construction only after the host-built transfer/traversal contract is stable. Tree construction, transfer, traversal, integration, and readback timing must remain separate. Third-party benchmark numbers are research context, not GALAXY evidence.
+### Acceptance
+
+1. GPU position/mass/velocity state persists across multiple leapfrog steps.
+2. Acceleration stays device-resident from each force solve into the following integration stage.
+3. Exactly one host-visible state readback and one CPU tree rebuild occur per drift step.
+4. An N-step run performs N+1 force solves by reusing the boundary acceleration.
+5. The final GPU force remains inside the bounded direct-force probe gates.
+6. Small workloads compare the full multi-step GPU state against the f64 BH #2A flat-tree trajectory reference.
+7. Full CPU trajectory comparison is skipped above explicit particle and particle×step work limits rather than silently dominating large GPU runs.
+8. Receipts report tree build/rebuild, f32 packing, GPU force dispatch, kick/drift, final-kick, readback, topology changes, state checksums and conservation diagnostics separately.
+9. Rust/WGSL/CUDA agree on the additional 32-byte evolution settings/state records; CUDA source parity is not presented as executed CUDA evidence.
+10. No GPU tree-construction or host-independent performance claim is made.
+
+## BH #2C — GPU Tree Construction
+
+After BH #2B2 closes, investigate moving the current host rebuild boundary itself onto the device:
+
+```text
+drifted persistent GPU state
+  -> GPU bounds reduction
+  -> Morton key generation
+  -> stable GPU spatial sort
+  -> flat cell / aggregate construction
+  -> force traversal without host rebuild
+```
+
+That phase must preserve BH #2A topology/range semantics or document a new representation with its own direct-force and reproducibility gates. Tree construction, traversal, integration and synchronization timing remain separate evidence.
 
 See `docs/BARNES-HUT.md` and `nbody/`.
 
