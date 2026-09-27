@@ -14,12 +14,14 @@ pub const MORTON_AXIS_BITS: u32 = 16;
 pub const MORTON_TREE_DEPTH: usize = MORTON_AXIS_BITS as usize;
 pub const NO_CHILD: u32 = u32::MAX;
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MortonEntry {
     pub code: u32,
     pub body_index: u32,
 }
 
+#[repr(C)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlatCell {
     pub cx: f64,
@@ -428,6 +430,12 @@ mod tests {
 
     fn relative(a: Accel, b: Accel) -> f64 {
         (a.ax - b.ax).hypot(a.ay - b.ay) / b.ax.hypot(b.ay).max(1e-30)
+    }
+
+    #[test]
+    fn flat_layout_has_frozen_host_record_sizes() {
+        assert_eq!(std::mem::size_of::<MortonEntry>(), 8);
+        assert_eq!(std::mem::size_of::<FlatCell>(), 80);
     }
 
     #[test]
