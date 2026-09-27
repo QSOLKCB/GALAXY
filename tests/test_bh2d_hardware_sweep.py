@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,8 +14,61 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(sweep)
 
 
-def receipt_for(particles: int, *, steps: int = 3, oracle_limit: int = 4096, repeats: int = 7):
+STATE_ERROR = {
+    "position_rms_relative_l2": 0.001,
+    "position_max_relative": 0.01,
+    "velocity_rms_relative_l2": 0.001,
+    "velocity_max_relative": 0.01,
+}
+
+
+def receipt_for(
+    particles: int,
+    *,
+    preset: str = "disc",
+    steps: int = 3,
+    dt_myr: float = 0.01,
+    seed: int = 303,
+    theta: float = 0.5,
+    softening_kpc: float = 0.05,
+    direct_probes: int = 12,
+    oracle_limit: int = 4096,
+    warmup: int = 2,
+    repeats: int = 7,
+):
     oracle_status = "executed" if particles <= oracle_limit else "skipped-particle-limit"
+    if oracle_status == "executed":
+        oracles = {
+            "status": "executed",
+            "bh2c_serial_gpu": {
+                "state_error": dict(STATE_ERROR),
+                "force_rms_relative": 0.001,
+                "force_max_relative": 0.01,
+            },
+            "bh2b2_host_tree_gpu": {
+                "state_error": dict(STATE_ERROR),
+                "force_rms_relative": 0.001,
+                "force_max_relative": 0.01,
+            },
+        }
+        trajectory = {"status": "executed", "state_error": dict(STATE_ERROR)}
+        flat_rms = 0.001
+        flat_max = 0.01
+    else:
+        oracles = {
+            "status": "skipped-particle-limit",
+            "limit": oracle_limit,
+            "reason": "bounded oracle",
+        }
+        trajectory = {
+            "status": "skipped-particle-limit",
+            "limit": oracle_limit,
+            "reason": "bounded trajectory",
+        }
+        flat_rms = None
+        flat_max = None
+
+    parallel_samples = [0.005] * repeats
     serial = (
         {
             "status": "executed",
@@ -31,12 +86,20 @@ def receipt_for(particles: int, *, steps: int = 3, oracle_limit: int = 4096, rep
         "builder": "gpu-parallel-sparse-radix-v1",
         "measurement_class": "hardware",
         "hardware_performance_claim_allowed": True,
+        "preset": preset,
         "particles": particles,
         "steps": steps,
+        "dt_myr": dt_myr,
+        "simulated_time_myr": dt_myr * steps,
+        "seed": seed,
+        "theta": theta,
+        "softening_kpc": softening_kpc,
         "gpu": {
             "name": "Synthetic GPU",
             "backend": "Vulkan",
             "device_type": "DiscreteGpu",
+            "driver": "synthetic-driver",
+            "driver_info": "1.0",
             "software": False,
         },
         "host_tree_rebuilds": 0,
@@ -51,18 +114,46 @@ def receipt_for(particles: int, *, steps: int = 3, oracle_limit: int = 4096, rep
             "max_depth": 6,
         },
         "final_force": {
+            "bh2a_flat_status": oracle_status,
+            "gpu_vs_bh2a_flat_rms_relative": flat_rms,
+            "gpu_vs_bh2a_flat_max_relative": flat_max,
+            "direct_probe_count": min(direct_probes, particles),
             "direct_probe_rms_relative": 0.001,
             "direct_probe_max_relative": 0.01,
         },
-        "trajectory_vs_bh2a_flat_f64": {"status": oracle_status},
-        "gpu_oracles": {"status": oracle_status},
+        "trajectory_vs_bh2a_flat_f64": trajectory,
+        "gpu_oracles": oracles,
         "tree_build_benchmark": {
+            "sample_scope": (
+                "complete rebuild call including host-side uniform/bind-group setup, "
+                "command encoding, submit and synchronization"
+            ),
             "stage_timings_are_diagnostics": True,
-            "parallel_samples_seconds": [0.005] * repeats,
+            "warmup": warmup,
+            "repeats": repeats,
+            "parallel_samples_seconds": parallel_samples,
             "parallel_median_seconds": 0.005,
             "bh2c_serial": serial,
         },
     }
+
+
+def validation_kwargs(particles: int, **overrides):
+    values = {
+        "particles": particles,
+        "preset": "disc",
+        "steps": 3,
+        "dt_myr": 0.01,
+        "seed": 303,
+        "theta": 0.5,
+        "softening_kpc": 0.05,
+        "direct_probes": 12,
+        "oracle_limit": 4096,
+        "benchmark_warmup": 2,
+        "benchmark_repeats": 7,
+    }
+    values.update(overrides)
+    return values
 
 
 class Bh2dHardwareSweepTests(unittest.TestCase):
@@ -73,68 +164,196 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 with self.assertRaises(sweep.SweepError):
                     sweep.parse_particles(invalid)
 
+    def test_cleanliness_rejects_untracked_cargo_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            (repo / "tracked.txt").write_text("tracked\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+
+            cargo = repo / ".cargo"
+            cargo.mkdir()
+            (cargo / "config.toml").write_text('[build]\nrustflags = ["-C", "target-cpu=native"]\n')
+
+            with self.assertRaisesRegex(sweep.SweepError, "untracked files"):
+                sweep.require_clean_source_tree(repo)
+
+    def test_cleanliness_allows_only_the_evidence_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            (repo / "tracked.txt").write_text("tracked\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+
+            output = repo / "runs" / "evidence"
+            output.mkdir(parents=True)
+            (output / "manifest.json").write_text("{}\n")
+            sweep.require_clean_source_tree(repo, output)
+
+            (repo / "unexpected.txt").write_text("changes build provenance\n")
+            with self.assertRaisesRegex(sweep.SweepError, "unexpected.txt"):
+                sweep.require_clean_source_tree(repo, output)
+
+    def test_source_provenance_rejects_head_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            path = repo / "tracked.txt"
+            path.write_text("one\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "one"], cwd=repo, check=True)
+            revision = sweep.git_revision(repo)
+
+            path.write_text("two\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "two"], cwd=repo, check=True)
+
+            with self.assertRaisesRegex(sweep.SweepError, "source revision changed"):
+                sweep.require_source_provenance(repo, revision)
+
     def test_hardware_receipt_at_oracle_size_is_accepted(self):
-        summary = sweep.validate_receipt(
-            receipt_for(4096),
-            particles=4096,
-            steps=3,
-            oracle_limit=4096,
-            benchmark_repeats=7,
-        )
+        summary = sweep.validate_receipt(receipt_for(4096), **validation_kwargs(4096))
         self.assertEqual(summary["particles"], 4096)
         self.assertEqual(summary["bh2c_parallel_vs_serial_speedup"], 2.0)
-        self.assertGreater(summary["parallel_median_seconds"], 0.0)
+        self.assertEqual(summary["parallel_median_seconds"], 0.005)
 
     def test_large_hardware_receipt_requires_explicit_oracle_skips(self):
-        summary = sweep.validate_receipt(
-            receipt_for(8192),
-            particles=8192,
-            steps=3,
-            oracle_limit=4096,
-            benchmark_repeats=7,
-        )
+        summary = sweep.validate_receipt(receipt_for(8192), **validation_kwargs(8192))
         self.assertEqual(summary["particles"], 8192)
         self.assertIsNone(summary["bh2c_parallel_vs_serial_speedup"])
+
+    def test_receipt_must_bind_the_full_requested_workload(self):
+        mutations = {
+            "preset": "collision",
+            "dt_myr": 1.0,
+            "seed": 999,
+            "theta": 2.0,
+            "softening_kpc": 100.0,
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                receipt = receipt_for(512)
+                receipt[field] = value
+                with self.assertRaisesRegex(sweep.SweepError, "requested workload"):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["final_force"]["direct_probe_count"] = 1
+        with self.assertRaisesRegex(sweep.SweepError, "direct-probe count"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree_build_benchmark"]["warmup"] = 9
+        with self.assertRaisesRegex(sweep.SweepError, "warmup count"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree_build_benchmark"]["repeats"] = 6
+        with self.assertRaisesRegex(sweep.SweepError, "repeat count"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_adapter_identity_is_mandatory_and_hardware_bound(self):
+        for gpu in (
+            {},
+            {
+                "name": "Synthetic GPU",
+                "backend": "Vulkan",
+                "device_type": "DiscreteGpu",
+                "driver": "",
+                "driver_info": "",
+                "software": False,
+            },
+        ):
+            with self.subTest(gpu=gpu):
+                receipt = receipt_for(512)
+                receipt["gpu"] = gpu
+                with self.assertRaises(sweep.SweepError):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_software_receipt_is_rejected(self):
         receipt = receipt_for(512)
         receipt["measurement_class"] = "software-validation"
         receipt["hardware_performance_claim_allowed"] = False
+        receipt["gpu"]["software"] = True
         with self.assertRaisesRegex(sweep.SweepError, "software-validation"):
-            sweep.validate_receipt(
-                receipt,
-                particles=512,
-                steps=3,
-                oracle_limit=4096,
-                benchmark_repeats=7,
-            )
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_malformed_typed_receipt_is_rejected_as_sweep_error(self):
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = "corrupt"
+        with self.assertRaisesRegex(sweep.SweepError, "active_cell_count must be an integer"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_repeat_tree_mismatch_is_rejected(self):
         receipt = receipt_for(512)
         receipt["tree"]["repeat_rebuild_matches"] = False
         with self.assertRaisesRegex(sweep.SweepError, "repeat tree checksum"):
-            sweep.validate_receipt(
-                receipt,
-                particles=512,
-                steps=3,
-                oracle_limit=4096,
-                benchmark_repeats=7,
-            )
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_executed_oracle_payloads_are_required(self):
+        receipt = receipt_for(512)
+        receipt["gpu_oracles"] = {"status": "executed"}
+        with self.assertRaisesRegex(sweep.SweepError, "bh2c_serial_gpu"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["trajectory_vs_bh2a_flat_f64"] = {"status": "executed"}
+        with self.assertRaisesRegex(sweep.SweepError, "state_error"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_parallel_median_is_recomputed_from_samples(self):
+        receipt = receipt_for(512)
+        receipt["tree_build_benchmark"]["parallel_samples_seconds"] = [100.0] * 7
+        receipt["tree_build_benchmark"]["parallel_median_seconds"] = 0.000001
+        with self.assertRaisesRegex(sweep.SweepError, "median does not match"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_serial_benchmark_summary_is_recomputed_from_samples(self):
+        receipt = receipt_for(512)
+        serial = receipt["tree_build_benchmark"]["bh2c_serial"]
+        serial["samples_seconds"] = [50.0] * 7
+        serial["median_seconds"] = 0.01
+        with self.assertRaisesRegex(sweep.SweepError, "BH #2C benchmark median"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_nonfinite_or_nonpositive_benchmark_samples_are_rejected(self):
+        for bad in (0.0, -1.0, float("inf"), float("nan")):
+            with self.subTest(bad=bad):
+                receipt = receipt_for(512)
+                receipt["tree_build_benchmark"]["parallel_samples_seconds"][0] = bad
+                with self.assertRaises(sweep.SweepError):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_bh2c_benchmark_must_skip_above_its_cap(self):
         receipt = receipt_for(8192)
         receipt["tree_build_benchmark"]["bh2c_serial"] = {
             "status": "executed",
-            "parallel_vs_serial_speedup": 1.0,
+            "samples_seconds": [0.01] * 7,
+            "median_seconds": 0.01,
+            "parallel_vs_serial_speedup": 2.0,
         }
         with self.assertRaisesRegex(sweep.SweepError, "must skip above 4096"):
-            sweep.validate_receipt(
-                receipt,
-                particles=8192,
-                steps=3,
-                oracle_limit=4096,
-                benchmark_repeats=7,
-            )
+            sweep.validate_receipt(receipt, **validation_kwargs(8192))
 
 
 if __name__ == "__main__":
