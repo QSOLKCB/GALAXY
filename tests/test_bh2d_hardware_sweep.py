@@ -45,24 +45,30 @@ def receipt_for(
     active_cell_count = 2 * leaf_count - 1
     max_depth = (particles - 1).bit_length()
 
+    force_rms = 0.001
+    force_max = force_rms * min(particles ** 0.5, 10.0)
+    probe_count = min(direct_probes, particles)
+    direct_rms = 0.001
+    direct_max = direct_rms * (probe_count ** 0.5)
+
     oracle_status = "executed" if particles <= oracle_limit else "skipped-particle-limit"
     if oracle_status == "executed":
         oracles = {
             "status": "executed",
             "bh2c_serial_gpu": {
                 "state_error": dict(STATE_ERROR),
-                "force_rms_relative": 0.001,
-                "force_max_relative": 0.01,
+                "force_rms_relative": force_rms,
+                "force_max_relative": force_max,
             },
             "bh2b2_host_tree_gpu": {
                 "state_error": dict(STATE_ERROR),
-                "force_rms_relative": 0.001,
-                "force_max_relative": 0.01,
+                "force_rms_relative": force_rms,
+                "force_max_relative": force_max,
             },
         }
         trajectory = {"status": "executed", "state_error": dict(STATE_ERROR)}
-        flat_rms = 0.001
-        flat_max = 0.01
+        flat_rms = force_rms
+        flat_max = force_max
     else:
         oracles = {
             "status": "skipped-particle-limit",
@@ -130,9 +136,9 @@ def receipt_for(
             "bh2a_flat_status": oracle_status,
             "gpu_vs_bh2a_flat_rms_relative": flat_rms,
             "gpu_vs_bh2a_flat_max_relative": flat_max,
-            "direct_probe_count": min(direct_probes, particles),
-            "direct_probe_rms_relative": 0.001,
-            "direct_probe_max_relative": 0.01,
+            "direct_probe_count": probe_count,
+            "direct_probe_rms_relative": direct_rms,
+            "direct_probe_max_relative": direct_max,
         },
         "trajectory_vs_bh2a_flat_f64": trajectory,
         "gpu_oracles": oracles,
