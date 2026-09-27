@@ -981,6 +981,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
         receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 6485
+        receipt["tree"]["leaf_count"] = 512
+        receipt["tree"]["max_depth"] = 16
+        with self.assertRaisesRegex(sweep.SweepError, "per-depth quadtree occupancy"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
         receipt["tree"]["active_cell_count"] = 1
         receipt["tree"]["leaf_count"] = 1
         receipt["tree"]["max_depth"] = 0
