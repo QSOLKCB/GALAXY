@@ -10,9 +10,13 @@ for (const file of ["index.html", "style.css", "barnes-hut.html", "barnes-hut.cs
   fs.mkdirSync(path.dirname(path.join(output, file)), { recursive: true });
   fs.copyFileSync(path.join(root, file), path.join(output, file));
 }
-const html = fs.readFileSync(path.join(output, "index.html"), "utf8");
-for (const [, asset] of html.matchAll(/(?:src|href)="([^"#]+)"/g)) {
-  if (!asset.startsWith("http") && !fs.existsSync(path.join(output, asset))) throw new Error("Missing distributed asset: " + asset);
+for (const page of ["index.html", "barnes-hut.html"]) {
+  const html = fs.readFileSync(path.join(output, page), "utf8");
+  for (const [, asset] of html.matchAll(/(?:src|href)="([^"#]+)"/g)) {
+    if (!asset.startsWith("http") && !fs.existsSync(path.join(output, asset))) {
+      throw new Error("Missing distributed asset: " + asset + " referenced by " + page);
+    }
+  }
 }
 fs.writeFileSync(path.join(output, ".nojekyll"), "");
 console.log("Static GALAXY bundle prepared in _site.");
