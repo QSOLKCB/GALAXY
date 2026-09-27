@@ -240,6 +240,41 @@ The current tree builder is deliberately a correctness reference: bounds, bitoni
 
 Receipts separate each build stage and record full final-force comparison to BH #2A, direct probes, full BH #2A trajectory comparison and a same-state repeat tree checksum. Hardware-performance conclusions must wait for a parallel BH #2D builder and real hardware measurements.
 
+### BH #2D parallel GPU tree construction
+
+`galaxy-bh-gpu-tree-parallel` is a separate optimization path that leaves the BH #2C builder available as an executable oracle.
+
+```bash
+cargo run --release --manifest-path runtime/Cargo.toml --locked \
+  --bin galaxy-bh-gpu-tree-parallel -- \
+  --preset disc --particles 4096 --steps 3 --dt-myr 0.01 \
+  --theta 0.5 --benchmark-warmup 2 --benchmark-repeats 7 \
+  --require-hardware \
+  --receipt runs/bh2d-hardware/receipt.json
+```
+
+The builder uses:
+
+- workgroup-parallel bounds reduction;
+- parallel Morton generation;
+- eight stable 4-bit LSD radix passes;
+- deterministic sparse level-order cells with `slot = depth * N + group_start`;
+- per-depth parallel range/link construction;
+- reverse-depth parallel mass/centre-of-mass aggregation.
+
+The initial phase cap is 65,536 resident bodies. The sparse 17-level cell layout trades memory for deterministic cell identity and race-free construction.
+
+For workloads within the configured oracle limit, the verifier executes BH #2A f64, BH #2B2 host-built GPU, and BH #2C serialized-GPU references. Larger workloads explicitly skip those expensive full references while retaining bounded direct probes, sorted-order checks and same-state GPU tree determinism.
+
+The receipt `galaxy.barnes-hut-parallel-gpu-tree-receipt.v1` records a `measurement_class`:
+
+- `software-validation` for Mesa/llvmpipe and other software adapters;
+- `hardware` for a non-software adapter.
+
+It also records `hardware_performance_claim_allowed`. `--require-hardware` fails closed when the selected adapter is software, so a CI software-Vulkan timing cannot be accidentally promoted into a hardware benchmark.
+
+Tree-build stage families are batched into command buffers before synchronization. Reported stage times cover bounds, Morton generation, radix ordering, target-position assignment, topology and aggregates rather than one host synchronization per small kernel.
+
 ## Physics and numerical behavior
 
 The source remains UFF commit
@@ -349,6 +384,7 @@ bash scripts/run-gpu.sh verify
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- --particles 256 --theta 0.5 --allow-software
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree-parallel -- --particles 512 --steps 3 --dt-myr 0.01 --allow-software --benchmark-warmup 0 --benchmark-repeats 2
 ```
 
 `verify` executes the compiled GPU kernels against 195 predictions from UFF's
