@@ -55,7 +55,7 @@ A future GPU implementation should preserve this CPU/direct reference as its cor
 
 ## Visualization
 
-`index.html` is the default lightweight N-body observatory. It reuses the verified browser force solver with 768 resident bodies by default (128–2,048 selectable), fixed-rate leapfrog scheduling, seeded presets, optional trails and luminous sprites. Rendering contributes no additional gravitational mass. Orbit/zoom controls project the planar dynamics without modifying them. The scheduler caps catch-up at four steps per frame, discards overload debt, and suspends in hidden tabs; under load simulated time advances more slowly. Force probes pause the simulation so their result remains attached to the displayed state.
+`index.html` is the default lightweight N-body observatory. It reuses the verified browser force solver with 768 resident bodies by default (128–2,048 selectable), fixed-rate leapfrog scheduling, seeded presets, optional trails and luminous sprites. Rendering contributes no additional gravitational mass. Orbit/zoom controls project the planar dynamics without modifying them. At 4× speed on an ordinary 60 Hz display, each rendered frame advances four physics steps. After a render gap the scheduler may batch up to 24 steps, derived from the 100 ms elapsed-time cap, then discards any remaining overload debt; hidden tabs suspend physics and under sustained load simulated time advances more slowly. Force probes pause the simulation so their result remains attached to the displayed state.
 
 
 `barnes-hut.html` is an offline browser laboratory. It renders the resident bodies and can overlay quadtree cells while the system evolves. Controls expose:
