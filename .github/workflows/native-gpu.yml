@@ -25,6 +25,11 @@ jobs:
           python-version: '3.12'
       - name: Check SSH runner and result extraction on Windows
         run: python runtime/tests/test_runner.py
+      - name: Check BH2D Windows launcher propagates Python failure
+        shell: cmd
+        run: |
+          call scripts\bench-bh2d-hardware-launch.cmd --particles 512 --dry-run
+          if %ERRORLEVEL% EQU 0 exit /b 1
 
   runner-python:
     runs-on: ubuntu-24.04
