@@ -332,6 +332,55 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 with self.assertRaisesRegex(sweep.SweepError, name):
                     sweep.require_no_build_environment_overrides()
 
+    def test_dependency_source_context_binds_cached_source_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            runtime = repo / "runtime"
+            runtime.mkdir()
+            (runtime / "Cargo.toml").write_text("[package]\nname='fixture'\nversion='0.1.0'\n")
+            dependency = root / "cargo-home" / "registry" / "src" / "index" / "wgpu-24.0.5"
+            dependency.mkdir(parents=True)
+            manifest = dependency / "Cargo.toml"
+            source = dependency / "src" / "lib.rs"
+            source.parent.mkdir()
+            manifest.write_text("[package]\nname='wgpu'\nversion='24.0.5'\n")
+            source.write_text("pub const VALUE: u32 = 1;\n")
+            metadata = {
+                "packages": [
+                    {
+                        "name": "fixture",
+                        "version": "0.1.0",
+                        "source": None,
+                        "manifest_path": str(runtime / "Cargo.toml"),
+                    },
+                    {
+                        "name": "wgpu",
+                        "version": "24.0.5",
+                        "source": "registry+https://github.com/rust-lang/crates.io-index",
+                        "manifest_path": str(manifest),
+                    },
+                ]
+            }
+            completed = subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=__import__("json").dumps(metadata).encode(),
+                stderr=b"",
+            )
+            toolchain = {
+                "cargo": {"executable": "/selected/cargo"},
+                "rustc": {"executable": "/selected/rustc"},
+            }
+            with mock.patch.object(sweep.subprocess, "run", return_value=completed):
+                first = sweep.dependency_source_context(repo, toolchain)
+                source.write_text("pub const VALUE: u32 = 2;\n")
+                second = sweep.dependency_source_context(repo, toolchain)
+            self.assertEqual(len(first), 1)
+            self.assertEqual(first[0]["name"], "wgpu")
+            self.assertNotEqual(first[0]["tree_sha256"], second[0]["tree_sha256"])
+
     def test_cargo_config_execution_and_source_redirects_are_rejected(self):
         cases = {
             "rustc-wrapper": '[build]\nrustc-wrapper = "/tmp/wrapper"\n',
@@ -509,6 +558,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                  mock.patch.object(sweep, "require_clean_source_tree"), \
                  mock.patch.object(sweep, "cargo_config_context", return_value=[]), \
                  mock.patch.object(sweep, "toolchain_context", return_value=context), \
+                 mock.patch.object(sweep, "dependency_source_context", return_value=[]), \
                  mock.patch.object(sweep, "require_source_provenance"), \
                  mock.patch.object(sweep.platform, "platform", return_value="fixture"), \
                  mock.patch.object(sweep.subprocess, "run", return_value=                     subprocess.CompletedProcess([], 1, b"driver: \xff\n")):
@@ -545,6 +595,28 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         index = command.index("--target-dir")
         self.assertEqual(command[index + 1], str(target_dir))
         self.assertNotIn("runtime/target", " ".join(command))
+
+    def test_collision_dry_run_rejects_fewer_than_four_particles(self):
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(MODULE_PATH),
+                    "--output",
+                    str(Path(tmp) / "plan"),
+                    "--preset",
+                    "collision",
+                    "--particles",
+                    "2",
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("at least 4", result.stderr)
 
     def test_hardware_receipt_at_oracle_size_is_accepted(self):
         summary = sweep.validate_receipt(receipt_for(4096), **validation_kwargs(4096))
@@ -662,6 +734,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt = receipt_for(512)
         receipt["tree"]["max_depth"] = 17
         with self.assertRaisesRegex(sweep.SweepError, "frozen Morton depth"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 1
+        receipt["tree"]["leaf_count"] = 1
+        receipt["tree"]["max_depth"] = 0
+        with self.assertRaisesRegex(sweep.SweepError, "internal cell"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_executed_oracle_payloads_are_required(self):
