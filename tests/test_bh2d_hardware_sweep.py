@@ -401,6 +401,121 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             self.assertEqual(len(context["cargo"]["sha256"]), 64)
             self.assertEqual(len(context["rustc"]["sha256"]), 64)
 
+    def test_cli_requires_isolation_before_optional_imports(self):
+        import sys
+        for isolated, expected in ((False, 1), (True, 0)):
+            result = subprocess.run(
+                [sys.executable, *(["-I"] if isolated else []), str(MODULE_PATH),
+                 "--output", "/unused", "--particles", "512", "--dry-run"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, expected, result.stderr)
+            if not isolated:
+                self.assertIn("isolated Python", result.stderr)
+
+    def test_system_build_path_and_explicit_rustc(self):
+        with mock.patch.dict(os.environ, {"PATH": "/unrecorded/bin", "GIT_WORK_TREE": "/other"}):
+            env = sweep.build_environment({"rustc": {"executable": "/selected/bin/rustc"}})
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["RUSTC"], "/selected/bin/rustc")
+        self.assertNotIn("GIT_WORK_TREE", env)
+
+    def test_git_invocation_binds_checkout_and_clears_selectors(self):
+        with mock.patch.dict(os.environ, {"GIT_WORK_TREE": "/other", "GIT_DIR": "/other/.git",
+                                          "GIT_INDEX_FILE": "/other/index"}):
+            command, env = sweep.git_invocation(["git", "status"], ROOT)
+        self.assertIn(str(ROOT), command)
+        self.assertIn(str(ROOT / ".git"), command)
+        for name in ("GIT_WORK_TREE", "GIT_DIR", "GIT_INDEX_FILE"):
+            self.assertNotIn(name, env)
+        self.assertEqual(sweep.git_revision(ROOT),
+                         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip())
+
+    def test_relative_cargo_home_is_relative_to_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "cargo-home"
+            home.mkdir()
+            config = home / "config.toml"
+            config.write_text("[build]\nincremental = false\n")
+            with mock.patch.dict(os.environ, {"CARGO_HOME": "cargo-home"}):
+                self.assertIn(config, sweep.effective_cargo_config_paths(root))
+
+    def test_rustup_proxy_records_selected_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rustup = root / "rustup"
+            rustup.write_bytes(b"proxy identity")
+            proxy = root / "cargo"
+            proxy.symlink_to(rustup)
+            selected = root / "selected-cargo"
+            selected.write_bytes(b"selected compiler tool")
+            with mock.patch.object(sweep, "resolve_executable", return_value=proxy), \
+                 mock.patch.object(sweep, "run_checked", side_effect=[str(selected), "cargo fixture"]):
+                record = sweep.tool_record("cargo", "cargo", root)
+            self.assertEqual(record["executable"], str(selected))
+            self.assertEqual(record["sha256"], sweep.sha256_file(selected))
+            self.assertEqual(record["proxy_sha256"], sweep.sha256_file(rustup))
+            self.assertNotEqual(record["sha256"], record["proxy_sha256"])
+
+    def test_hardlinked_rustup_proxy_uses_rustup_command_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rustup = root / "rustup"
+            rustup.write_bytes(b"proxy")
+            proxy = root / "cargo"
+            os.link(rustup, proxy)
+            selected = root / "toolchain-cargo"
+            selected.write_bytes(b"cargo")
+            with mock.patch.object(sweep, "resolve_executable", return_value=proxy), \
+                 mock.patch.object(sweep.shutil, "which", return_value=str(rustup)), \
+                 mock.patch.object(sweep, "run_checked", side_effect=[str(selected), "cargo fixture"]) as run:
+                record = sweep.tool_record("cargo", "cargo", root)
+            self.assertEqual(run.call_args_list[0].args[0], [str(rustup), "which", "cargo"])
+            self.assertEqual(record["sha256"], sweep.sha256_file(selected))
+
+    def test_invalid_workloads_do_not_create_output(self):
+        import sys
+        for flag, value in (("--dt-myr", "nan"), ("--theta", "inf"),
+                            ("--softening-kpc", "-1"), ("--direct-probes", "65"),
+                            ("--seed", str(2**64))):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "evidence"
+                result = subprocess.run([sys.executable, "-I", str(MODULE_PATH),
+                                         "--output", str(output), flag, value], capture_output=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertFalse(output.exists())
+
+    def test_integer_parse_limit_is_normalized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "receipt.json"
+            path.write_text('{"value":' + '1' * 5000 + '}')
+            with self.assertRaisesRegex(sweep.SweepError, "not valid JSON"):
+                sweep.load_receipt(path)
+
+    def test_non_utf8_run_log_preserved_and_manifest_failed(self):
+        import argparse
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "evidence"
+            args = argparse.Namespace(output=output, particles="512", preset="disc", steps=3,
+                                      dt_myr=0.01, seed=303, theta=0.5, softening_kpc=0.05,
+                                      direct_probes=12, oracle_limit=4096, benchmark_warmup=2,
+                                      benchmark_repeats=7, adapter=None, cargo="cargo", dry_run=False)
+            context = {"cargo": {"executable": "/selected/cargo"},
+                       "rustc": {"executable": "/selected/rustc"}}
+            with mock.patch.object(sweep, "parse_args", return_value=args), \
+                 mock.patch.object(sweep, "git_revision", return_value="fixture"), \
+                 mock.patch.object(sweep, "require_clean_source_tree"), \
+                 mock.patch.object(sweep, "cargo_config_context", return_value=[]), \
+                 mock.patch.object(sweep, "toolchain_context", return_value=context), \
+                 mock.patch.object(sweep, "require_source_provenance"), \
+                 mock.patch.object(sweep.platform, "platform", return_value="fixture"), \
+                 mock.patch.object(sweep.subprocess, "run", return_value=                     subprocess.CompletedProcess([], 1, b"driver: \xff\n")):
+                self.assertEqual(sweep.main(), 1)
+            self.assertEqual((output / "n000512/run.log").read_bytes(), b"driver: \xff\n")
+            self.assertEqual(json.loads((output / "manifest.json").read_text())["status"], "failed")
+
     def test_invalid_utf8_receipt_is_normalized_to_sweep_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "receipt.json"

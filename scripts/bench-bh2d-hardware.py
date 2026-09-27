@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 # SPDX-License-Identifier: Apache-2.0
 """Fail-closed BH #2D real-hardware scaling sweep.
 
@@ -10,6 +10,11 @@ manifest tying the sweep to one clean Git revision and one adapter identity.
 
 from __future__ import annotations
 
+# sys is built in: fail before importing anything from a caller-controlled path.
+import sys
+if __name__ == "__main__" and not sys.flags.isolated:
+    raise SystemExit("Hardware capture requires isolated Python: python3 -I scripts/bench-bh2d-hardware.py ...")
+
 import argparse
 import hashlib
 import json
@@ -20,7 +25,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -42,7 +46,10 @@ GPU_CELL_BYTES = 64
 TREE_META_BYTES = 32
 BOUNDS_RECORD_BYTES = 16
 RADIX_DIGITS = 16
+SYSTEM_PATH = "/usr/bin:/bin"
 BUILD_ENV_EXACT = {
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LIBRARY_PATH", "COMPILER_PATH",
+    "GCC_EXEC_PREFIX", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
     "RUSTFLAGS",
     "CARGO_ENCODED_RUSTFLAGS",
     "CARGO_BUILD_RUSTFLAGS",
@@ -88,19 +95,35 @@ def parse_particles(raw: str) -> list[int]:
     return values
 
 
+def git_invocation(command: list[str], cwd: Path) -> tuple[list[str], dict[str, str]]:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(PATH=SYSTEM_PATH, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    git = shutil.which("git", path=SYSTEM_PATH)
+    if git is None:
+        raise SweepError("system Git is required")
+    # rev-parse also handles a linked worktree's .git file. No ambient selectors.
+    result = subprocess.run([git, "-C", str(cwd), "rev-parse", "--absolute-git-dir"],
+                            env=env, capture_output=True, check=False)
+    if result.returncode:
+        raise SweepError("could not locate the checkout Git directory")
+    git_dir = result.stdout.decode("utf-8").strip()
+    return [git, "--git-dir", git_dir, "--work-tree", str(cwd.resolve()),
+            "-c", "core.fsmonitor=false", *command[1:]], env
+
+
 def run_checked(command: list[str], cwd: Path) -> str:
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    env = None
+    if command[0] == "git":
+        command, env = git_invocation(command, cwd)
+    completed = subprocess.run(command, cwd=cwd, env=env, check=False,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
+        detail = (completed.stderr or completed.stdout).decode("utf-8", errors="replace").strip()
         raise SweepError(f"command failed ({completed.returncode}): {' '.join(command)}\n{detail}")
-    return completed.stdout
+    try:
+        return completed.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SweepError("command output is not valid UTF-8") from exc
 
 
 def git_revision(repo_root: Path) -> str:
@@ -137,7 +160,10 @@ def effective_cargo_config_paths(repo_root: Path) -> list[Path]:
             break
         current = current.parent
 
-    cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")).expanduser().resolve()
+    cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")).expanduser()
+    if not cargo_home.is_absolute():
+        cargo_home = repo_root / cargo_home
+    cargo_home = cargo_home.resolve()
     candidates.extend((cargo_home / "config.toml", cargo_home / "config"))
 
     unique: list[Path] = []
@@ -173,32 +199,55 @@ def resolve_executable(command: str, name: str) -> Path:
     resolved = shutil.which(command)
     if resolved is None:
         raise SweepError(f"could not resolve {name} executable: {command}")
-    path = Path(resolved).resolve()
+    path = Path(os.path.abspath(resolved))
     if not path.is_file():
         raise SweepError(f"resolved {name} executable is not a file: {path}")
     return path
 
 
+def tool_record(command: str, name: str, repo_root: Path) -> dict[str, Any]:
+    invocation = resolve_executable(command, name)
+    selected = invocation
+    # Keep argv[0] semantics of proxies, but identify the actual selected tool.
+    rustup = shutil.which("rustup")
+    is_proxy = invocation.resolve().stem == "rustup" or (
+        rustup is not None and os.path.samefile(invocation, rustup)
+    )
+    if is_proxy:
+        rustup_command = rustup if rustup and os.path.samefile(invocation, rustup) else str(invocation.resolve())
+        selected = Path(run_checked([rustup_command, "which", name], repo_root).strip())
+        require(selected.is_absolute() and selected.is_file(), f"rustup did not resolve {name}")
+        require(not os.path.samefile(selected, invocation), f"rustup resolved {name} to its proxy")
+    flags = ["--version", "--verbose"] if name == "cargo" else ["-vV"]
+    return {
+        "path": path_label(selected, repo_root),
+        "executable": str(selected.absolute()),
+        "sha256": sha256_file(selected),
+        "invocation": str(invocation),
+        "proxy_sha256": sha256_file(invocation) if is_proxy else None,
+        "version_verbose": run_checked([str(selected), *flags], repo_root).strip(),
+    }
+
+
 def toolchain_context(cargo_command: str, repo_root: Path) -> dict[str, Any]:
     require_no_build_environment_overrides()
-    cargo_path = resolve_executable(cargo_command, "Cargo")
-    rustc_path = resolve_executable("rustc", "rustc")
-    return {
-        "cargo": {
-            "requested": cargo_command,
-            "path": path_label(cargo_path, repo_root),
-            "sha256": sha256_file(cargo_path),
-            "version_verbose": run_checked(
-                [str(cargo_path), "--version", "--verbose"],
-                repo_root,
-            ).strip(),
-        },
-        "rustc": {
-            "path": path_label(rustc_path, repo_root),
-            "sha256": sha256_file(rustc_path),
-            "version_verbose": run_checked([str(rustc_path), "-vV"], repo_root).strip(),
-        },
-    }
+    cargo = tool_record(cargo_command, "cargo", repo_root)
+    cargo["requested"] = cargo_command
+    rustc = tool_record("rustc", "rustc", repo_root)
+    system_tools = {}
+    for name in ("cc", "c++", "gcc", "g++", "ld", "as", "ar", "ranlib", "git"):
+        path = shutil.which(name, path=SYSTEM_PATH)
+        if path:
+            system_tools[name] = {"path": str(Path(path).resolve()), "sha256": sha256_file(Path(path))}
+    require("cc" in system_tools, "system C linker (cc) is required")
+    return {"cargo": cargo, "rustc": rustc, "build_path": SYSTEM_PATH, "system_tools": system_tools}
+
+
+def build_environment(context: dict[str, Any]) -> dict[str, str]:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env["PATH"] = SYSTEM_PATH
+    env["RUSTC"] = context["rustc"]["executable"]
+    return env
 
 
 def reject_cargo_config_redirects(document: Any, path: Path) -> None:
@@ -261,8 +310,10 @@ def cargo_config_context(repo_root: Path) -> list[dict[str, str]]:
     for path in effective_cargo_config_paths(repo_root):
         if is_within(path, root):
             relative = path.relative_to(root)
+            git_command, git_env = git_invocation(
+                ["git", "ls-files", "--error-unmatch", "--", str(relative)], repo_root)
             tracked = subprocess.run(
-                ["git", "ls-files", "--error-unmatch", "--", str(relative)],
+                git_command, env=git_env,
                 cwd=repo_root,
                 check=False,
                 stdout=subprocess.DEVNULL,
@@ -312,10 +363,11 @@ def require_clean_source_tree(
         )
 
     for command in (
-        ["git", "diff", "--quiet", "--"],
-        ["git", "diff", "--cached", "--quiet", "--"],
+        ["git", "diff", "--no-ext-diff", "--quiet", "--"],
+        ["git", "diff", "--no-ext-diff", "--cached", "--quiet", "--"],
     ):
-        completed = subprocess.run(command, cwd=repo_root, check=False)
+        git_command, git_env = git_invocation(command, repo_root)
+        completed = subprocess.run(git_command, env=git_env, cwd=repo_root, check=False)
         if completed.returncode != 0:
             raise SweepError(
                 "tracked source tree is dirty; commit or revert changes before hardware evidence capture"
@@ -374,7 +426,7 @@ def load_receipt(path: Path) -> Any:
         raise SweepError(f"receipt is not valid UTF-8: {path}") from exc
     try:
         return json.loads(text)
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         raise SweepError(f"receipt is not valid JSON: {path}") from exc
 
 
@@ -932,6 +984,15 @@ def main() -> int:
         require(1 <= args.benchmark_repeats <= 31, "--benchmark-repeats must be in 1..=31")
         require(0 <= args.benchmark_warmup <= 10, "--benchmark-warmup must be in 0..=10")
 
+        require_number(args.dt_myr, "--dt-myr")
+        require_number(args.theta, "--theta")
+        require_number(args.softening_kpc, "--softening-kpc")
+        require(1e-6 <= args.dt_myr <= 1, "--dt-myr must be in [1e-6, 1]")
+        require(0 <= args.theta <= 2, "--theta must be in [0, 2]")
+        require(0 <= args.softening_kpc <= 100, "--softening-kpc must be in [0, 100]")
+        require(1 <= args.direct_probes <= 64, "--direct-probes must be in 1..=64")
+        require(0 <= args.seed <= 2**64 - 1, "--seed must fit u64")
+
         if args.dry_run:
             for particles in particles_list:
                 run_dir = args.output / f"n{particles:06d}"
@@ -992,7 +1053,7 @@ def main() -> int:
             },
             "runs": [],
         }
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n")
 
         adapter: str | None = None
         for particles in particles_list:
@@ -1016,15 +1077,17 @@ def main() -> int:
                 )
             command = command_for(args, particles, receipt_path, target_dir)
 
+            command[0] = build_toolchain_context["cargo"]["executable"]
             completed = subprocess.run(
                 command,
+                env=build_environment(build_toolchain_context),
                 cwd=repo_root,
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
             )
-            log_path.write_text(completed.stdout)
+            # Preserve every output byte, including non-UTF-8 driver diagnostics.
+            log_path.write_bytes(completed.stdout)
 
             require_source_provenance(
                 repo_root,
@@ -1073,7 +1136,7 @@ def main() -> int:
             summary.pop("adapter_identity")
             manifest["runs"].append(summary)
             manifest["adapter_identity"] = adapter
-            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n")
 
         require_source_provenance(
             repo_root,
@@ -1085,15 +1148,15 @@ def main() -> int:
         )
         manifest["status"] = "complete"
         manifest["completed_run_count"] = len(manifest["runs"])
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n")
         print(manifest_path)
         return 0
-    except (OSError, json.JSONDecodeError, SweepError) as exc:
+    except (OSError, ValueError, SweepError) as exc:
         if manifest_path is not None and manifest is not None and manifest_path.parent.exists():
             manifest["status"] = "failed"
             manifest["error"] = str(exc)
             try:
-                manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+                manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n")
             except OSError:
                 pass
         print(f"BH #2D hardware sweep: {exc}", file=sys.stderr)
