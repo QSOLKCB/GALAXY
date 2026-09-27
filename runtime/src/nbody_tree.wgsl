@@ -44,7 +44,7 @@ struct TreeMeta {
 @group(0) @binding(2) var<storage, read_write> bodies: array<BhBody>;
 @group(0) @binding(3) var<storage, read_write> entries: array<BhEntry>;
 @group(0) @binding(4) var<storage, read_write> cells: array<BhCell>;
-@group(0) @binding(5) var<storage, read_write> meta: TreeMeta;
+@group(0) @binding(5) var<storage, read_write> tree_meta: TreeMeta;
 
 fn spread16(input: u32) -> u32 {
     var value = input & 0x0000ffffu;
@@ -97,13 +97,13 @@ fn bh_tree_bounds(@builtin(global_invocation_id) id: vec3<u32>) {
         i += 1u;
     }
     let span = max(max(max_x - min_x, max_y - min_y), 1.0e-12);
-    meta.bounds = vec4<f32>(
+    tree_meta.bounds = vec4<f32>(
         0.5 * (min_x + max_x),
         0.5 * (min_y + max_y),
         0.5 * span + 1.0e-12,
         0.0,
     );
-    meta.data = vec4<u32>(0u, 0u, 0u, 0u);
+    tree_meta.data = vec4<u32>(0u, 0u, 0u, 0u);
 }
 
 @compute @workgroup_size(128)
@@ -120,9 +120,9 @@ fn bh_tree_morton(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let state = states[i];
-    let cx = meta.bounds.x;
-    let cy = meta.bounds.y;
-    let half = meta.bounds.z;
+    let cx = tree_meta.bounds.x;
+    let cy = tree_meta.bounds.y;
+    let half = tree_meta.bounds.z;
     let qx = quantize_axis(state.position_mass.x, cx, half);
     let qy = quantize_axis(state.position_mass.y, cy, half);
     entries[i].data = vec4<u32>(morton2(qx, qy), i, 0u, 0u);
@@ -219,9 +219,9 @@ fn bh_tree_topology(@builtin(global_invocation_id) id: vec3<u32>) {
     let capacity = arrayLength(&cells);
 
     cells[0] = empty_cell(
-        meta.bounds.x,
-        meta.bounds.y,
-        meta.bounds.z,
+        tree_meta.bounds.x,
+        tree_meta.bounds.y,
+        tree_meta.bounds.z,
         0u,
         count,
         0u,
@@ -277,7 +277,7 @@ fn bh_tree_topology(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
 
                 if next_free >= capacity {
-                    meta.data = vec4<u32>(next_free, leaf_count, max_seen, 1u);
+                    tree_meta.data = vec4<u32>(next_free, leaf_count, max_seen, 1u);
                     return;
                 }
 
@@ -304,7 +304,7 @@ fn bh_tree_topology(@builtin(global_invocation_id) id: vec3<u32>) {
         level_end = next_free;
     }
 
-    meta.data = vec4<u32>(next_free, leaf_count, max_seen, 0u);
+    tree_meta.data = vec4<u32>(next_free, leaf_count, max_seen, 0u);
 }
 
 @compute @workgroup_size(1)
@@ -312,11 +312,11 @@ fn bh_tree_aggregate(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x != 0u {
         return;
     }
-    if meta.data.w != 0u {
+    if tree_meta.data.w != 0u {
         return;
     }
 
-    var remaining = meta.data.x;
+    var remaining = tree_meta.data.x;
     loop {
         if remaining == 0u {
             break;
