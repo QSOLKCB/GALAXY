@@ -50,6 +50,10 @@ GPU_CELL_BYTES = 64
 TREE_META_BYTES = 32
 BOUNDS_RECORD_BYTES = 16
 RADIX_DIGITS = 16
+TREE_ORDERING = (
+    "stable-lsd-radix-4bit-morton-code; resident body index retained for equal Morton keys"
+)
+TREE_LAYOUT = "sparse-level-order-slot=depth*N+group_start"
 CLEAN_LAUNCH_ENV = "GALAXY_BH2D_CLEAN_LAUNCH"
 BUILD_ENV_EXACT = {
     "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "LIBRARY_PATH", "COMPILER_PATH",
@@ -1084,6 +1088,14 @@ def validate_receipt(
     identity = adapter_identity(root.get("gpu"), adapter_selector)
 
     tree = require_object(root.get("tree"), "receipt.tree")
+    require(
+        tree.get("ordering") == TREE_ORDERING,
+        "receipt.tree.ordering does not match the frozen stable Morton ordering",
+    )
+    require(
+        tree.get("layout") == TREE_LAYOUT,
+        "receipt.tree.layout does not match the frozen sparse level-order layout",
+    )
     require(tree.get("repeat_rebuild_matches") is True, "same-state repeat tree checksum changed")
     require_checksum(
         tree.get("initial_checksum_fnv_mix64"),
