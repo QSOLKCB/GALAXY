@@ -34,6 +34,19 @@ static_assert(sizeof(BhBody) == 32, "BhBody ABI");
 static_assert(sizeof(BhEntry) == 16, "BhEntry ABI");
 static_assert(sizeof(BhCell) == 64, "BhCell ABI");
 
+struct alignas(16) EvolveSettings {
+    uint32_t info[4];
+    float motion[4];
+};
+
+struct alignas(16) EvolveState {
+    float position_mass[4];
+    float velocity[4];
+};
+
+static_assert(sizeof(EvolveSettings) == 32, "EvolveSettings ABI");
+static_assert(sizeof(EvolveState) == 32, "EvolveState ABI");
+
 __device__ inline void add_point_mass(
     float tx, float ty,
     float px, float py, float mass,
@@ -130,4 +143,43 @@ extern "C" __global__ void bh_traverse(
     }
 
     accelerations[target_index] = make_float4(ax, ay, 0.0f, 0.0f);
+}
+
+
+extern "C" __global__ void bh_kick_drift(
+    const EvolveSettings* settings_ptr,
+    EvolveState* states,
+    const float4* accelerations
+) {
+    const EvolveSettings settings = *settings_ptr;
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= settings.info[0]) {
+        return;
+    }
+    const float dt = settings.motion[0];
+    EvolveState state = states[i];
+    const float vx_half = state.velocity[0] + 0.5f * dt * accelerations[i].x;
+    const float vy_half = state.velocity[1] + 0.5f * dt * accelerations[i].y;
+    state.position_mass[0] += dt * vx_half;
+    state.position_mass[1] += dt * vy_half;
+    state.velocity[0] = vx_half;
+    state.velocity[1] = vy_half;
+    states[i] = state;
+}
+
+extern "C" __global__ void bh_final_kick(
+    const EvolveSettings* settings_ptr,
+    EvolveState* states,
+    const float4* accelerations
+) {
+    const EvolveSettings settings = *settings_ptr;
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= settings.info[0]) {
+        return;
+    }
+    const float dt = settings.motion[0];
+    EvolveState state = states[i];
+    state.velocity[0] += 0.5f * dt * accelerations[i].x;
+    state.velocity[1] += 0.5f * dt * accelerations[i].y;
+    states[i] = state;
 }

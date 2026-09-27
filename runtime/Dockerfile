@@ -21,6 +21,7 @@ ENV NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute
 COPY --from=build /opt/galaxy/runtime/target/release/galaxy-runtime /usr/local/bin/galaxy-runtime
 COPY --from=build /opt/galaxy/runtime/target/release/galaxy-u64 /usr/local/bin/galaxy-u64
 COPY --from=build /opt/galaxy/runtime/target/release/galaxy-bh-gpu /usr/local/bin/galaxy-bh-gpu
+COPY --from=build /opt/galaxy/runtime/target/release/galaxy-bh-evolve /usr/local/bin/galaxy-bh-evolve
 COPY runtime/jobs/ /opt/galaxy/jobs/
 COPY --from=build /opt/dependency-licenses/ /usr/share/doc/galaxy-runtime/dependencies/
 COPY LICENSE NOTICE.md /usr/share/doc/galaxy-runtime/

@@ -141,20 +141,60 @@ The Vulkan path executes the actual flat traversal in WGSL. It preserves:
 
 The evidence binary `galaxy-bh-gpu` reports CPU tree-build time, f32 packing time, GPU transfer, GPU dispatch, GPU readback, flat-CPU reference traversal, and direct-force reference time separately. Error fields compare every GPU acceleration against the flat f64 CPU oracle and a bounded deterministic subset against the independent direct-force oracle. This keeps high-count GPU verification from requiring a complete O(N²) CPU solve.
 
-This phase does **not** perform GPU tree construction or evolve multiple self-gravity steps.
+BH #2B1 is frozen by merged PR #20. It does **not** perform GPU tree construction.
+
+## BH #2B2 — evolving GPU state with a host rebuild boundary
+
+BH #2B2 adds persistent resident state without changing the frozen BH #2B1 force-transfer records.
+
+Additional GPU records are:
+
+| Record | Bytes | Contents |
+| --- | ---: | --- |
+| evolution settings | 32 | body count + timestep |
+| evolving state | 32 | f32 x/y/mass + vx/vy |
+
+The execution ladder is:
+
+```text
+initial CPU flat tree
+  -> GPU force into persistent acceleration buffer
+  -> GPU half-kick + drift
+  -> drifted state readback
+  -> CPU flat-tree rebuild
+  -> f32 tree packing
+  -> GPU boundary force
+  -> GPU final half-kick
+  -> next step reuses that boundary acceleration
+```
+
+For N steps, the evolution path performs N+1 force solves and N host tree rebuilds. Force output is not read back between traversal and the corresponding GPU integration kernel. The only per-step state readback occurs after drift, where host tree reconstruction requires the new positions.
+
+`galaxy-bh-evolve` emits `galaxy.barnes-hut-gpu-evolution-receipt.v1` with:
+
+- force-solve and host-rebuild counts;
+- initial/final state checksums;
+- initial/final flat-topology checksums plus rebuilds that changed topology;
+- cumulative CPU tree-build/rebuild and f32 packing time;
+- cumulative GPU force upload/dispatch, kick/drift, final-kick and readback time;
+- final direct-force probe error;
+- total mass, centre-of-mass, linear-momentum and angular-momentum drift diagnostics;
+- a complete f64 flat-tree trajectory comparison for workloads below explicit particle and particle×step limits.
+
+Large GPU jobs do not silently run a full CPU trajectory first. The CPU trajectory oracle is bounded to avoid turning validation into the dominant workload; bounded direct-force probes remain available at the final state.
+
+The matched CUDA source includes the same 32-byte evolution settings/state ABI and kick/drift/final-kick kernels. Host-side CI checks source/layout parity but does not claim CUDA execution without an NVIDIA run.
 
 ## Next rung
 
-BH #2B2 adds the evolving-state boundary:
+BH #2C can investigate moving the tree rebuild itself onto the device:
 
 ```text
-verified GPU traversal
-  -> first acceleration
-  -> GPU kick/drift
-  -> rebuild flat tree for drifted positions
-  -> second GPU acceleration
-  -> final kick
-  -> multi-step receipts and drift diagnostics
+persistent drifted GPU state
+  -> GPU bounds reduction
+  -> Morton key generation + stable sort
+  -> flat tree / aggregate construction
+  -> force traversal
 ```
 
-GPU-side Morton sorting/tree construction remains a later optimization candidate. It must not be silently conflated with traversal correctness or inferred from third-party benchmark numbers.
+That optimization must retain the current host-built BH #2A/B2 semantics as an oracle until a new GPU-built topology contract earns its own evidence.

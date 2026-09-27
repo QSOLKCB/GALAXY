@@ -54,6 +54,35 @@ struct GpuAccel {
     value: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct EvolveSettings {
+    pub info: [u32; 4],
+    pub motion: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct GpuEvolveState {
+    pub position_mass: [f32; 4],
+    pub velocity: [f32; 4],
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StageTiming {
+    pub transfer_seconds: f64,
+    pub dispatch_seconds: f64,
+    pub readback_seconds: f64,
+}
+
+#[derive(Debug)]
+pub struct EvolvingState {
+    state: wgpu::Buffer,
+    acceleration: wgpu::Buffer,
+    count: u32,
+    bytes: u64,
+}
+
 #[derive(Debug)]
 pub struct PackedFlat {
     pub settings: BhSettings,
@@ -231,6 +260,9 @@ pub struct NbodyGpu {
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
+    evolve_layout: wgpu::BindGroupLayout,
+    kick_drift_pipeline: wgpu::ComputePipeline,
+    final_kick_pipeline: wgpu::ComputePipeline,
 }
 
 impl NbodyGpu {
@@ -337,12 +369,84 @@ impl NbodyGpu {
             return Err(format!("Barnes-Hut GPU shader validation: {error}").into());
         }
 
+        let evolve_entries = [
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ];
+        let evolve_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Barnes-Hut evolve bind layout"),
+            entries: &evolve_entries,
+        });
+        let evolve_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Barnes-Hut evolve pipeline layout"),
+                bind_group_layouts: &[&evolve_layout],
+                push_constant_ranges: &[],
+            });
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let evolve_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Barnes-Hut evolution kernels"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("nbody_evolve.wgsl").into()),
+        });
+        let kick_drift_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("bh_kick_drift"),
+                layout: Some(&evolve_pipeline_layout),
+                module: &evolve_shader,
+                entry_point: Some("bh_kick_drift"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let final_kick_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("bh_final_kick"),
+                layout: Some(&evolve_pipeline_layout),
+                module: &evolve_shader,
+                entry_point: Some("bh_final_kick"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+            return Err(format!("Barnes-Hut GPU evolution shader validation: {error}").into());
+        }
+
         Ok(Self {
             info,
             device,
             queue,
             layout,
             pipeline,
+            evolve_layout,
+            kick_drift_pipeline,
+            final_kick_pipeline,
         })
     }
 
@@ -504,6 +608,344 @@ impl NbodyGpu {
             readback_seconds,
         })
     }
+
+    pub fn info(&self) -> Value {
+        self.info.clone()
+    }
+
+    pub fn create_evolving_state(&self, bodies: &[Body]) -> Result<(EvolvingState, StageTiming)> {
+        if bodies.len() < 2 || bodies.len() > u32::MAX as usize {
+            return Err("GPU evolving state requires 2..=u32::MAX resident bodies".into());
+        }
+        let state_bytes = self.checked_storage(
+            bodies.len(),
+            std::mem::size_of::<GpuEvolveState>(),
+            "Barnes-Hut evolving state",
+        )?;
+        let acceleration_bytes = self.checked_storage(
+            bodies.len(),
+            std::mem::size_of::<GpuAccel>(),
+            "Barnes-Hut evolving acceleration",
+        )?;
+        let mut packed = Vec::with_capacity(bodies.len());
+        for (index, body) in bodies.iter().enumerate() {
+            if !body.x.is_finite()
+                || !body.y.is_finite()
+                || !body.vx.is_finite()
+                || !body.vy.is_finite()
+                || !body.mass.is_finite()
+                || body.mass <= 0.0
+            {
+                return Err(format!("body {index} contains invalid evolving state").into());
+            }
+            packed.push(GpuEvolveState {
+                position_mass: [
+                    checked_f32(body.x, "body.x")?,
+                    checked_f32(body.y, "body.y")?,
+                    checked_f32(body.mass, "body.mass")?,
+                    0.0,
+                ],
+                velocity: [
+                    checked_f32(body.vx, "body.vx")?,
+                    checked_f32(body.vy, "body.vy")?,
+                    0.0,
+                    0.0,
+                ],
+            });
+        }
+
+        let started = Instant::now();
+        let state = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Barnes-Hut persistent evolving state"),
+            contents: bytemuck::cast_slice(&packed),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+        let acceleration = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Barnes-Hut persistent evolving acceleration"),
+            size: acceleration_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        Ok((
+            EvolvingState {
+                state,
+                acceleration,
+                count: bodies.len() as u32,
+                bytes: state_bytes + acceleration_bytes,
+            },
+            StageTiming {
+                transfer_seconds: started.elapsed().as_secs_f64(),
+                ..StageTiming::default()
+            },
+        ))
+    }
+
+    pub fn force_into(
+        &self,
+        evolving: &EvolvingState,
+        packed: &PackedFlat,
+    ) -> Result<StageTiming> {
+        if packed.bodies.len() != evolving.count as usize
+            || packed.entries.len() != evolving.count as usize
+        {
+            return Err("Barnes-Hut force/tree count does not match evolving state".into());
+        }
+        self.checked_storage(
+            packed.bodies.len(),
+            std::mem::size_of::<GpuBody>(),
+            "Barnes-Hut bodies",
+        )?;
+        self.checked_storage(
+            packed.entries.len(),
+            std::mem::size_of::<GpuEntry>(),
+            "Barnes-Hut entries",
+        )?;
+        self.checked_storage(
+            packed.cells.len(),
+            std::mem::size_of::<GpuCell>(),
+            "Barnes-Hut cells",
+        )?;
+
+        let transfer_started = Instant::now();
+        let settings = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Barnes-Hut evolving force settings"),
+            contents: bytemuck::bytes_of(&packed.settings),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bodies = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Barnes-Hut evolving force bodies"),
+            contents: bytemuck::cast_slice(&packed.bodies),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let entries = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Barnes-Hut evolving force entries"),
+            contents: bytemuck::cast_slice(&packed.entries),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let cells = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Barnes-Hut evolving force cells"),
+            contents: bytemuck::cast_slice(&packed.cells),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        let transfer_seconds = transfer_started.elapsed().as_secs_f64();
+
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Barnes-Hut evolving force bindings"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: settings.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: bodies.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: entries.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: cells.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: evolving.acceleration.as_entire_binding(),
+                },
+            ],
+        });
+        let dispatch_started = Instant::now();
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Barnes-Hut evolving force traversal"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Barnes-Hut evolving force traversal"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(evolving.count.div_ceil(128), 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        self.device.poll(wgpu::Maintain::Wait);
+        Ok(StageTiming {
+            transfer_seconds,
+            dispatch_seconds: dispatch_started.elapsed().as_secs_f64(),
+            ..StageTiming::default()
+        })
+    }
+
+    fn integrate_stage(
+        &self,
+        evolving: &EvolvingState,
+        dt_myr: f64,
+        final_kick: bool,
+    ) -> Result<StageTiming> {
+        if !dt_myr.is_finite() || dt_myr <= 0.0 {
+            return Err("dt_myr must be positive and finite".into());
+        }
+        let settings = EvolveSettings {
+            info: [evolving.count, 0, 0, 0],
+            motion: [checked_f32(dt_myr, "dt_myr")?, 0.0, 0.0, 0.0],
+        };
+        let transfer_started = Instant::now();
+        let settings = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Barnes-Hut evolve settings"),
+            contents: bytemuck::bytes_of(&settings),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        let transfer_seconds = transfer_started.elapsed().as_secs_f64();
+
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Barnes-Hut evolve bindings"),
+            layout: &self.evolve_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: settings.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: evolving.state.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: evolving.acceleration.as_entire_binding(),
+                },
+            ],
+        });
+        let dispatch_started = Instant::now();
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some(if final_kick {
+                "Barnes-Hut final kick"
+            } else {
+                "Barnes-Hut kick/drift"
+            }),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(if final_kick {
+                    "Barnes-Hut final kick"
+                } else {
+                    "Barnes-Hut kick/drift"
+                }),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(if final_kick {
+                &self.final_kick_pipeline
+            } else {
+                &self.kick_drift_pipeline
+            });
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(evolving.count.div_ceil(128), 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        self.device.poll(wgpu::Maintain::Wait);
+        Ok(StageTiming {
+            transfer_seconds,
+            dispatch_seconds: dispatch_started.elapsed().as_secs_f64(),
+            ..StageTiming::default()
+        })
+    }
+
+    pub fn kick_drift(&self, evolving: &EvolvingState, dt_myr: f64) -> Result<StageTiming> {
+        self.integrate_stage(evolving, dt_myr, false)
+    }
+
+    pub fn final_kick(&self, evolving: &EvolvingState, dt_myr: f64) -> Result<StageTiming> {
+        self.integrate_stage(evolving, dt_myr, true)
+    }
+
+    pub fn read_evolving_state(&self, evolving: &EvolvingState) -> Result<(Vec<Body>, StageTiming)> {
+        let bytes = (evolving.count as u64) * std::mem::size_of::<GpuEvolveState>() as u64;
+        let started = Instant::now();
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Barnes-Hut evolving state readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&evolving.state, 0, &readback, 0, bytes);
+        self.queue.submit(Some(encoder.finish()));
+        let slice = readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()??;
+        let view = slice.get_mapped_range();
+        let values = bytemuck::cast_slice::<u8, GpuEvolveState>(&view).to_vec();
+        drop(view);
+        readback.unmap();
+        let mut bodies = Vec::with_capacity(values.len());
+        for (index, value) in values.into_iter().enumerate() {
+            let fields = [
+                value.position_mass[0],
+                value.position_mass[1],
+                value.velocity[0],
+                value.velocity[1],
+                value.position_mass[2],
+            ];
+            if fields.iter().any(|value| !value.is_finite()) || value.position_mass[2] <= 0.0 {
+                return Err(format!("GPU produced invalid evolving body state at {index}").into());
+            }
+            bodies.push(Body {
+                x: value.position_mass[0] as f64,
+                y: value.position_mass[1] as f64,
+                vx: value.velocity[0] as f64,
+                vy: value.velocity[1] as f64,
+                mass: value.position_mass[2] as f64,
+            });
+        }
+        Ok((
+            bodies,
+            StageTiming {
+                readback_seconds: started.elapsed().as_secs_f64(),
+                ..StageTiming::default()
+            },
+        ))
+    }
+
+    pub fn read_evolving_accelerations(
+        &self,
+        evolving: &EvolvingState,
+    ) -> Result<(Vec<Accel>, StageTiming)> {
+        let bytes = (evolving.count as u64) * std::mem::size_of::<GpuAccel>() as u64;
+        let started = Instant::now();
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Barnes-Hut evolving acceleration readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&evolving.acceleration, 0, &readback, 0, bytes);
+        self.queue.submit(Some(encoder.finish()));
+        let slice = readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()??;
+        let view = slice.get_mapped_range();
+        let values = bytemuck::cast_slice::<u8, GpuAccel>(&view).to_vec();
+        drop(view);
+        readback.unmap();
+        let mut accelerations = Vec::with_capacity(values.len());
+        for (index, value) in values.into_iter().enumerate() {
+            if !value.value[0].is_finite() || !value.value[1].is_finite() {
+                return Err(format!("GPU produced invalid evolving acceleration at {index}").into());
+            }
+            accelerations.push(Accel {
+                ax: value.value[0] as f64,
+                ay: value.value[1] as f64,
+            });
+        }
+        Ok((
+            accelerations,
+            StageTiming {
+                readback_seconds: started.elapsed().as_secs_f64(),
+                ..StageTiming::default()
+            },
+        ))
+    }
+
+    pub fn evolving_buffer_bytes(&self, evolving: &EvolvingState) -> u64 {
+        evolving.bytes
+    }
 }
 
 #[cfg(test)]
@@ -518,6 +960,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<GpuEntry>(), 16);
         assert_eq!(std::mem::size_of::<GpuCell>(), 64);
         assert_eq!(std::mem::size_of::<GpuAccel>(), 16);
+        assert_eq!(std::mem::size_of::<EvolveSettings>(), 32);
+        assert_eq!(std::mem::size_of::<GpuEvolveState>(), 32);
     }
 
     #[test]

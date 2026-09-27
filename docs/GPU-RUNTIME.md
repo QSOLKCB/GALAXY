@@ -202,9 +202,26 @@ The receipt separates:
 - GPU dispatch;
 - GPU readback.
 
-It also records a full GPU-vs-flat-CPU comparison and GPU-vs-direct relative error on a bounded deterministic probe set. Use `--direct-probes 1..64` to change the probe count without turning a large GPU traversal into a full O(N²) CPU prerequisite. This phase does not claim GPU tree construction or evolving multi-step self-gravity.
+It also records a full GPU-vs-flat-CPU comparison and GPU-vs-direct relative error on a bounded deterministic probe set. Use `--direct-probes 1..64` to change the probe count without turning a large GPU traversal into a full O(N²) CPU prerequisite. BH #2B1 does not claim GPU tree construction.
 
-The matched CUDA traversal source is `runtime/cuda/barnes_hut_flat.cu`. CI runs `runtime/cuda/check_barnes_hut_layout.py` to verify record sizes, a canonical packed byte fixture, static CUDA size assertions and target-membership semantics. That is ABI/source parity evidence, **not CUDA execution evidence**.
+### BH #2B2 evolving self-gravity
+
+`galaxy-bh-evolve` extends the verified traversal with a persistent f32 state/acceleration pair and GPU leapfrog stages:
+
+```bash
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- \
+  --preset disc --particles 256 --steps 4 --dt-myr 0.01 \
+  --theta 0.5 --allow-software \
+  --receipt runs/barnes-hut-evolve/receipt.json
+```
+
+The force buffer remains device-resident into `bh_kick_drift` or `bh_final_kick`. After drift, the 32-byte-per-body evolving state is read back because BH #2B2 intentionally keeps Morton sorting and flat-tree construction on the CPU. The rebuilt tree is packed through the frozen BH #2B1 ABI and the next force solve overwrites the persistent acceleration buffer. Boundary acceleration is reused, so N steps require N+1 force solves rather than 2N.
+
+The receipt reports tree-build/rebuild, packing, force upload/dispatch, kick/drift, final-kick and readback timing separately. It also records topology/state checksums and mass/centre-of-mass/linear-momentum/angular-momentum drift diagnostics.
+
+For small workloads, the full GPU trajectory is compared against a separate f64 BH #2A flat-tree leapfrog reference. That expensive reference is bounded by both a configurable particle limit and a fixed particle×step work ceiling; larger runs explicitly record that the full CPU trajectory oracle was skipped instead of hiding a CPU bottleneck inside the GPU command. Final force validation still uses bounded deterministic direct-force probes.
+
+The matched CUDA source is `runtime/cuda/barnes_hut_flat.cu`. CI runs `runtime/cuda/check_barnes_hut_layout.py` to verify the BH #2B1 records plus the 32-byte evolution settings/state records and traversal/kick/drift/final-kick source contracts. That is ABI/source parity evidence, **not CUDA execution evidence**.
 
 ## Physics and numerical behavior
 
@@ -313,6 +330,7 @@ python3 runtime/tests/test_runner.py
 python3 runtime/cuda/check_barnes_hut_layout.py
 bash scripts/run-gpu.sh verify
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- --particles 256 --theta 0.5 --allow-software
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
 ```
 
 `verify` executes the compiled GPU kernels against 195 predictions from UFF's

@@ -91,6 +91,37 @@ jobs:
           assert receipt["errors"]["gpu_vs_flat_cpu_rms_relative"] < 0.01
           assert receipt["errors"]["gpu_vs_flat_cpu_max_relative"] < 0.10
           PY
+      - name: Execute evolving Barnes-Hut self-gravity through Vulkan
+        run: |
+          cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- \
+            --preset disc --particles 128 --steps 3 --dt-myr 0.01 \
+            --theta 0.5 --allow-software \
+            --receipt "$RUNNER_TEMP/barnes-hut-evolve.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          receipt = json.loads(Path(os.environ["RUNNER_TEMP"], "barnes-hut-evolve.json").read_text())
+          assert receipt["schema"] == "galaxy.barnes-hut-gpu-evolution-receipt.v1"
+          assert receipt["phase"] == "BH-2B2"
+          assert receipt["steps"] == 3
+          assert receipt["force_solves"] == 4
+          assert receipt["host_tree_rebuilds"] == 3
+          assert receipt["persistent_gpu_state_bytes"] > 0
+          assert receipt["cpu_full_trajectory_reference"]["status"] == "executed"
+          err = receipt["cpu_full_trajectory_reference"]["state_error"]
+          assert err["position_rms_relative_l2"] < 0.02
+          assert err["position_max_relative"] < 0.20
+          assert err["velocity_rms_relative_l2"] < 0.02
+          assert err["velocity_max_relative"] < 0.20
+          force = receipt["final_force_direct_probe"]
+          assert force["count"] == 12
+          assert force["rms_relative_error"] < 0.04
+          assert force["max_relative_error"] < 0.30
+          assert receipt["state"]["initial_checksum_fnv_mix64"] != receipt["state"]["final_checksum_fnv_mix64"]
+          assert receipt["timings_seconds"]["gpu_kick_drift_dispatch_total"] >= 0
+          assert receipt["timings_seconds"]["gpu_final_kick_dispatch_total"] >= 0
+          assert receipt["timings_seconds"]["cpu_tree_rebuild_total"] >= 0
+          PY
       - name: Execute an end-to-end headless Vulkan job
         run: |
           python - <<'PY'
