@@ -488,6 +488,17 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             self.assertEqual(first[0]["name"], "wgpu")
             self.assertNotEqual(first[0]["tree_sha256"], second[0]["tree_sha256"])
 
+    def test_dependency_tree_hash_binds_file_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            helper = root / "helper.sh"
+            helper.write_text("#!/bin/sh\nexit 0\n")
+            helper.chmod(0o644)
+            first = sweep.sha256_directory(root)
+            helper.chmod(0o755)
+            second = sweep.sha256_directory(root)
+            self.assertNotEqual(first, second)
+
     def test_cargo_config_execution_and_source_redirects_are_rejected(self):
         cases = {
             "rustc-wrapper": '[build]\nrustc-wrapper = "/tmp/wrapper"\n',
@@ -810,6 +821,16 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                     with self.assertRaisesRegex(sweep.SweepError, "not valid JSON"):
                         sweep.load_receipt(path)
 
+    def test_receipt_rejects_duplicate_object_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "receipt.json"
+            path.write_text(
+                '{"measurement_class":"software-validation",'
+                '"measurement_class":"hardware"}'
+            )
+            with self.assertRaisesRegex(sweep.SweepError, "not valid JSON"):
+                sweep.load_receipt(path)
+
     def test_invalid_utf8_receipt_is_normalized_to_sweep_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "receipt.json"
@@ -978,6 +999,15 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 receipt1,
                 **validation_kwargs(512, adapter_selector="0"),
             )
+
+        summary = sweep.validate_receipt(
+            receipt0,
+            **validation_kwargs(512, adapter_selector="+0"),
+        )
+        self.assertEqual(summary["particles"], 512)
+        self.assertEqual(sweep.parse_adapter_index_selector("+0"), 0)
+        self.assertIsNone(sweep.parse_adapter_index_selector("-0"))
+        self.assertIsNone(sweep.parse_adapter_index_selector(" 0"))
 
         receipt = receipt_for(512)
         receipt["gpu"]["name"] = "AMD Radeon RX 7900 XTX"
@@ -1152,6 +1182,13 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt["tree"]["leaf_count"] = 12
         receipt["tree"]["max_depth"] = 16
         with self.assertRaisesRegex(sweep.SweepError, "internal cells"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 100
+        receipt["tree"]["leaf_count"] = 1
+        receipt["tree"]["max_depth"] = 16
+        with self.assertRaisesRegex(sweep.SweepError, "leaf-path capacity"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_state_error_zero_maximum_matches_rms(self):
