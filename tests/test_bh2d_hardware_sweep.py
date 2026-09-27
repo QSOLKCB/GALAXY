@@ -399,6 +399,8 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             "CARGO_BUILD_RUSTFLAGS",
             "RUSTC",
             "RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
             "RUSTUP_TOOLCHAIN",
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
@@ -871,6 +873,34 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt["tree"]["max_depth"] = 1
         with self.assertRaisesRegex(sweep.SweepError, "bucket size"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 145
+        receipt["tree"]["leaf_count"] = 129
+        receipt["tree"]["max_depth"] = 16
+        with self.assertRaisesRegex(sweep.SweepError, "fan-out"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_force_rms_cannot_exceed_reported_maximum(self):
+        receipt = receipt_for(512)
+        receipt["final_force"]["direct_probe_rms_relative"] = 0.03
+        receipt["final_force"]["direct_probe_max_relative"] = 0.001
+        with self.assertRaisesRegex(sweep.SweepError, "direct-force RMS cannot exceed maximum"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["final_force"]["gpu_vs_bh2a_flat_rms_relative"] = 0.03
+        receipt["final_force"]["gpu_vs_bh2a_flat_max_relative"] = 0.001
+        with self.assertRaisesRegex(sweep.SweepError, "BH #2A final-force RMS cannot exceed maximum"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        for key in ("bh2c_serial_gpu", "bh2b2_host_tree_gpu"):
+            with self.subTest(key=key):
+                receipt = receipt_for(512)
+                receipt["gpu_oracles"][key]["force_rms_relative"] = 0.03
+                receipt["gpu_oracles"][key]["force_max_relative"] = 0.001
+                with self.assertRaisesRegex(sweep.SweepError, "force RMS cannot exceed force maximum"):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_executed_oracle_payloads_are_required(self):
         receipt = receipt_for(512)
