@@ -280,7 +280,7 @@ Tree-build stage families are batched into command buffers before synchronizatio
 For repeatable real-hardware scaling evidence, use the fail-closed sweep runner:
 
 ```bash
-python3 -I scripts/bench-bh2d-hardware.py \
+sh scripts/bench-bh2d-hardware-launch.sh \
   --output runs/bh2d-hardware-sweep \
   --adapter 0
 ```
