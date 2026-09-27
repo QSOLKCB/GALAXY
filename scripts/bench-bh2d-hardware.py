@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
+import math
 import platform
 import shlex
 import subprocess
@@ -58,14 +58,25 @@ def run_checked(command: list[str], cwd: Path) -> str:
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise SweepError(f"command failed ({completed.returncode}): {' '.join(command)}\n{detail}")
-    return completed.stdout.strip()
+    return completed.stdout
 
 
 def git_revision(repo_root: Path) -> str:
-    return run_checked(["git", "rev-parse", "HEAD"], repo_root)
+    return run_checked(["git", "rev-parse", "HEAD"], repo_root).strip()
 
 
-def require_clean_tracked_tree(repo_root: Path) -> None:
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def require_clean_source_tree(
+    repo_root: Path,
+    allowed_untracked_root: Path | None = None,
+) -> None:
     for command in (
         ["git", "diff", "--quiet", "--"],
         ["git", "diff", "--cached", "--quiet", "--"],
@@ -75,6 +86,38 @@ def require_clean_tracked_tree(repo_root: Path) -> None:
             raise SweepError(
                 "tracked source tree is dirty; commit or revert changes before hardware evidence capture"
             )
+
+    raw_untracked = run_checked(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        repo_root,
+    )
+    allowed = allowed_untracked_root.resolve() if allowed_untracked_root is not None else None
+    unexpected: list[str] = []
+    for relative in (item for item in raw_untracked.split("\0") if item):
+        candidate = (repo_root / relative).resolve()
+        if allowed is not None and is_within(candidate, allowed):
+            continue
+        unexpected.append(relative)
+    if unexpected:
+        preview = ", ".join(repr(path) for path in unexpected[:8])
+        suffix = "" if len(unexpected) <= 8 else f", ... (+{len(unexpected) - 8} more)"
+        raise SweepError(
+            "untracked files are present outside the evidence output; "
+            f"commit, remove, or ignore them only after proving they cannot affect the build: {preview}{suffix}"
+        )
+
+
+def require_source_provenance(
+    repo_root: Path,
+    revision: str,
+    allowed_untracked_root: Path | None = None,
+) -> None:
+    current = git_revision(repo_root)
+    if current != revision:
+        raise SweepError(
+            f"source revision changed during hardware evidence capture: expected {revision}, got {current}"
+        )
+    require_clean_source_tree(repo_root, allowed_untracked_root)
 
 
 def sha256_file(path: Path) -> str:
@@ -90,106 +133,386 @@ def require(condition: bool, message: str) -> None:
         raise SweepError(message)
 
 
-def adapter_identity(gpu: Any) -> str:
-    require(isinstance(gpu, dict), "receipt.gpu must be an object")
-    stable = {
-        key: gpu.get(key)
-        for key in ("name", "backend", "device_type", "vendor", "device", "driver", "driver_info")
-        if key in gpu
+def require_object(value: Any, name: str) -> dict[str, Any]:
+    require(isinstance(value, dict), f"{name} must be an object")
+    return value
+
+
+def require_list(value: Any, name: str) -> list[Any]:
+    require(isinstance(value, list), f"{name} must be an array")
+    return value
+
+
+def require_int(value: Any, name: str, *, minimum: int | None = None) -> int:
+    require(isinstance(value, int) and not isinstance(value, bool), f"{name} must be an integer")
+    if minimum is not None:
+        require(value >= minimum, f"{name} must be >= {minimum}")
+    return value
+
+
+def require_number(
+    value: Any,
+    name: str,
+    *,
+    positive: bool = False,
+    nonnegative: bool = False,
+) -> float:
+    require(
+        isinstance(value, (int, float)) and not isinstance(value, bool),
+        f"{name} must be numeric",
+    )
+    numeric = float(value)
+    require(math.isfinite(numeric), f"{name} must be finite")
+    if positive:
+        require(numeric > 0.0, f"{name} must be positive")
+    if nonnegative:
+        require(numeric >= 0.0, f"{name} must be nonnegative")
+    return numeric
+
+
+def require_string(value: Any, name: str, *, nonempty: bool = False) -> str:
+    require(isinstance(value, str), f"{name} must be a string")
+    if nonempty:
+        require(bool(value.strip()), f"{name} must not be empty")
+    return value
+
+
+def require_same_number(actual: Any, expected: float, name: str) -> float:
+    numeric = require_number(actual, name)
+    require(numeric == float(expected), f"{name} does not match requested workload")
+    return numeric
+
+
+def upper_median(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def validated_samples(value: Any, name: str, expected_count: int) -> list[float]:
+    raw = require_list(value, name)
+    require(len(raw) == expected_count, f"{name} sample count mismatch")
+    return [
+        require_number(sample, f"{name}[{index}]", positive=True)
+        for index, sample in enumerate(raw)
+    ]
+
+
+def validate_state_error(value: Any, name: str) -> dict[str, float]:
+    state = require_object(value, name)
+    result = {
+        "position_rms_relative_l2": require_number(
+            state.get("position_rms_relative_l2"),
+            f"{name}.position_rms_relative_l2",
+            nonnegative=True,
+        ),
+        "position_max_relative": require_number(
+            state.get("position_max_relative"),
+            f"{name}.position_max_relative",
+            nonnegative=True,
+        ),
+        "velocity_rms_relative_l2": require_number(
+            state.get("velocity_rms_relative_l2"),
+            f"{name}.velocity_rms_relative_l2",
+            nonnegative=True,
+        ),
+        "velocity_max_relative": require_number(
+            state.get("velocity_max_relative"),
+            f"{name}.velocity_max_relative",
+            nonnegative=True,
+        ),
     }
-    return json.dumps(stable, sort_keys=True, separators=(",", ":"))
+    require(result["position_rms_relative_l2"] < 0.03, f"{name} position RMS gate failed")
+    require(result["position_max_relative"] < 0.30, f"{name} position max gate failed")
+    require(result["velocity_rms_relative_l2"] < 0.03, f"{name} velocity RMS gate failed")
+    require(result["velocity_max_relative"] < 0.30, f"{name} velocity max gate failed")
+    return result
+
+
+def validate_force_errors(value: Any, name: str) -> tuple[float, float]:
+    evidence = require_object(value, name)
+    rms = require_number(
+        evidence.get("force_rms_relative"),
+        f"{name}.force_rms_relative",
+        nonnegative=True,
+    )
+    maximum = require_number(
+        evidence.get("force_max_relative"),
+        f"{name}.force_max_relative",
+        nonnegative=True,
+    )
+    require(rms < 0.04, f"{name} force RMS gate failed")
+    require(maximum < 0.30, f"{name} force max gate failed")
+    return rms, maximum
+
+
+def adapter_identity(gpu: Any) -> str:
+    info = require_object(gpu, "receipt.gpu")
+    required = {
+        "name": require_string(info.get("name"), "receipt.gpu.name", nonempty=True),
+        "backend": require_string(info.get("backend"), "receipt.gpu.backend", nonempty=True),
+        "device_type": require_string(
+            info.get("device_type"), "receipt.gpu.device_type", nonempty=True
+        ),
+        "driver": require_string(info.get("driver"), "receipt.gpu.driver"),
+        "driver_info": require_string(info.get("driver_info"), "receipt.gpu.driver_info"),
+    }
+    require(
+        bool(required["driver"].strip() or required["driver_info"].strip()),
+        "receipt.gpu must include nonempty driver or driver_info provenance",
+    )
+    require(info.get("software") is False, "receipt.gpu.software must be false for hardware evidence")
+    return json.dumps(required, sort_keys=True, separators=(",", ":"))
 
 
 def validate_receipt(
-    receipt: dict[str, Any],
+    receipt: Any,
     *,
     particles: int,
+    preset: str,
     steps: int,
+    dt_myr: float,
+    seed: int,
+    theta: float,
+    softening_kpc: float,
+    direct_probes: int,
     oracle_limit: int,
+    benchmark_warmup: int,
     benchmark_repeats: int,
 ) -> dict[str, Any]:
-    require(receipt.get("schema") == RECEIPT_SCHEMA, "unexpected BH #2D receipt schema")
-    require(receipt.get("status") == "complete", "BH #2D receipt is not complete")
-    require(receipt.get("phase") == "BH-2D", "receipt phase is not BH-2D")
-    require(receipt.get("builder") == "gpu-parallel-sparse-radix-v1", "unexpected BH #2D builder")
-    require(receipt.get("particles") == particles, "receipt particle count does not match sweep point")
-    require(receipt.get("steps") == steps, "receipt step count does not match sweep configuration")
-    require(receipt.get("measurement_class") == "hardware", "software-validation receipt rejected")
+    root = require_object(receipt, "receipt")
+    require(root.get("schema") == RECEIPT_SCHEMA, "unexpected BH #2D receipt schema")
+    require(root.get("status") == "complete", "BH #2D receipt is not complete")
+    require(root.get("phase") == "BH-2D", "receipt phase is not BH-2D")
+    require(root.get("builder") == "gpu-parallel-sparse-radix-v1", "unexpected BH #2D builder")
+
+    require(root.get("preset") == preset, "receipt preset does not match requested workload")
+    require_int(root.get("particles"), "receipt.particles")
+    require(root.get("particles") == particles, "receipt particle count does not match sweep point")
+    require_int(root.get("steps"), "receipt.steps")
+    require(root.get("steps") == steps, "receipt step count does not match sweep configuration")
+    require_same_number(root.get("dt_myr"), dt_myr, "receipt.dt_myr")
+    require_int(root.get("seed"), "receipt.seed")
+    require(root.get("seed") == seed, "receipt seed does not match requested workload")
+    require_same_number(root.get("theta"), theta, "receipt.theta")
+    require_same_number(
+        root.get("softening_kpc"),
+        softening_kpc,
+        "receipt.softening_kpc",
+    )
+    require_same_number(
+        root.get("simulated_time_myr"),
+        dt_myr * steps,
+        "receipt.simulated_time_myr",
+    )
+
+    require(root.get("measurement_class") == "hardware", "software-validation receipt rejected")
     require(
-        receipt.get("hardware_performance_claim_allowed") is True,
+        root.get("hardware_performance_claim_allowed") is True,
         "receipt does not authorize hardware performance evidence",
     )
-    require(receipt.get("host_tree_rebuilds") == 0, "host tree rebuild occurred")
+    require(root.get("host_tree_rebuilds") == 0, "host tree rebuild occurred")
     require(
-        receipt.get("host_particle_readbacks_during_steps") == 0,
+        root.get("host_particle_readbacks_during_steps") == 0,
         "host particle readback occurred inside the evolution loop",
     )
-    require(receipt.get("force_solves") == steps + 1, "unexpected force-solve count")
-    require(receipt.get("evolution_tree_builds") == steps + 1, "unexpected tree-build count")
+    require(root.get("force_solves") == steps + 1, "unexpected force-solve count")
+    require(root.get("evolution_tree_builds") == steps + 1, "unexpected tree-build count")
 
-    tree = receipt.get("tree")
-    require(isinstance(tree, dict), "receipt.tree must be an object")
+    identity = adapter_identity(root.get("gpu"))
+
+    tree = require_object(root.get("tree"), "receipt.tree")
     require(tree.get("repeat_rebuild_matches") is True, "same-state repeat tree checksum changed")
-    require(int(tree.get("active_cell_count", 0)) > 0, "receipt reports no active cells")
+    active_cell_count = require_int(
+        tree.get("active_cell_count"),
+        "receipt.tree.active_cell_count",
+        minimum=1,
+    )
+    leaf_count = require_int(tree.get("leaf_count"), "receipt.tree.leaf_count", minimum=1)
+    max_depth = require_int(tree.get("max_depth"), "receipt.tree.max_depth", minimum=0)
 
-    force = receipt.get("final_force")
-    require(isinstance(force, dict), "receipt.final_force must be an object")
-    require(float(force.get("direct_probe_rms_relative", 1.0)) < 0.04, "direct-force RMS gate failed")
-    require(float(force.get("direct_probe_max_relative", 1.0)) < 0.30, "direct-force max gate failed")
+    force = require_object(root.get("final_force"), "receipt.final_force")
+    expected_probe_count = min(direct_probes, particles)
+    require_int(force.get("direct_probe_count"), "receipt.final_force.direct_probe_count")
+    require(
+        force.get("direct_probe_count") == expected_probe_count,
+        "receipt direct-probe count does not match requested workload",
+    )
+    direct_rms = require_number(
+        force.get("direct_probe_rms_relative"),
+        "receipt.final_force.direct_probe_rms_relative",
+        nonnegative=True,
+    )
+    direct_max = require_number(
+        force.get("direct_probe_max_relative"),
+        "receipt.final_force.direct_probe_max_relative",
+        nonnegative=True,
+    )
+    require(direct_rms < 0.04, "direct-force RMS gate failed")
+    require(direct_max < 0.30, "direct-force max gate failed")
 
-    oracles = receipt.get("gpu_oracles")
-    require(isinstance(oracles, dict), "receipt.gpu_oracles must be an object")
     expected_oracle_status = "executed" if particles <= oracle_limit else "skipped-particle-limit"
+    require(
+        force.get("bh2a_flat_status") == expected_oracle_status,
+        f"BH #2A final-force status mismatch: expected {expected_oracle_status}",
+    )
+    if expected_oracle_status == "executed":
+        flat_rms = require_number(
+            force.get("gpu_vs_bh2a_flat_rms_relative"),
+            "receipt.final_force.gpu_vs_bh2a_flat_rms_relative",
+            nonnegative=True,
+        )
+        flat_max = require_number(
+            force.get("gpu_vs_bh2a_flat_max_relative"),
+            "receipt.final_force.gpu_vs_bh2a_flat_max_relative",
+            nonnegative=True,
+        )
+        require(flat_rms < 0.04, "BH #2A final-force RMS gate failed")
+        require(flat_max < 0.30, "BH #2A final-force max gate failed")
+
+    oracles = require_object(root.get("gpu_oracles"), "receipt.gpu_oracles")
     require(
         oracles.get("status") == expected_oracle_status,
         f"GPU oracle status mismatch: expected {expected_oracle_status}",
     )
+    if expected_oracle_status == "executed":
+        for key, label in (
+            ("bh2c_serial_gpu", "receipt.gpu_oracles.bh2c_serial_gpu"),
+            ("bh2b2_host_tree_gpu", "receipt.gpu_oracles.bh2b2_host_tree_gpu"),
+        ):
+            oracle = require_object(oracles.get(key), label)
+            validate_state_error(oracle.get("state_error"), f"{label}.state_error")
+            validate_force_errors(oracle, label)
+    else:
+        require(
+            require_int(oracles.get("limit"), "receipt.gpu_oracles.limit") == oracle_limit,
+            "GPU oracle skip limit does not match requested oracle limit",
+        )
 
-    trajectory = receipt.get("trajectory_vs_bh2a_flat_f64")
-    require(isinstance(trajectory, dict), "trajectory evidence must be an object")
-    expected_trajectory_status = "executed" if particles <= oracle_limit else "skipped-particle-limit"
-    require(
-        trajectory.get("status") == expected_trajectory_status,
-        f"CPU trajectory status mismatch: expected {expected_trajectory_status}",
+    trajectory = require_object(
+        root.get("trajectory_vs_bh2a_flat_f64"),
+        "receipt.trajectory_vs_bh2a_flat_f64",
     )
+    require(
+        trajectory.get("status") == expected_oracle_status,
+        f"CPU trajectory status mismatch: expected {expected_oracle_status}",
+    )
+    if expected_oracle_status == "executed":
+        validate_state_error(
+            trajectory.get("state_error"),
+            "receipt.trajectory_vs_bh2a_flat_f64.state_error",
+        )
+    else:
+        require(
+            require_int(
+                trajectory.get("limit"),
+                "receipt.trajectory_vs_bh2a_flat_f64.limit",
+            )
+            == oracle_limit,
+            "CPU trajectory skip limit does not match requested oracle limit",
+        )
 
-    benchmark = receipt.get("tree_build_benchmark")
-    require(isinstance(benchmark, dict), "tree_build_benchmark must be an object")
+    benchmark = require_object(root.get("tree_build_benchmark"), "receipt.tree_build_benchmark")
+    require(
+        require_string(
+            benchmark.get("sample_scope"),
+            "receipt.tree_build_benchmark.sample_scope",
+            nonempty=True,
+        ).startswith("complete rebuild call"),
+        "benchmark sample scope does not cover the complete rebuild call",
+    )
     require(
         benchmark.get("stage_timings_are_diagnostics") is True,
         "benchmark must mark stage timings as diagnostics",
     )
-    samples = benchmark.get("parallel_samples_seconds")
     require(
-        isinstance(samples, list) and len(samples) == benchmark_repeats,
-        "parallel benchmark sample count mismatch",
+        require_int(benchmark.get("warmup"), "receipt.tree_build_benchmark.warmup")
+        == benchmark_warmup,
+        "benchmark warmup count does not match requested workload",
     )
-    median = float(benchmark.get("parallel_median_seconds", -1.0))
-    require(median > 0.0, "parallel rebuild median must be positive")
+    require(
+        require_int(benchmark.get("repeats"), "receipt.tree_build_benchmark.repeats")
+        == benchmark_repeats,
+        "benchmark repeat count does not match requested workload",
+    )
 
-    serial = benchmark.get("bh2c_serial")
-    require(isinstance(serial, dict), "BH #2C benchmark evidence must be an object")
+    parallel_samples = validated_samples(
+        benchmark.get("parallel_samples_seconds"),
+        "receipt.tree_build_benchmark.parallel_samples_seconds",
+        benchmark_repeats,
+    )
+    parallel_median = upper_median(parallel_samples)
+    producer_parallel_median = require_number(
+        benchmark.get("parallel_median_seconds"),
+        "receipt.tree_build_benchmark.parallel_median_seconds",
+        positive=True,
+    )
+    require(
+        producer_parallel_median == parallel_median,
+        "parallel benchmark median does not match its samples",
+    )
+
+    serial = require_object(
+        benchmark.get("bh2c_serial"),
+        "receipt.tree_build_benchmark.bh2c_serial",
+    )
     if particles <= BH2C_CAP:
         require(serial.get("status") == "executed", "BH #2C comparison should execute at this size")
-        speedup = float(serial.get("parallel_vs_serial_speedup", 0.0))
-        require(speedup > 0.0, "BH #2C comparison speedup must be positive")
+        serial_samples = validated_samples(
+            serial.get("samples_seconds"),
+            "receipt.tree_build_benchmark.bh2c_serial.samples_seconds",
+            benchmark_repeats,
+        )
+        serial_median = upper_median(serial_samples)
+        producer_serial_median = require_number(
+            serial.get("median_seconds"),
+            "receipt.tree_build_benchmark.bh2c_serial.median_seconds",
+            positive=True,
+        )
+        require(
+            producer_serial_median == serial_median,
+            "BH #2C benchmark median does not match its samples",
+        )
+        speedup = serial_median / parallel_median
+        producer_speedup = require_number(
+            serial.get("parallel_vs_serial_speedup"),
+            "receipt.tree_build_benchmark.bh2c_serial.parallel_vs_serial_speedup",
+            positive=True,
+        )
+        require(
+            producer_speedup == speedup,
+            "BH #2C speedup does not match the validated benchmark medians",
+        )
     else:
-        require(serial.get("status") == "skipped-bh2c-cap", "BH #2C comparison must skip above 4096")
+        require(
+            serial.get("status") == "skipped-bh2c-cap",
+            "BH #2C comparison must skip above 4096",
+        )
+        require(
+            require_int(
+                serial.get("limit"),
+                "receipt.tree_build_benchmark.bh2c_serial.limit",
+            )
+            == BH2C_CAP,
+            "BH #2C benchmark skip limit is invalid",
+        )
         speedup = None
 
-    gpu = receipt.get("gpu")
-    identity = adapter_identity(gpu)
+    parallel_tree_buffer_bytes = require_int(
+        root.get("parallel_tree_buffer_bytes"),
+        "receipt.parallel_tree_buffer_bytes",
+        minimum=1,
+    )
 
     return {
         "particles": particles,
-        "parallel_tree_buffer_bytes": int(receipt.get("parallel_tree_buffer_bytes", 0)),
-        "active_cell_count": int(tree.get("active_cell_count", 0)),
-        "leaf_count": int(tree.get("leaf_count", 0)),
-        "max_depth": int(tree.get("max_depth", 0)),
-        "parallel_median_seconds": median,
+        "parallel_tree_buffer_bytes": parallel_tree_buffer_bytes,
+        "active_cell_count": active_cell_count,
+        "leaf_count": leaf_count,
+        "max_depth": max_depth,
+        "parallel_median_seconds": parallel_median,
         "bh2c_parallel_vs_serial_speedup": speedup,
-        "direct_probe_rms_relative": float(force["direct_probe_rms_relative"]),
-        "direct_probe_max_relative": float(force["direct_probe_max_relative"]),
+        "direct_probe_rms_relative": direct_rms,
+        "direct_probe_max_relative": direct_max,
         "adapter_identity": identity,
     }
 
@@ -283,8 +606,9 @@ def main() -> int:
         output = args.output.expanduser().resolve()
         if output.exists():
             raise SweepError(f"output directory already exists: {output}")
-        require_clean_tracked_tree(repo_root)
+
         revision = git_revision(repo_root)
+        require_source_provenance(repo_root, revision)
 
         output.mkdir(parents=True)
         manifest_path = output / "manifest.json"
@@ -321,6 +645,8 @@ def main() -> int:
 
         adapter: str | None = None
         for particles in particles_list:
+            require_source_provenance(repo_root, revision, output)
+
             run_dir = output / f"n{particles:06d}"
             run_dir.mkdir()
             receipt_path = run_dir / "receipt.json"
@@ -336,6 +662,8 @@ def main() -> int:
                 text=True,
             )
             log_path.write_text(completed.stdout)
+
+            require_source_provenance(repo_root, revision, output)
             if completed.returncode != 0:
                 raise SweepError(
                     f"BH #2D hardware run failed at {particles} particles; see {log_path}"
@@ -347,8 +675,15 @@ def main() -> int:
             summary = validate_receipt(
                 receipt,
                 particles=particles,
+                preset=args.preset,
                 steps=args.steps,
+                dt_myr=args.dt_myr,
+                seed=args.seed,
+                theta=args.theta,
+                softening_kpc=args.softening_kpc,
+                direct_probes=args.direct_probes,
                 oracle_limit=args.oracle_limit,
+                benchmark_warmup=args.benchmark_warmup,
                 benchmark_repeats=args.benchmark_repeats,
             )
             if adapter is None:
@@ -369,6 +704,7 @@ def main() -> int:
             manifest["adapter_identity"] = adapter
             manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
+        require_source_provenance(repo_root, revision, output)
         manifest["status"] = "complete"
         manifest["completed_run_count"] = len(manifest["runs"])
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
