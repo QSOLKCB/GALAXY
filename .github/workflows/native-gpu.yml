@@ -3,9 +3,9 @@ name: Native GPU runtime
 on:
   push:
     branches: [main]
-    paths: ['runtime/**', 'rust/**', 'data/uff/**', 'tests/uff-reference.json', 'scripts/*gpu*', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
+    paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'scripts/*gpu*', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
   pull_request:
-    paths: ['runtime/**', 'rust/**', 'data/uff/**', 'tests/uff-reference.json', 'scripts/*gpu*', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
+    paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'scripts/*gpu*', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
   workflow_dispatch:
 
 permissions:
@@ -59,6 +59,7 @@ jobs:
         run: |
           bash -n scripts/run-gpu.sh scripts/bootstrap-gpu.sh
           python runtime/tests/test_runner.py
+          python runtime/cuda/check_barnes_hut_layout.py
       - name: Install software Vulkan for compute validation
         run: |
           sudo apt-get update -qq
@@ -72,6 +73,24 @@ jobs:
           PY
       - name: Execute GPU kernels against UFF and orbital references
         run: cargo run --manifest-path runtime/Cargo.toml --locked -- verify --allow-software
+      - name: Execute Barnes-Hut flat traversal through Vulkan
+        run: |
+          cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- \
+            --particles 256 --theta 0.5 --allow-software \
+            --receipt "$RUNNER_TEMP/barnes-hut-gpu.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          receipt = json.loads(Path(os.environ["RUNNER_TEMP"], "barnes-hut-gpu.json").read_text())
+          assert receipt["schema"] == "galaxy.barnes-hut-gpu-traversal-receipt.v1"
+          assert receipt["phase"] == "BH-2B1"
+          assert receipt["packed_transfer_bytes"] > 0
+          assert receipt["direct_probe_count"] == 12
+          assert receipt["errors"]["gpu_vs_direct_rms_relative"] < 0.04
+          assert receipt["errors"]["gpu_vs_direct_max_relative"] < 0.30
+          assert receipt["errors"]["gpu_vs_flat_cpu_rms_relative"] < 0.01
+          assert receipt["errors"]["gpu_vs_flat_cpu_max_relative"] < 0.10
+          PY
       - name: Execute an end-to-end headless Vulkan job
         run: |
           python - <<'PY'

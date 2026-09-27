@@ -3,6 +3,7 @@ FROM rust:1.85.1-bookworm AS build
 WORKDIR /opt/galaxy
 COPY rust-toolchain.toml ./
 COPY rust/ rust/
+COPY nbody/ nbody/
 COPY runtime/ runtime/
 COPY scripts/run-u64.sh scripts/run-u64.sh
 COPY data/uff/ data/uff/
@@ -19,6 +20,7 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute
 COPY --from=build /opt/galaxy/runtime/target/release/galaxy-runtime /usr/local/bin/galaxy-runtime
 COPY --from=build /opt/galaxy/runtime/target/release/galaxy-u64 /usr/local/bin/galaxy-u64
+COPY --from=build /opt/galaxy/runtime/target/release/galaxy-bh-gpu /usr/local/bin/galaxy-bh-gpu
 COPY runtime/jobs/ /opt/galaxy/jobs/
 COPY --from=build /opt/dependency-licenses/ /usr/share/doc/galaxy-runtime/dependencies/
 COPY LICENSE NOTICE.md /usr/share/doc/galaxy-runtime/
