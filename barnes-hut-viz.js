@@ -23,7 +23,8 @@
       state.bodies = BH.makeDisc(state.count, state.seed, { radius: state.preset === "cold" ? 1.05 : 0.95, spin: state.preset === "cold" ? 0.05 : 0.72 });
     }
     state.latest = BH.accelerations(state.bodies, options());
-    state.step = 0; state.probeRms = null;
+    state.step = 0;
+    invalidateAudit();
     byId("presetTitle").textContent = presetName();
     updateReadouts();
   }
@@ -99,9 +100,15 @@
     byId("playToggle").textContent = state.running ? "Pause" : "Resume";
   }
 
+  function invalidateAudit(message = "Run the direct-force probe for the current state.") {
+    state.probeRms = null;
+    byId("auditStatus").textContent = message;
+  }
+
   function integrateOnce() {
     state.latest = BH.stepLeapfrog(state.bodies, state.dt, options());
     state.step++;
+    invalidateAudit("State advanced; run the direct-force probe again for this step.");
   }
 
   function audit() {
@@ -141,9 +148,9 @@
     byId("count").addEventListener("input", e => { state.count = Number(e.target.value); syncControlLabels(); });
     byId("count").addEventListener("change", reset);
     byId("seed").addEventListener("change", e => { state.seed = Math.max(1, Math.trunc(Number(e.target.value) || 303)); reset(); });
-    byId("theta").addEventListener("input", e => { state.theta = Number(e.target.value); syncControlLabels(); state.latest = BH.accelerations(state.bodies, options()); state.probeRms = null; updateReadouts(); });
-    byId("softening").addEventListener("input", e => { state.softening = Number(e.target.value); syncControlLabels(); state.latest = BH.accelerations(state.bodies, options()); state.probeRms = null; updateReadouts(); });
-    byId("bucket").addEventListener("input", e => { state.bucket = Number(e.target.value); syncControlLabels(); state.latest = BH.accelerations(state.bodies, options()); updateReadouts(); });
+    byId("theta").addEventListener("input", e => { state.theta = Number(e.target.value); syncControlLabels(); state.latest = BH.accelerations(state.bodies, options()); invalidateAudit("Opening angle changed; run the direct-force probe again."); updateReadouts(); });
+    byId("softening").addEventListener("input", e => { state.softening = Number(e.target.value); syncControlLabels(); state.latest = BH.accelerations(state.bodies, options()); invalidateAudit("Softening changed; run the direct-force probe again."); updateReadouts(); });
+    byId("bucket").addEventListener("input", e => { state.bucket = Number(e.target.value); syncControlLabels(); state.latest = BH.accelerations(state.bodies, options()); invalidateAudit("Leaf bucket changed; run the direct-force probe again."); updateReadouts(); });
     byId("showTree").addEventListener("change", e => { state.showTree = e.target.checked; draw(); });
     byId("treeDepth").addEventListener("input", e => { state.treeDepth = Number(e.target.value); syncControlLabels(); draw(); });
     byId("dt").addEventListener("input", e => { state.dt = Number(e.target.value); syncControlLabels(); });
