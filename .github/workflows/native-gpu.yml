@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'tests/test_bh2d_hardware_sweep.py', 'scripts/*gpu*', 'scripts/bench-bh2d-hardware.py', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
   pull_request:
-    paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'scripts/*gpu*', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
+    paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'tests/test_bh2d_hardware_sweep.py', 'scripts/*gpu*', 'scripts/bench-bh2d-hardware.py', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
   workflow_dispatch:
 
 permissions:
