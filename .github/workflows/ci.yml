@@ -38,6 +38,7 @@ jobs:
       - name: Check Barnes-Hut self-gravity reference
         run: |
           node tests/barnes-hut.mjs
+          node tests/nbody-view.mjs
           cargo test --manifest-path nbody/Cargo.toml --locked --offline
           cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify
           cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify-flat

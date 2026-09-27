@@ -29,7 +29,9 @@ Install Rust through [rustup](https://rustup.rs/) and a working native GPU drive
 The repository pins Rust 1.85.1. Linux uses Vulkan; Windows can use Vulkan or
 D3D12, and macOS uses Metal through [wgpu](https://github.com/gfx-rs/wgpu/tree/v24.0.5).
 The Linux path is the cloud target. Windows/Metal hardware execution has not been
-validated by the Linux CI gate.
+validated by the Linux CI gate. The BH #2D evidence harness itself is platform-aware:
+use `scripts\\bench-bh2d-hardware-launch.cmd` on native Windows so Cargo can retain
+its recorded MSVC/LLVM linker environment without requiring a POSIX `cc`.
 
 On Ubuntu, with the GPU vendor driver already installed:
 
@@ -274,6 +276,16 @@ The receipt `galaxy.barnes-hut-parallel-gpu-tree-receipt.v1` records a `measurem
 It also records `hardware_performance_claim_allowed`. `--require-hardware` fails closed when the selected adapter is software, so a CI software-Vulkan timing cannot be accidentally promoted into a hardware benchmark.
 
 Tree-build stage families are batched into command buffers before synchronization. Reported stage times cover bounds, Morton generation, radix ordering, target-position assignment, topology and aggregates rather than one host synchronization per small kernel.
+
+For repeatable real-hardware scaling evidence, use the fail-closed sweep runner:
+
+```bash
+sh scripts/bench-bh2d-hardware-launch.sh \
+  --output runs/bh2d-hardware-sweep \
+  --adapter 0
+```
+
+The runner defaults to 512 through 65,536 resident bodies, refuses software receipts and dirty tracked source, keeps the selected adapter fixed across the sweep, validates the BH #2D correctness/oracle status encoded in every receipt, and records SHA-256 hashes for the receipts and logs in a source-revision-pinned `manifest.json`. Use `--dry-run` to inspect the exact commands without executing GPU work.
 
 ## Physics and numerical behavior
 

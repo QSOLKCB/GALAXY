@@ -2,7 +2,7 @@
 
 GALAXY now has two deliberately distinct dynamics families:
 
-1. **Prescribed-field / test-particle modes** — the existing browser, CPU and GPU paths. These retain huge logical address spaces because individual resident particles do not affect one another.
+1. **Prescribed-field / test-particle modes** — the rotation-law browser instrument (`rotation-lab.html`), CPU and GPU paths. These retain huge logical address spaces because individual resident particles do not affect one another.
 2. **Resident self-gravity** — the Barnes–Hut laboratory. Every resident body's mass contributes to the force field, so the complete interacting resident set is explicit and cannot be substituted by independent logical-u64 tiles.
 
 ## Why Barnes–Hut
@@ -54,6 +54,9 @@ The native and browser references include:
 A future GPU implementation should preserve this CPU/direct reference as its correctness oracle.
 
 ## Visualization
+
+`index.html` is the default lightweight N-body observatory. It reuses the verified browser force solver with 768 resident bodies by default (128–2,048 selectable), fixed-rate leapfrog scheduling, seeded presets, optional trails and luminous sprites. Rendering contributes no additional gravitational mass. Orbit/zoom controls project the planar dynamics without modifying them. At 4× speed on an ordinary 60 Hz display, each rendered frame advances four physics steps. After a render gap the scheduler may batch up to 24 steps, derived from the 100 ms elapsed-time cap, then discards any remaining overload debt; hidden tabs suspend physics and under sustained load simulated time advances more slowly. Force probes pause the simulation so their result remains attached to the displayed state.
+
 
 `barnes-hut.html` is an offline browser laboratory. It renders the resident bodies and can overlay quadtree cells while the system evolves. Controls expose:
 
@@ -289,6 +292,34 @@ Kernel families are batched into command buffers to avoid measuring one CPU/GPU 
 
 Receipts classify the selected adapter as either `software-validation` or `hardware`. `--require-hardware` rejects software adapters. Mesa/llvmpipe timing is therefore correctness and diagnostic evidence only; a hardware performance claim requires a receipt from a real GPU.
 
+### Real-hardware sweep
+
+`scripts/bench-bh2d-hardware.py` is the evidence runner for the remaining BH #2D hardware item. It executes a strictly increasing resident-body sweep through `galaxy-bh-gpu-tree-parallel --require-hardware`, refuses a dirty tracked source tree or an existing evidence directory, validates every receipt, requires one adapter identity for the complete sweep, and hashes each receipt/log into `manifest.json`.
+
+The default sweep is:
+
+```text
+512 -> 1024 -> 2048 -> 4096 -> 8192 -> 16384 -> 32768 -> 65536
+```
+
+Counts through 4,096 retain repeat-matched BH #2C timing. Larger points explicitly require the BH #2C and bounded full-oracle skips already encoded by the verifier; they do not silently drop those gates.
+
+Example on a real GPU:
+
+```bash
+sh scripts/bench-bh2d-hardware-launch.sh \
+  --output runs/bh2d-hardware-sweep \
+  --adapter 0
+```
+
+A completed scaling manifest is hardware evidence for the exact recorded source, workload and adapter. It does **not** by itself promote BH #2D to production or establish a host-independent speed claim.
+
 ## Next rung
 
 After real-hardware BH #2D receipts exist, BH #2E can evaluate scaling, memory/capacity limits and production promotion while retaining BH #2A/B2B2/B2C as frozen oracles.
+
+### Hardware harness launch and toolchain boundary
+
+Launch real evidence capture through the clean launcher: `sh scripts/bench-bh2d-hardware-launch.sh ...` on POSIX or `scripts\\bench-bh2d-hardware-launch.cmd ...` on native Windows. The launcher starts isolated Python under a newly constructed environment so inherited loader-injection variables are not resident in the evidence process. Direct Python execution is rejected. Imported use by the unit-test runner is for host validation only.
+
+The harness now selects and records a platform-specific tool boundary. Linux uses the system compiler/linker/Git path, macOS uses the native system paths plus standard Homebrew locations, and Windows records Git plus any active MSVC/LLVM linker tools before narrowing the build PATH to those resolved tool directories. Cargo and rustc are recorded separately from rustup proxies and invoked through their resolved binaries. The OS, installed system libraries and toolchain are trusted host prerequisites; this is provenance checking, not a sandbox against a hostile host. Git checks clear ambient `GIT_*` selectors and bind the checkout explicitly, including linked worktrees. Relative `CARGO_HOME` is interpreted from Cargo's repository working directory. Logs preserve raw bytes, receipt parser failures enter the failed-manifest path, and workload values are validated before any output is created. Manifests serialize strict JSON.

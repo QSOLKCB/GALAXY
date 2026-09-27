@@ -69,3 +69,13 @@ footer { min-height: 40px; border-top: 1px solid var(--line); color: var(--muted
   .readouts div { border-right: 0; border-bottom: 1px solid var(--line); }
   .readouts div:last-child { border-bottom: 0; }
 }
+
+/* N-body observatory controls. */
+.gesture-note { color: var(--muted); font-size: 0.7rem; align-self: center; margin-left: auto; }
+#nbodyCanvas { touch-action: none; cursor: grab; }
+#nbodyCanvas:active { cursor: grabbing; }
+:focus-visible { outline: 2px solid var(--hot); outline-offset: 3px; }
+input[type="range"], input[type="checkbox"] { accent-color: var(--hot); }
+@media (max-width: 560px) {
+  .gesture-note { margin-left: 0; width: 100%; line-height: 1.5; }
+}

@@ -108,7 +108,7 @@ for (const value of [NaN, Infinity, -1, 0.5, 2 ** 32 + 1]) {
 assert.ok(wasm.memory.buffer.byteLength < 16 * 1024 * 1024, "Wasm memory must stay bounded across rebuilds");
 
 // Static/offline entrypoints, unique controls, attribution and no missing assets.
-const html = read("index.html");
+const html = read("rotation-lab.html");
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 assert.equal(ids.length, new Set(ids).size);
 for (const [, id] of read("app.js").matchAll(/byId\("([^"]+)"\)/g)) assert.ok(ids.includes(id), `Missing control ${id}`);

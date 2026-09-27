@@ -6,11 +6,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(root, "_site");
 fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
-for (const file of ["index.html", "style.css", "barnes-hut.html", "barnes-hut.css", "barnes-hut.js", "barnes-hut-viz.js", "galaxy-core.js", "uff-physics.js", "rotation-curve.js", "renderer.js", "app.js", "data/uff-demo.js", "data/uff/DEMO_GALAXY.csv", "data/uff/provenance.json", "data/uff/NOTICE", "wasm/galaxy-wasm.js", "wasm/galaxy_sampler.wasm", "LICENSE", "LICENSES/MPL-2.0.txt", "NOTICE.md"]) {
+for (const file of ["index.html", "rotation-lab.html", "nbody-clock.js", "nbody-viz.js", "style.css", "barnes-hut.html", "barnes-hut.css", "barnes-hut.js", "barnes-hut-viz.js", "galaxy-core.js", "uff-physics.js", "rotation-curve.js", "renderer.js", "app.js", "data/uff-demo.js", "data/uff/DEMO_GALAXY.csv", "data/uff/provenance.json", "data/uff/NOTICE", "wasm/galaxy-wasm.js", "wasm/galaxy_sampler.wasm", "LICENSE", "LICENSES/MPL-2.0.txt", "NOTICE.md"]) {
   fs.mkdirSync(path.dirname(path.join(output, file)), { recursive: true });
   fs.copyFileSync(path.join(root, file), path.join(output, file));
 }
-for (const page of ["index.html", "barnes-hut.html"]) {
+for (const page of ["index.html", "barnes-hut.html", "rotation-lab.html"]) {
   const html = fs.readFileSync(path.join(output, page), "utf8");
   for (const [, asset] of html.matchAll(/(?:src|href)="([^"#]+)"/g)) {
     if (!asset.startsWith("http") && !fs.existsSync(path.join(output, asset))) {

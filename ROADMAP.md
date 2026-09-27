@@ -199,6 +199,8 @@ Stable radix ordering starts from resident-body order and preserves that order f
 
 The initial CI fixture proves correctness through Mesa Vulkan but does not establish a hardware speedup. Real GPU performance evidence remains an explicit BH #2D completion item.
 
+The repository now includes `scripts/bench-bh2d-hardware.py` to capture that evidence without weakening the boundary. The runner requires a clean tracked source tree and `--require-hardware`, validates the BH #2D correctness/determinism gates at every point, preserves repeat-matched BH #2C comparison through 4,096 bodies, and emits a source-pinned scaling manifest with receipt/log hashes. The harness is implementation support; BH #2D remains evidence-pending until a real-GPU manifest exists.
+
 ## BH #2E — Hardware Promotion and Scaling
 
 After BH #2D obtains real-hardware receipts, the next promotion rung is:
@@ -397,3 +399,7 @@ All of the following remain useful research directions, but they are explicitly 
 These items were deferred while PE #15 was active. v0.6.0 closed that phase; any future work now requires an explicit phase with its own evidence boundary.
 
 The previous detailed designs are preserved by the immutable `v0.5.0` source archive and tag; they are not discarded, only postponed.
+
+## Browser N-body observatory
+
+The home page now runs the existing planar Barnes–Hut solver with a modest 768-body default, selectable 128–2,048 bodies, fixed-rate integration, glow/trails and camera controls. The original prescribed-field visual is preserved at `rotation-lab.html`; `barnes-hut.html` retains the detailed tree lab. This UI upgrade supplies no native GPU timing evidence and does not change BH #2D evidence-pending or BH #2E promotion gates.

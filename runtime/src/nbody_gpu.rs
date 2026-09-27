@@ -295,10 +295,11 @@ fn select_adapter(
     })
 }
 
-fn describe(adapter: &wgpu::Adapter, index: usize) -> Value {
+fn describe(adapter: &wgpu::Adapter, index: usize, adapter_count: usize) -> Value {
     let info = adapter.get_info();
     json!({
         "index": index,
+        "adapter_count": adapter_count,
         "name": info.name,
         "backend": format!("{:?}", info.backend),
         "device_type": format!("{:?}", info.device_type),
@@ -333,8 +334,9 @@ impl NbodyGpu {
         let index = select_adapter(&infos, name, allow_software).ok_or(
             "No matching hardware compute adapter. --allow-software permits a software adapter for validation.",
         )?;
+        let adapter_count = infos.len();
         let adapter = available_adapters.swap_remove(index);
-        let info = describe(&adapter, index);
+        let info = describe(&adapter, index, adapter_count);
         let available = adapter.limits();
         let limits = wgpu::Limits {
             max_storage_buffer_binding_size: available.max_storage_buffer_binding_size,
