@@ -551,7 +551,15 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 self.assertIn("isolated Python", result.stderr)
 
     def test_system_build_path_and_explicit_rustc(self):
-        with mock.patch.dict(os.environ, {"PATH": "/unrecorded/bin", "GIT_WORK_TREE": "/other"}):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PATH": "/unrecorded/bin",
+                "GIT_WORK_TREE": "/other",
+                "LD_AUDIT": "/tmp/audit.so",
+                "LD_PRELOAD": "/tmp/preload.so",
+            },
+        ):
             env = sweep.build_environment({"rustc": {"executable": "/selected/bin/rustc"}})
         self.assertEqual(env["PATH"], "/usr/bin:/bin")
         self.assertEqual(env["RUSTC"], "/selected/bin/rustc")
