@@ -85,19 +85,48 @@ Useful background references:
 
 Those references inform the algorithmic research surface; they are not runtime dependencies.
 
+## BH #2A — Morton / flat-tree substrate
+
+BH #1 is frozen by merged PR #18. The next representation is deliberately pointer-free before any shader promotion.
+
+The native reference now supports:
+
+- 16 bits per planar axis encoded into one 32-bit Morton/Z-order key;
+- stable sorting so equal keys preserve resident body order;
+- a flat cell array with explicit `u32` child indices and contiguous Morton body ranges;
+- a fixed 16-level Morton topology cap;
+- bottom-up mass and centre-of-mass aggregation after topology construction;
+- iterative flat traversal using the same Barnes–Hut opening rule and target-cell exclusion;
+- a topology checksum over discrete Morton ordering and tree links;
+- separate construction and traversal timing in `galaxy.barnes-hut-flat-receipt.v1`.
+
+The 16-level cap is a representation property, not an astrophysical claim. If more than the configured bucket size maps to one final quantized cell, that leaf retains all of those bodies and evaluates them directly. The receipt records the maximum leaf occupancy so this condition is observable.
+
+The flat reference remains f64. This avoids combining a topology migration with an arithmetic-precision migration. Shader-oriented f32 packing belongs to the next phase and must be validated independently against BH #1/direct-force evidence.
+
+### Verification
+
+`verify-flat` requires:
+
+1. theta-zero flat traversal parity with the direct O(N²) oracle to floating reduction-order tolerance;
+2. theta-0.5 error inside the existing BH #1 RMS/worst gates;
+3. close agreement between flat traversal and the recursive BH #1 oracle on the deterministic fixture;
+4. repeatable Morton topology checksums;
+5. stable ordering for equal Morton keys;
+6. exact root range and total mass preservation.
+
 ## Next rung
 
 Do **not** start by porting the recursive CPU tree literally to a GPU.
 
-The next performance phase should first freeze this resident-force contract, then investigate a data-parallel representation:
+BH #2A freezes the Morton ordering and flat cell contract. The next performance phase is therefore narrower:
 
 ```text
-bounding box
-  -> Morton/Z-order keys
-  -> stable spatial ordering
-  -> flat tree / cell aggregates
+frozen Morton entries + flat cells
+  -> explicit f32 transfer packing
+  -> WGSL/CUDA key/cell buffer validation
   -> GPU traversal
-  -> leapfrog update
+  -> GPU leapfrog update
 ```
 
-That phase should retain direct-force small-N fixtures and CPU Barnes–Hut comparisons, and should record tree construction separately from traversal timing. GPU performance is not inferred from third-party benchmark numbers.
+That phase must retain direct-force small-N fixtures plus both recursive and flat CPU comparisons. GPU tree construction, host/device transfer, and traversal timing must remain separately visible. GPU performance is not inferred from third-party benchmark numbers.
