@@ -21,11 +21,11 @@ set "VK_LOADER_DRIVERS_DISABLE="
 set "GALAXY_BH2D_CLEAN_LAUNCH=1"
 
 where py >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-  py -3 -I "%~dp0bench-bh2d-hardware.py" %*
-  exit /b %ERRORLEVEL%
-)
+if errorlevel 1 goto :python_fallback
+py -3 -I "%~dp0bench-bh2d-hardware.py" %*
+exit /b %ERRORLEVEL%
 
+:python_fallback
 where python >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
   echo BH #2D hardware sweep: Python 3 is required 1>&2
