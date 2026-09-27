@@ -21,6 +21,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +63,7 @@ BUILD_ENV_EXACT = {
     "LDFLAGS",
 }
 BUILD_ENV_PATTERNS = (
-    re.compile(r"^CARGO_TARGET_.+_(?:RUSTFLAGS|LINKER)$"),
+    re.compile(r"^CARGO_TARGET_.+_(?:RUSTFLAGS|LINKER|RUNNER)$"),
     re.compile(
         r"^CARGO_PROFILE_.+_(?:CODEGEN_UNITS|DEBUG|INCREMENTAL|LTO|OPT_LEVEL|PANIC|RPATH|STRIP)$"
     ),
@@ -200,6 +201,60 @@ def toolchain_context(cargo_command: str, repo_root: Path) -> dict[str, Any]:
     }
 
 
+def reject_cargo_config_redirects(document: Any, path: Path) -> None:
+    root = require_object(document, f"Cargo config {path}")
+
+    forbidden_top_level = {
+        "paths": "dependency path overrides",
+        "source": "source replacement",
+        "registries": "registry replacement",
+        "patch": "dependency patching",
+    }
+    for key, description in forbidden_top_level.items():
+        if key in root:
+            raise SweepError(
+                f"Cargo config {path} contains unsupported {description} via [{key}]"
+            )
+
+    env = root.get("env")
+    if env is not None:
+        require_object(env, f"Cargo config {path}.env")
+        raise SweepError(
+            f"Cargo config {path} contains [env] overrides; build environment injection is not allowed"
+        )
+
+    build = root.get("build")
+    if build is not None:
+        build = require_object(build, f"Cargo config {path}.build")
+        forbidden_build = (
+            "rustc",
+            "rustc-wrapper",
+            "rustc-workspace-wrapper",
+            "rustflags",
+            "rustdocflags",
+        )
+        for key in forbidden_build:
+            if key in build:
+                raise SweepError(
+                    f"Cargo config {path} contains unsupported build.{key} redirect/override"
+                )
+
+    target = root.get("target")
+    if target is not None:
+        target = require_object(target, f"Cargo config {path}.target")
+        for target_name, target_config in target.items():
+            target_config = require_object(
+                target_config,
+                f"Cargo config {path}.target.{target_name}",
+            )
+            for key in ("runner", "linker", "rustflags", "rustdocflags"):
+                if key in target_config:
+                    raise SweepError(
+                        f"Cargo config {path} contains unsupported target.{target_name}.{key} "
+                        "redirect/override"
+                    )
+
+
 def cargo_config_context(repo_root: Path) -> list[dict[str, str]]:
     context: list[dict[str, str]] = []
     root = repo_root.resolve()
@@ -218,10 +273,18 @@ def cargo_config_context(repo_root: Path) -> list[dict[str, str]]:
                     "untracked or ignored Cargo configuration affects the evidence build: "
                     f"{relative}"
                 )
+        payload = path.read_bytes()
+        try:
+            document = tomllib.loads(payload.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise SweepError(f"Cargo config is not valid UTF-8: {path}") from exc
+        except tomllib.TOMLDecodeError as exc:
+            raise SweepError(f"Cargo config is not valid TOML: {path}: {exc}") from exc
+        reject_cargo_config_redirects(document, path)
         context.append(
             {
                 "path": path_label(path, repo_root),
-                "sha256": sha256_file(path),
+                "sha256": hashlib.sha256(payload).hexdigest(),
             }
         )
     return context
@@ -581,6 +644,10 @@ def validate_receipt(
         "receipt.tree.leaf_count cannot exceed active_cell_count",
     )
     require(
+        leaf_count <= particles,
+        "receipt.tree.leaf_count cannot exceed the resident particle count",
+    )
+    require(
         max_depth <= TREE_LEVELS - 1,
         "receipt.tree.max_depth exceeds the frozen Morton depth",
     )
@@ -778,13 +845,20 @@ def validate_receipt(
     }
 
 
-def command_for(args: argparse.Namespace, particles: int, receipt: Path) -> list[str]:
+def command_for(
+    args: argparse.Namespace,
+    particles: int,
+    receipt: Path,
+    target_dir: Path,
+) -> list[str]:
     command = [
         args.cargo,
         "run",
         "--release",
         "--manifest-path",
         "runtime/Cargo.toml",
+        "--target-dir",
+        str(target_dir),
         "--locked",
         "--bin",
         "galaxy-bh-gpu-tree-parallel",
@@ -860,8 +934,10 @@ def main() -> int:
 
         if args.dry_run:
             for particles in particles_list:
-                receipt = args.output / f"n{particles:06d}" / "receipt.json"
-                print(shlex.join(command_for(args, particles, receipt)))
+                run_dir = args.output / f"n{particles:06d}"
+                receipt = run_dir / "receipt.json"
+                target_dir = run_dir / "cargo-target"
+                print(shlex.join(command_for(args, particles, receipt, target_dir)))
             return 0
 
         output = args.output.expanduser().resolve()
@@ -933,7 +1009,12 @@ def main() -> int:
             run_dir.mkdir()
             receipt_path = run_dir / "receipt.json"
             log_path = run_dir / "run.log"
-            command = command_for(args, particles, receipt_path)
+            target_dir = run_dir / "cargo-target"
+            if target_dir.exists():
+                raise SweepError(
+                    f"fresh Cargo target directory unexpectedly exists before build: {target_dir}"
+                )
+            command = command_for(args, particles, receipt_path, target_dir)
 
             completed = subprocess.run(
                 command,
@@ -986,6 +1067,7 @@ def main() -> int:
                     "receipt_sha256": sha256_file(receipt_path),
                     "log": str(log_path.relative_to(output)),
                     "log_sha256": sha256_file(log_path),
+                    "cargo_target_dir": str(target_dir.relative_to(output)),
                 }
             )
             summary.pop("adapter_identity")
