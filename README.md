@@ -13,9 +13,10 @@ It began as an adaptation of the VORTEX 2.1.0 particle lab and now combines:
 - native Rust CPU execution with Float/libm and BAM32/Q2.30 LUT backends;
 - Vulkan/`wgpu` and NVIDIA CUDA compute paths;
 - memory-bounded exact-u64 logical addressing;
-- reproducible benchmark receipts, topology evidence, and archived scaling studies.
+- reproducible benchmark receipts, topology evidence, and archived scaling studies;
+- an opt-in Barnes–Hut resident self-gravity laboratory with a direct-force oracle and live quadtree visualization.
 
-The current formal baseline is **v0.4.0**, archived at Zenodo as:
+The current immutable software release is **v0.6.0**. The v0.4.0 native-CPU evidence baseline remains archived at Zenodo as:
 
 > Slade, T. (2026). *GALAXY v0.4.0: Deterministic Native CPU Runtime and Scaling Evidence* (Version v0.4.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22756969
 
@@ -34,17 +35,20 @@ The current formal baseline is **v0.4.0**, archived at Zenodo as:
 | CPU projection backends | `float-libm` and `bam-lut-q30` |
 | Native GPU runtime | Rust/`wgpu`/Vulkan plus NVIDIA CUDA/CuPy RawKernel |
 | Wide logical addressing | `split-u64-hash32-avalanche-v1` across CPU and wide-address GPU paths |
-| Formal release | Immutable `v0.4.0`, commit `6f17a734b9241359d36a9bf3d208b8527a456327` |
-| Archival record | Zenodo DOI `10.5281/zenodo.22756969` |
-| Next CPU phase | Persistent workers, topology-aware scheduling, NUMA-aware placement, stronger receipt-native affinity provenance |
+| Barnes–Hut self-gravity | Separate resident planar N-body reference, exact O(N²) oracle, leapfrog integration, browser tree overlay |
+| Formal release | Immutable `v0.6.0`, commit `fa1c76fb49664ae4cdd6dc090cccd702399c2b60` |
+| CPU baseline archival record | Zenodo DOI `10.5281/zenodo.22756969` |
+| Active experimental phase | Barnes–Hut resident self-gravity; GPU tree construction/traversal deferred until the CPU/direct contract is frozen |
 
-v0.4.0 is deliberately frozen as the **before-state** for that next CPU-runtime architecture phase.
+v0.6.0 freezes the Stream → Reduce → Discard memory-wall result. The earlier v0.4.0 archive remains the **before-state** for the CPU architecture ladder.
 
 ---
 
 ## 1. Browser instrument
 
 Open **`index.html`** directly in a modern browser. No install, local server, CDN, or network connection is required, including for the bundled Rust/WebAssembly engine.
+
+The separate **`barnes-hut.html`** entrypoint is an opt-in resident self-gravity lab with a live quadtree overlay and direct-force error probes. It does not change the default rotation-law instrument.
 
 The browser instrument lets you change morphology, mass model, viewing geometry, and time while watching the galaxy and its rotation curve respond together.
 
@@ -285,19 +289,13 @@ The formal software record is:
 
 ## 5. Scientific boundary
 
-GALAXY is a **deterministic galaxy dynamics and visualization instrument**, not a self-consistent N-body code.
+GALAXY is a **deterministic galaxy dynamics and visualization instrument with two deliberately separate dynamics families**.
 
-The browser instrument and native runtimes use prescribed rotation laws / gravitational potentials. The native runtimes evolve independent test particles. GALAXY does **not** currently implement:
+The established browser, CPU, and GPU rotation-law runtimes use prescribed gravitational fields and evolve independent test particles. Their huge logical populations remain deterministic address spaces from which bounded resident populations are sampled or tiled.
 
-- pairwise stellar forces;
-- evolving self-gravity;
-- hydrodynamics;
-- gas evolution;
-- star formation;
-- a self-consistent evolving density field;
-- cross-particle force coupling.
+The opt-in Barnes–Hut laboratory is different: it implements pairwise-derived evolving self-gravity approximately through a resident quadtree, with an exact O(N²) force oracle for verification. Every resident body contributes to the coupled force field, so this path does **not** claim that independent logical-u64 tiles can stand in for one mutually interacting population.
 
-Large logical populations are deterministic address spaces from which bounded resident populations are sampled or tiled. A logical population of `u64::MAX` does **not** mean that 18.4 quintillion particles are simultaneously resident in memory.
+GALAXY still does **not** implement hydrodynamics, gas evolution, star formation, or a fully self-consistent baryonic/dark-matter density solver. A logical population of `u64::MAX` does **not** mean that 18.4 quintillion mutually interacting particles are resident in memory.
 
 Performance claims are similarly bounded: benchmark receipts establish behavior for the recorded source, workload, and environment. They do not establish universal Ryzen, EPYC, cloud, CPU-vs-GPU, NUMA, or memory-bandwidth claims.
 
@@ -305,10 +303,11 @@ Performance claims are similarly bounded: benchmark receipts establish behavior 
 
 ## 6. Development and verification
 
-The repository contains four main validation surfaces:
+The repository contains five main validation surfaces:
 
 ```text
 browser / Wasm          -> JS application + physics + packaging checks
+Barnes–Hut self-gravity -> JS + native Rust tree math against direct O(N²) forces
 retro integer math      -> Rust + JS portability / vector checks
 native CPU runtime      -> Linux / macOS / Windows correctness and receipts
 native GPU / u64        -> Vulkan/CUDA host contracts and tiled-runtime checks
@@ -324,6 +323,11 @@ node tests/smoke.mjs
 node tests/physics.mjs
 node tests/app.mjs
 node tests/benchmark.mjs
+node tests/barnes-hut.mjs
+
+# Barnes-Hut native reference
+cargo test --manifest-path nbody/Cargo.toml --locked --offline
+cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify
 
 # Native CPU
 sh scripts/test-cpu-runtime.sh
@@ -344,6 +348,7 @@ The root Rust toolchain is pinned in `rust-toolchain.toml`. Generated Wasm paylo
 | Document | Purpose |
 | --- | --- |
 | [ENGINE.md](docs/ENGINE.md) | Browser engine, logical/rendered population separation, Wasm/WebGL path |
+| [BARNES-HUT.md](docs/BARNES-HUT.md) | Resident self-gravity contract, direct-force oracle, visualization, GPU follow-up boundary |
 | [UFF-DYNAMICS.md](docs/UFF-DYNAMICS.md) | Rotation-law physics, units, demonstration-data provenance |
 | [GPU-RUNTIME.md](docs/GPU-RUNTIME.md) | Native Rust/`wgpu` runtime and GPU execution |
 | [CUDA-RUNTIME.md](docs/CUDA-RUNTIME.md) | CUDA backend, bootstrap, validation and claim boundaries |
@@ -357,11 +362,11 @@ The root Rust toolchain is pinned in `rust-toolchain.toml`. Generated Wasm paylo
 
 ---
 
-## 8. Roadmap from the v0.4.0 baseline
+## 8. Roadmap
 
-The next native-CPU phase is intentionally architectural rather than another uncontrolled worker-count increase.
+The v0.4.0 → v0.6.0 CPU architecture ladder is frozen. The active experimental rung is now resident Barnes–Hut self-gravity: first freeze the CPU/direct correctness contract and visual audit surface, then investigate flat Morton-ordered GPU trees without weakening that oracle.
 
-Planned investigation areas are:
+The historical native-CPU investigation areas were:
 
 1. **persistent worker pools** — remove repeated worker construction from timed CPU execution;
 2. **topology-aware scheduling** — make placement policy explicit rather than inferred from worker count;
