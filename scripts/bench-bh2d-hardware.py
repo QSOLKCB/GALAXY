@@ -58,6 +58,8 @@ BUILD_ENV_EXACT = {
     "RUSTC",
     "RUSTC_WRAPPER",
     "RUSTC_WORKSPACE_WRAPPER",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+    "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
     "RUSTC_BOOTSTRAP",
     "RUSTUP_TOOLCHAIN",
     "CARGO_BUILD_TARGET",
@@ -779,6 +781,7 @@ def validate_force_errors(value: Any, name: str) -> tuple[float, float]:
         f"{name}.force_max_relative",
         nonnegative=True,
     )
+    require(rms <= maximum, f"{name} force RMS cannot exceed force maximum")
     require(rms < 0.04, f"{name} force RMS gate failed")
     require(maximum < 0.30, f"{name} force max gate failed")
     return rms, maximum
@@ -893,6 +896,11 @@ def validate_receipt(
         leaf_count <= active_cell_count,
         "receipt.tree.leaf_count cannot exceed active_cell_count",
     )
+    internal_cell_count = active_cell_count - leaf_count
+    require(
+        leaf_count <= 3 * internal_cell_count + 1,
+        "receipt.tree.leaf_count exceeds quadtree fan-out capacity",
+    )
     require(
         leaf_count <= particles,
         "receipt.tree.leaf_count cannot exceed the resident particle count",
@@ -938,6 +946,7 @@ def validate_receipt(
         "receipt.final_force.direct_probe_max_relative",
         nonnegative=True,
     )
+    require(direct_rms <= direct_max, "direct-force RMS cannot exceed maximum")
     require(direct_rms < 0.04, "direct-force RMS gate failed")
     require(direct_max < 0.30, "direct-force max gate failed")
 
@@ -956,6 +965,10 @@ def validate_receipt(
             force.get("gpu_vs_bh2a_flat_max_relative"),
             "receipt.final_force.gpu_vs_bh2a_flat_max_relative",
             nonnegative=True,
+        )
+        require(
+            flat_rms <= flat_max,
+            "BH #2A final-force RMS cannot exceed maximum",
         )
         require(flat_rms < 0.04, "BH #2A final-force RMS gate failed")
         require(flat_max < 0.30, "BH #2A final-force max gate failed")
