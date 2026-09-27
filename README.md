@@ -1,6 +1,6 @@
 # GALAXY
 
-[![Release](https://img.shields.io/badge/release-v0.6.0-2f81f7)](https://github.com/QSOLKCB/GALAXY/releases/tag/v0.6.0)
+[![Release](https://img.shields.io/badge/release-v0.7.0-2f81f7)](https://github.com/QSOLKCB/GALAXY/releases/tag/v0.7.0)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22756969.svg)](https://doi.org/10.5281/zenodo.22756969)
 
 **GALAXY is an offline deterministic galaxy-dynamics instrument with browser, native CPU, and native GPU execution paths.**
@@ -20,7 +20,11 @@ It began as an adaptation of the VORTEX 2.1.0 particle lab and now combines:
 - BH #2B2 multi-step resident self-gravity with persistent GPU state, GPU kick/drift/final-kick kernels, and an explicit CPU tree-rebuild boundary;
 - BH #2C correctness-first GPU tree construction, removing host particle/tree rebuilds from the evolution loop for bounded resident workloads.
 
-The current immutable software release is **v0.6.0**. The v0.4.0 native-CPU evidence baseline remains archived at Zenodo as:
+The current immutable software release is **v0.7.0**:
+
+<https://github.com/QSOLKCB/GALAXY/releases/tag/v0.7.0>
+
+The v0.4.0 native-CPU evidence baseline remains archived at Zenodo as:
 
 > Slade, T. (2026). *GALAXY v0.4.0: Deterministic Native CPU Runtime and Scaling Evidence* (Version v0.4.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22756969
 
@@ -44,11 +48,13 @@ The current immutable software release is **v0.6.0**. The v0.4.0 native-CPU evid
 | Barnes–Hut GPU traversal | CPU-built flat tree packed to frozen f32/u32 records; Vulkan/WGSL traversal verified against the full flat CPU oracle plus bounded direct-force probes; CUDA ABI/source parity |
 | Barnes–Hut GPU evolution | Persistent f32 GPU state; GPU force + leapfrog kick/drift/final-kick; BH #2B2 host rebuild oracle plus BH #2C device-only rebuild path |
 | Barnes–Hut GPU tree build | GPU bounds, Morton generation, deterministic bitonic ordering, flat topology and aggregates; correctness-first cap 4,096 |
-| Formal release | Immutable `v0.6.0`, commit `fa1c76fb49664ae4cdd6dc090cccd702399c2b60` |
+| Formal release | Immutable `v0.7.0`, commit `7fe4dc63d40bb4afbb93f51c07d05b49f21e9756` |
 | CPU baseline archival record | Zenodo DOI `10.5281/zenodo.22756969` |
-| Active experimental phase | BH #2C correctness-first GPU tree construction; parallel production optimization remains deferred |
+| Active experimental phase | BH #2D parallel GPU tree construction and hardware performance validation |
 
-v0.6.0 freezes the Stream → Reduce → Discard memory-wall result. The earlier v0.4.0 archive remains the **before-state** for the CPU architecture ladder.
+v0.6.0 froze the Stream → Reduce → Discard CPU memory-wall result. **v0.7.0 freezes the Barnes–Hut correctness ladder through BH #2C**, including the CPU oracle, flat-tree substrate, executable GPU traversal, persistent GPU leapfrog evolution, and device-side tree construction.
+
+The earlier v0.4.0 archive remains the **before-state** for the CPU architecture ladder.
 
 ---
 
@@ -203,7 +209,13 @@ bash scripts/run-gpu.sh run \
 
 The wide-address tiled runtime can represent logical populations beyond `2^32` without allocating the full logical population at once. Tiling is valid for the current independent-particle fixed-potential workload because there are no cross-particle forces between tiles.
 
-The Barnes–Hut GPU path is separate and resident-only. BH #2B1 consumes the BH #2A CPU-built flat tree through an explicit f32/u32 ABI and executes force traversal on Vulkan/WGSL. BH #2B2 adds persistent GPU state and multi-step leapfrog evolution while retaining the CPU tree-rebuild boundary:
+The Barnes–Hut GPU path is separate and resident-only.
+
+BH #2B1 consumes the BH #2A CPU-built flat tree through an explicit f32/u32 ABI and executes force traversal on Vulkan/WGSL.
+
+BH #2B2 adds persistent GPU state and multi-step leapfrog evolution while retaining an explicit CPU tree-rebuild boundary.
+
+BH #2C removes that per-step host rebuild boundary for bounded resident workloads by constructing the Morton-ordered flat tree directly on the GPU.
 
 ```bash
 cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- \
@@ -223,11 +235,32 @@ cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -
 python3 runtime/cuda/check_barnes_hut_layout.py
 ```
 
-The BH #2B2 evolution path keeps acceleration and state buffers resident across force/integration stages while using an explicit host rebuild boundary. BH #2C removes that per-step host boundary: the drifted persistent state feeds GPU bounds, Morton ordering, flat-cell construction and aggregate kernels directly. The current GPU builder is intentionally serialized in its control-heavy stages and capped at 4,096 bodies; this is correctness evidence, not a speed claim. `--allow-software` is for validation through software Vulkan, not performance evidence. The CUDA checker freezes ABI/source parity without claiming CUDA execution.
+The BH #2B2 path keeps acceleration and state buffers resident across force/integration stages while using an explicit host rebuild boundary.
+
+BH #2C removes that per-step host boundary: the persistent drifted state feeds GPU bounds, Morton generation, deterministic ordering, flat-cell construction, aggregate construction, and Barnes–Hut traversal directly.
+
+The v0.7.0 BH #2C builder is deliberately correctness-first:
+
+- 4,096-body resident cap;
+- serialized GPU bounds reduction;
+- parallel Morton generation;
+- deterministic GPU bitonic ordering by `(Morton code, body index)`;
+- parallel target-position assignment;
+- serialized level-order topology construction;
+- serialized bottom-up aggregate construction;
+- zero host particle readbacks during evolution steps;
+- zero CPU tree rebuilds during evolution steps.
+
+This establishes device ownership and correctness. It is **not** presented as a production GPU-tree performance architecture.
+
+`--allow-software` enables verification through software Vulkan and must not be interpreted as hardware GPU performance evidence.
+
+The CUDA checker freezes ABI/source parity without claiming CUDA execution where no NVIDIA CUDA run occurred.
 
 See:
 
 - [GPU runtime](docs/GPU-RUNTIME.md)
+- [Barnes–Hut self-gravity](docs/BARNES-HUT.md)
 - [CUDA runtime](docs/CUDA-RUNTIME.md)
 - [u64 tiled runtime](docs/U64-TILED-RUNTIME.md)
 - [qBraid CPU/GPU execution index](QBRAID.md)
@@ -323,27 +356,54 @@ GALAXY is a **deterministic galaxy dynamics and visualization instrument with tw
 
 The established browser, CPU, and GPU rotation-law runtimes use prescribed gravitational fields and evolve independent test particles. Their huge logical populations remain deterministic address spaces from which bounded resident populations are sampled or tiled.
 
-The opt-in Barnes–Hut laboratory is different: it implements pairwise-derived evolving self-gravity approximately through a resident quadtree, with an exact O(N²) force oracle for verification. Every resident body contributes to the coupled force field, so this path does **not** claim that independent logical-u64 tiles can stand in for one mutually interacting population.
+The opt-in Barnes–Hut laboratory is different: it implements pairwise-derived evolving self-gravity approximately through a resident quadtree, with an exact O(N²) force oracle for verification.
 
-GALAXY still does **not** implement hydrodynamics, gas evolution, star formation, or a fully self-consistent baryonic/dark-matter density solver. A logical population of `u64::MAX` does **not** mean that 18.4 quintillion mutually interacting particles are resident in memory.
+Every resident body contributes to the coupled force field, so this path does **not** claim that independent logical-u64 tiles can stand in for one mutually interacting population.
 
-Performance claims are similarly bounded: benchmark receipts establish behavior for the recorded source, workload, and environment. They do not establish universal Ryzen, EPYC, cloud, CPU-vs-GPU, NUMA, or memory-bandwidth claims.
+The Barnes–Hut correctness ladder in v0.7.0 now includes:
+
+```text
+BH #1   recursive CPU Barnes–Hut + direct-force oracle
+   |
+BH #2A  deterministic Morton / flat-tree CPU reference
+   |
+BH #2B1 GPU transfer ABI + executable force traversal
+   |
+BH #2B2 persistent GPU leapfrog with host tree rebuild
+   |
+BH #2C  GPU-built flat tree + device-only evolution rebuild loop
+```
+
+GALAXY still does **not** implement:
+
+- hydrodynamics;
+- gas evolution;
+- star formation;
+- a fully self-consistent baryonic/dark-matter density solver;
+- distributed mutually interacting logical-u64 populations;
+- production-quality parallel GPU tree construction.
+
+A logical population of `u64::MAX` does **not** mean that 18.4 quintillion mutually interacting particles are resident in memory.
+
+Performance claims are similarly bounded: benchmark receipts establish behavior for the recorded source, workload, and environment. They do not establish universal Ryzen, EPYC, cloud, CPU-vs-GPU, NUMA, CUDA, Vulkan, or memory-bandwidth claims.
+
+The v0.7.0 GPU Barnes–Hut CI evidence was collected through Mesa software Vulkan and is correctness evidence, **not hardware GPU performance evidence**.
 
 ---
 
 ## 6. Development and verification
 
-The repository contains five main validation surfaces:
+The repository contains eight main validation surfaces:
 
 ```text
-browser / Wasm          -> JS application + physics + packaging checks
-Barnes–Hut self-gravity -> JS + native Rust tree math against direct O(N²) forces
-retro integer math      -> Rust + JS portability / vector checks
-native CPU runtime      -> Linux / macOS / Windows correctness and receipts
-native GPU / u64        -> Vulkan/CUDA host contracts and tiled-runtime checks
-Barnes–Hut GPU traversal -> packed ABI + WGSL execution against flat/direct CPU oracles
-Barnes–Hut GPU evolution -> persistent GPU state + multi-step leapfrog
-Barnes–Hut GPU tree build -> device-only rebuild loop checked against BH #2A/B2B2 oracles
+browser / Wasm             -> JS application + physics + packaging checks
+Barnes–Hut self-gravity    -> JS + native Rust tree math against direct O(N²) forces
+retro integer math         -> Rust + JS portability / vector checks
+native CPU runtime         -> Linux / macOS / Windows correctness and receipts
+native GPU / u64           -> Vulkan/CUDA host contracts and tiled-runtime checks
+Barnes–Hut GPU traversal   -> packed ABI + WGSL execution against flat/direct CPU oracles
+Barnes–Hut GPU evolution   -> persistent GPU state + multi-step leapfrog
+Barnes–Hut GPU tree build  -> device-only rebuild loop checked against BH #2A/B2B2 oracles
 ```
 
 Useful local checks include:
@@ -363,12 +423,18 @@ cargo test --manifest-path nbody/Cargo.toml --locked --offline
 cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify
 cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify-flat
 
-# Barnes-Hut GPU transfer/traversal
+# Barnes-Hut GPU traversal / evolution / tree construction
 cargo test --manifest-path runtime/Cargo.toml --locked
 python3 runtime/cuda/check_barnes_hut_layout.py
-cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- --particles 256 --theta 0.5 --allow-software
-cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
-cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -- --particles 128 --steps 3 --dt-myr 0.01 --allow-software
+
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- \
+  --particles 256 --theta 0.5 --allow-software
+
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-evolve -- \
+  --particles 128 --steps 3 --dt-myr 0.01 --allow-software
+
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree -- \
+  --particles 128 --steps 3 --dt-myr 0.01 --allow-software
 
 # Native CPU
 sh scripts/test-cpu-runtime.sh
@@ -389,9 +455,9 @@ The root Rust toolchain is pinned in `rust-toolchain.toml`. Generated Wasm paylo
 | Document | Purpose |
 | --- | --- |
 | [ENGINE.md](docs/ENGINE.md) | Browser engine, logical/rendered population separation, Wasm/WebGL path |
-| [BARNES-HUT.md](docs/BARNES-HUT.md) | Resident self-gravity contract, direct-force oracle, visualization, GPU follow-up boundary |
+| [BARNES-HUT.md](docs/BARNES-HUT.md) | Resident self-gravity contract, direct-force oracle, flat-tree and GPU evolution/tree-build boundaries |
 | [UFF-DYNAMICS.md](docs/UFF-DYNAMICS.md) | Rotation-law physics, units, demonstration-data provenance |
-| [GPU-RUNTIME.md](docs/GPU-RUNTIME.md) | Native Rust/`wgpu` runtime and GPU execution |
+| [GPU-RUNTIME.md](docs/GPU-RUNTIME.md) | Native Rust/`wgpu` runtime, GPU execution, Barnes–Hut traversal/evolution/tree construction |
 | [CUDA-RUNTIME.md](docs/CUDA-RUNTIME.md) | CUDA backend, bootstrap, validation and claim boundaries |
 | [U64-TILED-RUNTIME.md](docs/U64-TILED-RUNTIME.md) | Memory-bounded logical populations beyond 32-bit indexing |
 | [CPU-RUNTIME.md](docs/CPU-RUNTIME.md) | Native CPU architecture, timing, receipts, correctness contract |
@@ -405,7 +471,40 @@ The root Rust toolchain is pinned in `rust-toolchain.toml`. Generated Wasm paylo
 
 ## 8. Roadmap
 
-The v0.4.0 → v0.6.0 CPU architecture ladder is frozen. BH #1 is frozen by merged PR #18, BH #2A by merged PR #19, BH #2B1 by merged PR #20, and BH #2B2 by merged PR #21. The active rung is BH #2C: remove the host tree-rebuild boundary with a correctness-first GPU-built flat tree, while retaining BH #2A/B2B2 as scientific oracles.
+The v0.4.0 → v0.6.0 CPU architecture ladder is frozen.
+
+**v0.7.0 freezes the Barnes–Hut correctness ladder through BH #2C:**
+
+```text
+PR #18  BH #1   resident Barnes–Hut CPU reference
+PR #19  BH #2A  Morton / flat-tree substrate
+PR #20  BH #2B1 GPU transfer ABI + force traversal
+PR #21  BH #2B2 persistent multi-step GPU evolution
+PR #22  BH #2C  GPU tree construction
+```
+
+The next experimental rung is **BH #2D — parallel GPU tree construction**.
+
+BH #2C proves that bounds, Morton generation, deterministic spatial ordering, flat topology, bottom-up aggregates, traversal, and multi-step integration can remain on the device without per-step host particle readback or CPU tree reconstruction.
+
+BH #2D can now optimize that verified device-owned boundary:
+
+```text
+parallel bounds reduction
+  -> scalable radix / Morton ordering
+  -> parallel range and topology construction
+  -> parallel cell aggregates
+  -> real hardware GPU measurements
+```
+
+The frozen correctness oracles remain:
+
+- BH #1 direct-force and recursive CPU reference;
+- BH #2A deterministic f64 flat-tree implementation;
+- BH #2B2 host-built GPU evolution;
+- BH #2C correctness-first GPU-built tree.
+
+Performance promotion should occur only after the parallel alternatives reproduce the established force, trajectory, deterministic-ordering, and receipt evidence.
 
 The historical native-CPU investigation areas were:
 
@@ -415,7 +514,7 @@ The historical native-CPU investigation areas were:
 4. **receipt-native affinity evidence** — record allowed CPU sets and topology evidence with the run itself;
 5. **before/after validation** — compare against the frozen v0.4.0 Ryzen and EPYC baseline while requiring deterministic checksum parity.
 
-The default scheduling policy should remain conservative until those alternatives are measured. The qBraid result shows that “more distinct physical cores” is not automatically equivalent to “faster” for this workload.
+The default scheduling policy should remain conservative until alternatives are measured. The qBraid result shows that “more distinct physical cores” is not automatically equivalent to “faster” for this workload.
 
 ---
 
@@ -424,7 +523,7 @@ The default scheduling policy should remain conservative until those alternative
 GALAXY has file-level licensing rather than one blanket licence for every source file.
 
 - Adapted VORTEX browser sources retain **MPL-2.0** notices.
-- New Rust sampler, native CPU/GPU runtimes, build tooling, and associated Apache-licensed project code use **Apache-2.0**.
+- New Rust sampler, native CPU/GPU runtimes, Barnes–Hut implementations, build tooling, and associated Apache-licensed project code use **Apache-2.0**.
 - QSOL UFF-derived implementation/data provenance is pinned and documented in [`data/uff/provenance.json`](data/uff/provenance.json) and [NOTICE.md](NOTICE.md).
 
 The VORTEX reference photographs, artwork, and historical stress-test reports are not redistributed. Historical VORTEX measurements are not GALAXY benchmark evidence.
@@ -438,3 +537,7 @@ Copyright 2025–2026 Trent Slade / QSOL-IMC.
 If you use the v0.4.0 software/evidence baseline, cite:
 
 > Slade, T. (2026). *GALAXY v0.4.0: Deterministic Native CPU Runtime and Scaling Evidence* (Version v0.4.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22756969
+
+For the current software release, use:
+
+> Slade, T. (2026). *GALAXY v0.7.0: Barnes–Hut Self-Gravity and GPU Tree Construction* (Version v0.7.0) [Computer software]. GitHub. https://github.com/QSOLKCB/GALAXY/releases/tag/v0.7.0
