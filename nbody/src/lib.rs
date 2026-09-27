@@ -392,12 +392,21 @@ pub fn probe_error(
     })
 }
 
-pub fn leapfrog_step(bodies: &mut [Body], dt_myr: f64, config: Config) -> Result<ForceResult, String> {
+pub fn leapfrog_step_from_acceleration(
+    bodies: &mut [Body],
+    dt_myr: f64,
+    config: Config,
+    first_accelerations: &[Accel],
+) -> Result<ForceResult, String> {
     if !dt_myr.is_finite() || dt_myr <= 0.0 {
         return Err("dt_myr must be positive and finite".into());
     }
-    let first = barnes_hut_accelerations(bodies, config)?;
-    for (body, acc) in bodies.iter_mut().zip(&first.accelerations) {
+    config.validate()?;
+    validate_bodies(bodies)?;
+    if first_accelerations.len() != bodies.len() {
+        return Err("boundary acceleration count does not match bodies".into());
+    }
+    for (body, acc) in bodies.iter_mut().zip(first_accelerations) {
         body.vx += 0.5 * dt_myr * acc.ax;
         body.vy += 0.5 * dt_myr * acc.ay;
         body.x += dt_myr * body.vx;
@@ -409,6 +418,11 @@ pub fn leapfrog_step(bodies: &mut [Body], dt_myr: f64, config: Config) -> Result
         body.vy += 0.5 * dt_myr * acc.ay;
     }
     Ok(second)
+}
+
+pub fn leapfrog_step(bodies: &mut [Body], dt_myr: f64, config: Config) -> Result<ForceResult, String> {
+    let first = barnes_hut_accelerations(bodies, config)?;
+    leapfrog_step_from_acceleration(bodies, dt_myr, config, &first.accelerations)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -582,6 +596,31 @@ mod tests {
         leapfrog_step(&mut bodies, 0.01, Config::default()).unwrap();
         assert!(bodies.iter().zip(before).any(|(a, b)| a.x != b.x || a.y != b.y));
         assert!(bodies.iter().all(|b| [b.x, b.y, b.vx, b.vy].into_iter().all(f64::is_finite)));
+    }
+
+    #[test]
+    fn reused_boundary_acceleration_matches_convenience_step() {
+        let config = Config::default();
+        let mut convenience = make_disc(128, 88, 5.0e10, 3.0).unwrap();
+        let mut reused = convenience.clone();
+        let first = barnes_hut_accelerations(&reused, config).unwrap();
+
+        let convenience_result = leapfrog_step(&mut convenience, 0.01, config).unwrap();
+        let reused_result =
+            leapfrog_step_from_acceleration(&mut reused, 0.01, config, &first.accelerations).unwrap();
+
+        assert_eq!(convenience, reused);
+        assert_eq!(convenience_result.accelerations, reused_result.accelerations);
+        assert_eq!(convenience_result.stats, reused_result.stats);
+        assert_eq!(convenience_result.tree.stats, reused_result.tree.stats);
+    }
+
+    #[test]
+    fn reused_boundary_acceleration_rejects_wrong_length() {
+        let config = Config::default();
+        let mut bodies = make_disc(8, 89, 5.0e10, 3.0).unwrap();
+        let error = leapfrog_step_from_acceleration(&mut bodies, 0.01, config, &[]).unwrap_err();
+        assert!(error.contains("acceleration count"));
     }
 
     #[test]
