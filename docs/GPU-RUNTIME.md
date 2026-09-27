@@ -197,12 +197,12 @@ The receipt separates:
 - CPU flat-tree construction;
 - CPU f32 transfer packing;
 - CPU flat traversal reference;
-- direct O(N²) reference;
+- bounded direct O(N) per-probe reference (12 deterministic probes by default);
 - GPU upload/transfer;
 - GPU dispatch;
 - GPU readback.
 
-It also records GPU-vs-flat-CPU and GPU-vs-direct relative error. This phase does not claim GPU tree construction or evolving multi-step self-gravity.
+It also records a full GPU-vs-flat-CPU comparison and GPU-vs-direct relative error on a bounded deterministic probe set. Use `--direct-probes 1..64` to change the probe count without turning a large GPU traversal into a full O(N²) CPU prerequisite. This phase does not claim GPU tree construction or evolving multi-step self-gravity.
 
 The matched CUDA traversal source is `runtime/cuda/barnes_hut_flat.cu`. CI runs `runtime/cuda/check_barnes_hut_layout.py` to verify record sizes, a canonical packed byte fixture, static CUDA size assertions and target-membership semantics. That is ABI/source parity evidence, **not CUDA execution evidence**.
 
