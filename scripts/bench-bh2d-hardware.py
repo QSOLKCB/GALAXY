@@ -51,7 +51,10 @@ RADIX_DIGITS = 16
 SYSTEM_PATH = "/usr/bin:/bin"
 BUILD_ENV_EXACT = {
     "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "LIBRARY_PATH", "COMPILER_PATH",
-    "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_LAYER_PATH", "VK_INSTANCE_LAYERS",
+    "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES", "VK_ICD_FILENAMES",
+    "VK_LAYER_PATH", "VK_ADD_LAYER_PATH", "VK_INSTANCE_LAYERS",
+    "VK_LOADER_LAYERS_ENABLE", "VK_LOADER_LAYERS_DISABLE",
+    "VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE",
     "GCC_EXEC_PREFIX", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
     "RUSTFLAGS",
     "CARGO_ENCODED_RUSTFLAGS",
@@ -830,13 +833,26 @@ def adapter_identity(gpu: Any, adapter_selector: str | None = None) -> str:
                 adapter_selector.lower() in name.lower(),
                 "receipt.gpu.name does not match the textual adapter selector",
             )
+    device_type = require_string(
+        info.get("device_type"), "receipt.gpu.device_type", nonempty=True
+    )
+    software_name = name.lower()
+    producer_classifies_software = (
+        device_type.lower() == "cpu"
+        or any(
+            marker in software_name
+            for marker in ("llvmpipe", "lavapipe", "swiftshader", "software")
+        )
+    )
+    require(
+        not producer_classifies_software,
+        "receipt.gpu contradicts the producer software-adapter classification",
+    )
     required = {
         "index": index,
         "name": name,
         "backend": require_string(info.get("backend"), "receipt.gpu.backend", nonempty=True),
-        "device_type": require_string(
-            info.get("device_type"), "receipt.gpu.device_type", nonempty=True
-        ),
+        "device_type": device_type,
         "driver": require_string(info.get("driver"), "receipt.gpu.driver"),
         "driver_info": require_string(info.get("driver_info"), "receipt.gpu.driver_info"),
     }
@@ -1406,6 +1422,20 @@ def main() -> int:
             )
             # Preserve every output byte, including non-UTF-8 driver diagnostics.
             log_path.write_bytes(completed.stdout)
+            if completed.returncode != 0:
+                manifest["runs"].append(
+                    {
+                        "particles": particles,
+                        "status": "failed",
+                        "exit_code": completed.returncode,
+                        "log": str(log_path.relative_to(output)),
+                        "log_sha256": sha256_file(log_path),
+                        "cargo_target_dir": str(target_dir.relative_to(output)),
+                    }
+                )
+                manifest_path.write_text(
+                    json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n"
+                )
 
             require_source_provenance(
                 repo_root,
