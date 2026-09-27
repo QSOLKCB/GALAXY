@@ -3,9 +3,9 @@ name: Native GPU runtime
 on:
   push:
     branches: [main]
-    paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'tests/test_bh2d_hardware_sweep.py', 'scripts/*gpu*', 'scripts/bench-bh2d-hardware.py', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
+    paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'tests/test_bh2d_hardware_sweep.py', 'scripts/*gpu*', 'scripts/bench-bh2d-hardware.py', 'scripts/bench-bh2d-hardware-launch.sh', 'scripts/bench-bh2d-hardware-launch.cmd', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
   pull_request:
-    paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'tests/test_bh2d_hardware_sweep.py', 'scripts/*gpu*', 'scripts/bench-bh2d-hardware.py', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
+    paths: ['runtime/**', 'rust/**', 'nbody/**', 'data/uff/**', 'tests/uff-reference.json', 'tests/test_bh2d_hardware_sweep.py', 'scripts/*gpu*', 'scripts/bench-bh2d-hardware.py', 'scripts/bench-bh2d-hardware-launch.sh', 'scripts/bench-bh2d-hardware-launch.cmd', 'scripts/vast-runner.py', 'rust-toolchain.toml', '.github/workflows/native-gpu.yml', '.dockerignore', 'LICENSE', 'NOTICE.md']
   workflow_dispatch:
 
 permissions:
@@ -61,7 +61,7 @@ jobs:
           python runtime/tests/test_runner.py
           python runtime/cuda/check_barnes_hut_layout.py
           python tests/test_bh2d_hardware_sweep.py
-          python -I scripts/bench-bh2d-hardware.py --dry-run --output "$RUNNER_TEMP/bh2d-plan" --particles 512,4096,8192
+          sh scripts/bench-bh2d-hardware-launch.sh --dry-run --output "$RUNNER_TEMP/bh2d-plan" --particles 512,4096,8192
       - name: Install software Vulkan for compute validation
         run: |
           sudo apt-get update -qq
