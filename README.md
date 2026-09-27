@@ -14,7 +14,8 @@ It began as an adaptation of the VORTEX 2.1.0 particle lab and now combines:
 - Vulkan/`wgpu` and NVIDIA CUDA compute paths;
 - memory-bounded exact-u64 logical addressing;
 - reproducible benchmark receipts, topology evidence, and archived scaling studies;
-- an opt-in Barnes–Hut resident self-gravity laboratory with a direct-force oracle and live quadtree visualization.
+- an opt-in Barnes–Hut resident self-gravity laboratory with a direct-force oracle and live quadtree visualization;
+- a GPU-oriented BH #2A Morton/Z-order + flat-cell CPU substrate with repeatable topology receipts.
 
 The current immutable software release is **v0.6.0**. The v0.4.0 native-CPU evidence baseline remains archived at Zenodo as:
 
@@ -36,6 +37,7 @@ The current immutable software release is **v0.6.0**. The v0.4.0 native-CPU evid
 | Native GPU runtime | Rust/`wgpu`/Vulkan plus NVIDIA CUDA/CuPy RawKernel |
 | Wide logical addressing | `split-u64-hash32-avalanche-v1` across CPU and wide-address GPU paths |
 | Barnes–Hut self-gravity | Separate resident planar N-body reference, exact O(N²) oracle, leapfrog integration, browser tree overlay |
+| Barnes–Hut flat substrate | Stable 32-bit Morton ordering, pointer-free flat cells, bottom-up aggregates, flat traversal receipts |
 | Formal release | Immutable `v0.6.0`, commit `fa1c76fb49664ae4cdd6dc090cccd702399c2b60` |
 | CPU baseline archival record | Zenodo DOI `10.5281/zenodo.22756969` |
 | Active experimental phase | Barnes–Hut resident self-gravity; GPU tree construction/traversal deferred until the CPU/direct contract is frozen |
@@ -364,7 +366,7 @@ The root Rust toolchain is pinned in `rust-toolchain.toml`. Generated Wasm paylo
 
 ## 8. Roadmap
 
-The v0.4.0 → v0.6.0 CPU architecture ladder is frozen. The active experimental rung is now resident Barnes–Hut self-gravity: first freeze the CPU/direct correctness contract and visual audit surface, then investigate flat Morton-ordered GPU trees without weakening that oracle.
+The v0.4.0 → v0.6.0 CPU architecture ladder is frozen. BH #1 resident self-gravity is also frozen by merged PR #18. The active rung is BH #2A: freeze stable Morton ordering and a pointer-free flat-tree CPU contract before moving those buffers into GPU arithmetic.
 
 The historical native-CPU investigation areas were:
 
