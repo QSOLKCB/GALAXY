@@ -180,6 +180,32 @@ In SSH/Jupyter mode Vast replaces the image entrypoint; run the installed
 `galaxy-runtime` executable inside the instance. Keep result files on persistent
 storage or retrieve them before destroying the instance.
 
+## Barnes–Hut resident self-gravity traversal
+
+BH #2B1 adds a separate resident self-gravity verification path without changing the existing fixed-potential runtime jobs.
+
+The CPU `galaxy-nbody` crate builds the frozen BH #2A Morton-ordered flat tree in f64. `galaxy-bh-gpu` then packs that tree into explicit f32/u32 transfer records and executes force traversal through `runtime/src/nbody.wgsl`.
+
+```bash
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- \
+  --particles 256 --theta 0.5 --allow-software \
+  --receipt runs/barnes-hut-gpu/receipt.json
+```
+
+The receipt separates:
+
+- CPU flat-tree construction;
+- CPU f32 transfer packing;
+- CPU flat traversal reference;
+- direct O(N²) reference;
+- GPU upload/transfer;
+- GPU dispatch;
+- GPU readback.
+
+It also records GPU-vs-flat-CPU and GPU-vs-direct relative error. This phase does not claim GPU tree construction or evolving multi-step self-gravity.
+
+The matched CUDA traversal source is `runtime/cuda/barnes_hut_flat.cu`. CI runs `runtime/cuda/check_barnes_hut_layout.py` to verify record sizes, a canonical packed byte fixture, static CUDA size assertions and target-membership semantics. That is ABI/source parity evidence, **not CUDA execution evidence**.
+
 ## Physics and numerical behavior
 
 The source remains UFF commit
@@ -284,7 +310,9 @@ from file metadata, so finalizing a large CSV does not allocate another full cop
 ```bash
 cargo test --manifest-path runtime/Cargo.toml --locked
 python3 runtime/tests/test_runner.py
+python3 runtime/cuda/check_barnes_hut_layout.py
 bash scripts/run-gpu.sh verify
+cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu -- --particles 256 --theta 0.5 --allow-software
 ```
 
 `verify` executes the compiled GPU kernels against 195 predictions from UFF's
