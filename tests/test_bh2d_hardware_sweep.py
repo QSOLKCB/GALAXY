@@ -952,6 +952,31 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         with self.assertRaisesRegex(sweep.SweepError, "internal cells"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
+    def test_state_error_zero_maximum_matches_rms(self):
+        for key in ("bh2c_serial_gpu", "bh2b2_host_tree_gpu"):
+            with self.subTest(key=key, component="position"):
+                receipt = receipt_for(512)
+                state = receipt["gpu_oracles"][key]["state_error"]
+                state["position_rms_relative_l2"] = 0.02
+                state["position_max_relative"] = 0.0
+                with self.assertRaisesRegex(sweep.SweepError, "position RMS/max zero-state mismatch"):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+            with self.subTest(key=key, component="velocity"):
+                receipt = receipt_for(512)
+                state = receipt["gpu_oracles"][key]["state_error"]
+                state["velocity_rms_relative_l2"] = 0.02
+                state["velocity_max_relative"] = 0.0
+                with self.assertRaisesRegex(sweep.SweepError, "velocity RMS/max zero-state mismatch"):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        state = receipt["trajectory_vs_bh2a_flat_f64"]["state_error"]
+        state["position_rms_relative_l2"] = 0.0
+        state["position_max_relative"] = 0.01
+        with self.assertRaisesRegex(sweep.SweepError, "position RMS/max zero-state mismatch"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
     def test_force_rms_cannot_exceed_reported_maximum(self):
         receipt = receipt_for(512)
         receipt["final_force"]["direct_probe_rms_relative"] = 0.03
