@@ -405,6 +405,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         for name in (
             "LD_AUDIT",
             "VK_DRIVER_FILES",
+            "VK_ADD_DRIVER_FILES",
             "VK_ICD_FILENAMES",
             "VK_LAYER_PATH",
             "VK_INSTANCE_LAYERS",
@@ -569,6 +570,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 "LD_AUDIT": "/tmp/audit.so",
                 "LD_PRELOAD": "/tmp/preload.so",
                 "VK_DRIVER_FILES": "/tmp/icd.json",
+                "VK_ADD_DRIVER_FILES": "/tmp/additional-icd.json",
                 "VK_ICD_FILENAMES": "/tmp/legacy-icd.json",
                 "VK_LAYER_PATH": "/tmp/layers",
                 "VK_INSTANCE_LAYERS": "VK_LAYER_SYNTHETIC",
@@ -582,6 +584,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         self.assertNotIn("LD_PRELOAD", env)
         for name in (
             "VK_DRIVER_FILES",
+            "VK_ADD_DRIVER_FILES",
             "VK_ICD_FILENAMES",
             "VK_LAYER_PATH",
             "VK_INSTANCE_LAYERS",
@@ -684,6 +687,19 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 self.assertEqual(sweep.main(), 1)
             self.assertEqual((output / "n000512/run.log").read_bytes(), b"driver: \xff\n")
             self.assertEqual(json.loads((output / "manifest.json").read_text())["status"], "failed")
+
+    def test_receipt_rejects_nonstandard_json_constants(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "receipt.json"
+            for constant in ("NaN", "Infinity", "-Infinity"):
+                with self.subTest(constant=constant):
+                    path.write_text(
+                        '{"timings_seconds":{"parallel_tree_build_total":'
+                        + constant
+                        + "}}"
+                    )
+                    with self.assertRaisesRegex(sweep.SweepError, "not valid JSON"):
+                        sweep.load_receipt(path)
 
     def test_invalid_utf8_receipt_is_normalized_to_sweep_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -899,6 +915,17 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt["tree"]["active_cell_count"] = "corrupt"
         with self.assertRaisesRegex(sweep.SweepError, "active_cell_count must be an integer"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_zero_work_counters_require_integer_types(self):
+        for field in (
+            "host_tree_rebuilds",
+            "host_particle_readbacks_during_steps",
+        ):
+            with self.subTest(field=field):
+                receipt = receipt_for(512)
+                receipt[field] = False
+                with self.assertRaisesRegex(sweep.SweepError, field):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_repeat_tree_mismatch_is_rejected(self):
         receipt = receipt_for(512)
