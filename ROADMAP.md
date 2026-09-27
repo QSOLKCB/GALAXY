@@ -16,7 +16,7 @@ The governing rule remains:
 
 ## Current status
 
-**PE #15 is frozen in immutable v0.6.0. The active experimental phase is BH #1: resident Barnes–Hut self-gravity.**
+**PE #15 is frozen in immutable v0.6.0. BH #1 is frozen by merged PR #18. The active experimental phase is BH #2A: Morton/Z-order flat-tree substrate.**
 
 The existing prescribed-field, logical-u64, CPU and GPU execution contracts remain intact. Self-gravity is a separate resident execution family because forces couple bodies across the complete resident set.
 
@@ -49,20 +49,43 @@ The first rung contains:
 5. No logical-u64 tiling claim is made for mutually coupled self-gravity.
 6. GPU speed claims are deferred until a GPU implementation is measured against this frozen CPU/direct reference.
 
-## BH #2 — Deferred GPU tree work
+## BH #2A — Morton / Flat-Tree Substrate
 
-After BH #1 closes, investigate:
+BH #1 has closed. This phase freezes the data structure required before GPU traversal:
 
 ```text
 bounding box
-  -> Morton/Z-order keys
+  -> 32-bit Morton/Z-order keys (16 bits per axis)
   -> stable spatial ordering
-  -> flat tree / aggregate construction
-  -> GPU traversal
-  -> leapfrog update
+  -> flat cells with explicit u32 child indices
+  -> bottom-up aggregate construction
+  -> iterative flat CPU traversal
 ```
 
-Tree construction and traversal timing must be reported separately. Third-party benchmark numbers are research context, not GALAXY evidence.
+### Acceptance
+
+1. Equal Morton keys preserve original resident order.
+2. Flat theta-zero traversal agrees with direct O(N²) force evidence to roundoff tolerance.
+3. Flat theta-0.5 stays inside the frozen BH #1 error gates.
+4. Flat traversal remains closely aligned with the recursive BH #1 oracle on the deterministic fixture.
+5. Topology checksums are repeatable and cover discrete Morton ordering/ranges/children.
+6. Tree construction and traversal are timed separately.
+7. Maximum final-quantized leaf occupancy is explicit receipt evidence.
+8. No GPU speed claim is made.
+
+## BH #2B — GPU Transfer + Traversal
+
+After BH #2A closes:
+
+```text
+frozen Morton entries / flat cells
+  -> explicit f32 packed transfer records
+  -> Vulkan/WGSL and CUDA buffer parity
+  -> GPU traversal
+  -> GPU leapfrog update
+```
+
+GPU tree construction, transfer, and traversal timing must remain separate. Third-party benchmark numbers are research context, not GALAXY evidence.
 
 See `docs/BARNES-HUT.md` and `nbody/`.
 

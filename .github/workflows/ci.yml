@@ -40,6 +40,24 @@ jobs:
           node tests/barnes-hut.mjs
           cargo test --manifest-path nbody/Cargo.toml --locked --offline
           cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify
+          cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify-flat
+          flat_root="$RUNNER_TEMP/galaxy-bh-flat/nested"
+          rm -rf "$RUNNER_TEMP/galaxy-bh-flat"
+          cargo run --manifest-path nbody/Cargo.toml --locked --offline -- \
+            flat-probe --preset disc --particles 512 --theta 0.5 --seed 303 \
+            --receipt "$flat_root/receipt.json" \
+            > "$RUNNER_TEMP/galaxy-bh-flat-stdout.json"
+          test -s "$flat_root/receipt.json"
+          node - <<'NODE' "$flat_root/receipt.json"
+          const fs = require("fs");
+          const path = process.argv[2];
+          const receipt = JSON.parse(fs.readFileSync(path, "utf8"));
+          if (receipt.schema !== "galaxy.barnes-hut-flat-receipt.v1") throw new Error("wrong flat receipt schema");
+          if (receipt.backend !== "cpu-flat-reference") throw new Error("wrong flat backend");
+          if (receipt.morton_axis_bits !== 16) throw new Error("wrong Morton width");
+          if (!(receipt.tree_cells > 0 && receipt.tree_leaves > 0)) throw new Error("missing flat tree evidence");
+          if (!(receipt.build_seconds >= 0 && receipt.traversal_seconds >= 0)) throw new Error("missing split timings");
+          NODE
           artifact_root="$RUNNER_TEMP/galaxy-bh/nested"
           rm -rf "$RUNNER_TEMP/galaxy-bh"
           cargo run --manifest-path nbody/Cargo.toml --locked --offline -- \

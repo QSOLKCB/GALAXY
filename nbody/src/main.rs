@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
+use galaxy_nbody::flat::{
+    build_flat_tree, compare_flat_to_direct, flat_accelerations_from_tree, flat_topology_checksum,
+    FlatCell, MortonEntry, MORTON_AXIS_BITS,
+};
 use galaxy_nbody::{
     barnes_hut_accelerations, compare_to_direct, leapfrog_step_from_acceleration, make_collision,
-    make_disc, probe_error, state_checksum, Config, DEFAULT_SOFTENING_KPC,
+    make_disc, probe_error, state_checksum, Accel, Body, Config, DEFAULT_SOFTENING_KPC,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -16,6 +20,9 @@ fn usage() -> &'static str {
     "GALAXY Barnes-Hut self-gravity reference\n\n\
 usage:\n\
   galaxy-nbody verify\n\
+  galaxy-nbody verify-flat\n\
+  galaxy-nbody flat-probe [--preset disc|collision] [--particles N] [--theta F]\n\
+                          [--softening-kpc F] [--seed N] [--receipt PATH]\n\
   galaxy-nbody run [--preset disc|collision] [--particles N] [--steps N]\n\
                    [--theta F] [--dt-myr F] [--softening-kpc F] [--seed N]\n\
                    [--receipt PATH] [--snapshot PATH]\n\n\
@@ -145,6 +152,267 @@ fn verify() -> Result<(), String> {
         error.max_relative,
         zero_error.max_relative
     );
+    Ok(())
+}
+
+fn relative_difference(a: Accel, b: Accel) -> f64 {
+    (a.ax - b.ax).hypot(a.ay - b.ay) / b.ax.hypot(b.ay).max(1e-30)
+}
+
+fn verify_flat() -> Result<(), String> {
+    if std::mem::size_of::<MortonEntry>() != 8 || std::mem::size_of::<FlatCell>() != 80 {
+        return Err(format!(
+            "flat host record sizes changed: MortonEntry={} FlatCell={}",
+            std::mem::size_of::<MortonEntry>(),
+            std::mem::size_of::<FlatCell>()
+        ));
+    }
+
+    let coincident = vec![
+        Body { x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, mass: 1.0 };
+        8
+    ];
+    let ordering_tree = build_flat_tree(
+        &coincident,
+        Config {
+            bucket: 1,
+            max_depth: MORTON_AXIS_BITS as usize,
+            softening_kpc: 0.1,
+            ..Config::default()
+        },
+    )?;
+    let ordering: Vec<u32> = ordering_tree
+        .entries
+        .iter()
+        .map(|entry| entry.body_index)
+        .collect();
+    if ordering != (0_u32..8).collect::<Vec<_>>() {
+        return Err("equal Morton keys no longer preserve resident order".into());
+    }
+
+    let shallow_tree = build_flat_tree(
+        &coincident,
+        Config {
+            bucket: 1,
+            max_depth: 1,
+            softening_kpc: 0.1,
+            ..Config::default()
+        },
+    )?;
+    if shallow_tree.stats.max_depth != 1 {
+        return Err(format!(
+            "configured max_depth=1 was not honored: observed {}",
+            shallow_tree.stats.max_depth
+        ));
+    }
+
+    let bodies = make_disc(256, 303, 5.0e10, 3.0)?;
+    let config = Config::default();
+    let (flat, error) = compare_flat_to_direct(&bodies, config)?;
+    let root = &flat.tree.cells[flat.tree.root as usize];
+    if root.start != 0 || root.end as usize != bodies.len() {
+        return Err(format!(
+            "flat root range is invalid: [{}..{}) for {} bodies",
+            root.start,
+            root.end,
+            bodies.len()
+        ));
+    }
+    if (root.mass - 5.0e10).abs() >= 1e-3 {
+        return Err(format!("flat root mass is invalid: {}", root.mass));
+    }
+    if error.rms_relative >= 0.03 || error.max_relative >= 0.25 {
+        return Err(format!(
+            "flat theta=0.5 reference error too large: rms={} max={}",
+            error.rms_relative, error.max_relative
+        ));
+    }
+
+    let recursive = barnes_hut_accelerations(&bodies, config)?;
+    let flat_recursive_max = flat
+        .accelerations
+        .iter()
+        .copied()
+        .zip(recursive.accelerations.iter().copied())
+        .map(|(a, b)| relative_difference(a, b))
+        .fold(0.0_f64, f64::max);
+    if flat_recursive_max >= 1e-9 {
+        return Err(format!(
+            "flat Morton traversal diverged from BH #1 recursive oracle: max={flat_recursive_max}"
+        ));
+    }
+
+    let theta_zero = Config { theta: 0.0, ..config };
+    let (_, zero_error) = compare_flat_to_direct(&bodies, theta_zero)?;
+    if zero_error.max_relative >= 2e-12 {
+        return Err(format!(
+            "flat theta=0 traversal diverged from direct reference: max={}",
+            zero_error.max_relative
+        ));
+    }
+
+    let topology_checksum = flat_topology_checksum(&flat.tree);
+    let repeat = build_flat_tree(&bodies, config)?;
+    if topology_checksum != flat_topology_checksum(&repeat) {
+        return Err("flat Morton topology checksum is not repeatable".into());
+    }
+
+    println!(
+        "Barnes-Hut flat verify PASS: bodies={} cells={} leaves={} depth={} morton_bits={} topology={:016x} theta0.5_rms={:.8} theta0.5_max={:.8} flat_recursive_max={:.3e} theta0_max={:.3e}",
+        bodies.len(),
+        flat.tree.cells.len(),
+        flat.tree.stats.leaf_count,
+        flat.tree.stats.max_depth,
+        MORTON_AXIS_BITS,
+        topology_checksum,
+        error.rms_relative,
+        error.max_relative,
+        flat_recursive_max,
+        zero_error.max_relative
+    );
+    Ok(())
+}
+
+fn flat_probe(args: &[String]) -> Result<(), String> {
+    let map = parse_args(args)?;
+    for key in map.keys() {
+        match key.as_str() {
+            "--preset" | "--particles" | "--theta" | "--softening-kpc" | "--seed"
+            | "--receipt" => {}
+            _ => return Err(format!("unknown option for flat-probe: {key}")),
+        }
+    }
+
+    let preset = map.get("--preset").map(String::as_str).unwrap_or("collision");
+    if preset != "disc" && preset != "collision" {
+        return Err("--preset must be disc or collision".into());
+    }
+    let particles = usize_arg(&map, "--particles", 16_384, MAX_PARTICLES)?;
+    if particles < 2 {
+        return Err("--particles must be at least 2".into());
+    }
+    if preset == "collision" && particles < 4 {
+        return Err("collision preset requires at least 4 particles".into());
+    }
+    let theta = f64_arg(&map, "--theta", 0.5, 0.0, 2.0)?;
+    let softening_kpc = f64_arg(
+        &map,
+        "--softening-kpc",
+        DEFAULT_SOFTENING_KPC,
+        0.0,
+        100.0,
+    )?;
+    let seed = u64_arg(&map, "--seed", 303)?;
+    let config = Config { theta, softening_kpc, ..Config::default() };
+    config.validate()?;
+
+    let bodies = if preset == "collision" {
+        make_collision(particles, seed)?
+    } else {
+        make_disc(particles, seed, 5.0e10, 3.0)?
+    };
+
+    let receipt_path = map.get("--receipt").map(PathBuf::from);
+    if let Some(path) = receipt_path.as_deref() {
+        ensure_parent(path)?;
+    }
+
+    let build_started = Instant::now();
+    let tree = build_flat_tree(&bodies, config)?;
+    let build_elapsed = build_started.elapsed();
+
+    let traversal_started = Instant::now();
+    let (accelerations, stats) = flat_accelerations_from_tree(&bodies, &tree, config)?;
+    let traversal_elapsed = traversal_started.elapsed();
+
+    let probe_count = 12.min(particles);
+    let probe_started = Instant::now();
+    let probe = probe_error(&bodies, &accelerations, config, probe_count)?;
+    let probe_elapsed = probe_started.elapsed();
+
+    let topology_checksum = flat_topology_checksum(&tree);
+    let max_leaf_bodies = tree
+        .cells
+        .iter()
+        .filter(|cell| cell.is_leaf())
+        .map(|cell| cell.count())
+        .max()
+        .unwrap_or(0);
+    let layout_bytes = (tree.entries.len() as u128)
+        * (std::mem::size_of::<MortonEntry>() as u128)
+        + (tree.cells.len() as u128) * (std::mem::size_of::<FlatCell>() as u128);
+    let force_terms = stats.direct_terms + stats.approximated_cells;
+    let exact_terms = (particles as u128) * ((particles - 1) as u128);
+    let avoided_fraction = if exact_terms == 0 {
+        0.0
+    } else {
+        1.0 - force_terms as f64 / exact_terms as f64
+    };
+
+    let receipt = format!(
+        concat!(
+            "{{\n",
+            "  \"schema\": \"galaxy.barnes-hut-flat-receipt.v1\",\n",
+            "  \"status\": \"complete\",\n",
+            "  \"backend\": \"cpu-flat-reference\",\n",
+            "  \"preset\": \"{}\",\n",
+            "  \"particles\": {},\n",
+            "  \"theta\": {:.17},\n",
+            "  \"softening_kpc\": {:.17},\n",
+            "  \"seed\": {},\n",
+            "  \"morton_axis_bits\": {},\n",
+            "  \"morton_entry_bytes\": {},\n",
+            "  \"flat_cell_bytes\": {},\n",
+            "  \"flat_layout_bytes\": {},\n",
+            "  \"tree_cells\": {},\n",
+            "  \"tree_leaves\": {},\n",
+            "  \"tree_max_depth\": {},\n",
+            "  \"max_leaf_bodies\": {},\n",
+            "  \"topology_checksum_fnv_mix64\": \"{:016x}\",\n",
+            "  \"build_seconds\": {:.9},\n",
+            "  \"traversal_seconds\": {:.9},\n",
+            "  \"direct_probe_seconds\": {:.9},\n",
+            "  \"visited_nodes\": {},\n",
+            "  \"direct_terms\": {},\n",
+            "  \"approximated_cells\": {},\n",
+            "  \"force_term_avoided_fraction_vs_direct\": {:.12},\n",
+            "  \"direct_probe_count\": {},\n",
+            "  \"direct_probe_rms_relative_error\": {:.12},\n",
+            "  \"direct_probe_max_relative_error\": {:.12},\n",
+            "  \"scope\": \"CPU Morton/flat-tree substrate only; no GPU execution or GPU speed claim; build and traversal timings are reported separately\"\n",
+            "}}\n"
+        ),
+        json_escape(preset),
+        particles,
+        theta,
+        softening_kpc,
+        seed,
+        MORTON_AXIS_BITS,
+        std::mem::size_of::<MortonEntry>(),
+        std::mem::size_of::<FlatCell>(),
+        layout_bytes,
+        tree.cells.len(),
+        tree.stats.leaf_count,
+        tree.stats.max_depth,
+        max_leaf_bodies,
+        topology_checksum,
+        build_elapsed.as_secs_f64(),
+        traversal_elapsed.as_secs_f64(),
+        probe_elapsed.as_secs_f64(),
+        stats.visited_nodes,
+        stats.direct_terms,
+        stats.approximated_cells,
+        avoided_fraction,
+        probe_count,
+        probe.rms_relative,
+        probe.max_relative
+    );
+
+    if let Some(path) = receipt_path.as_ref() {
+        fs::write(path, &receipt)
+            .map_err(|e| format!("could not write flat receipt {}: {e}", path.display()))?;
+    }
+    print!("{receipt}");
     Ok(())
 }
 
@@ -281,6 +549,8 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("verify") if args.len() == 1 => verify(),
+        Some("verify-flat") if args.len() == 1 => verify_flat(),
+        Some("flat-probe") => flat_probe(&args[1..]),
         Some("run") => run(&args[1..]),
         Some("--help") | Some("-h") | Some("help") | None => {
             print!("{}", usage());
