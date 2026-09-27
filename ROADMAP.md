@@ -16,7 +16,7 @@ The governing rule remains:
 
 ## Current status
 
-**PE #15 is frozen in immutable v0.6.0. BH #1 is frozen by merged PR #18, BH #2A by merged PR #19, BH #2B1 by merged PR #20, and BH #2B2 by merged PR #21. The active experimental phase is BH #2C: correctness-first GPU tree construction.**
+**PE #15 is frozen in immutable v0.6.0. GALAXY v0.7.0 freezes the Barnes–Hut correctness ladder through BH #2C (merged PR #22). The active experimental phase is BH #2D: parallel GPU tree construction with hardware performance evidence still pending a real GPU receipt.**
 
 The existing prescribed-field, logical-u64, CPU and GPU execution contracts remain intact. Self-gravity is a separate resident execution family because forces couple bodies across the complete resident set.
 
@@ -159,17 +159,59 @@ BH #2C defines a new f32 GPU topology contract rather than requiring bit-identic
 
 ## BH #2D — Parallel GPU Tree Construction
 
-After BH #2C closes, optimize the now-verified device-only rebuild boundary:
+BH #2C is frozen by merged PR #22 and immutable v0.7.0. BH #2D keeps the device-owned rebuild boundary but replaces its serialized control stages with bounded parallel GPU algorithms:
 
 ```text
-parallel bounds reduction
-  -> scalable radix/Morton ordering
-  -> parallel range/topology construction
-  -> parallel cell aggregates
-  -> hardware GPU measurements
+workgroup-parallel bounds reduction
+  -> parallel 32-bit Morton generation
+  -> stable block-parallel 4-bit LSD radix ordering
+  -> parallel sparse level-order range/topology construction
+  -> reverse-depth parallel cell aggregates
+  -> frozen BH #2B1 traversal
 ```
 
-The BH #2C serialized GPU builder and BH #2B2 host-built path remain oracles until each parallel replacement proves force, trajectory and reproducibility parity.
+### Representation
+
+BH #2D uses deterministic sparse cell slots:
+
+```text
+slot = depth * N + group_start
+```
+
+for depths 0..16. This removes atomic cell-index allocation races and makes cell identity reproducible from the sorted Morton ranges. The phase admits up to 65,536 resident bodies while keeping its 17×N sparse cell buffer within the established single-storage-buffer limit used by CI.
+
+Stable radix ordering starts from resident-body order and preserves that order for equal Morton keys. Small workloads continue to execute BH #2C and BH #2B2 directly as GPU oracles.
+
+### Acceptance
+
+1. Parallel bounds reduction executes through workgroups rather than a one-invocation full-population scan.
+2. Morton ordering uses eight stable 4-bit LSD radix passes, with per-workgroup histograms and stable scatter.
+3. Cell ranges and parent/child links are constructed in parallel over deterministic sparse level-order slots.
+4. Cell aggregates are constructed in parallel per depth, from the deepest occupied level back to the root.
+5. The evolution loop performs zero host particle readbacks and zero CPU tree rebuilds.
+6. An N-step trajectory performs N+1 GPU tree builds and N+1 force solves.
+7. Final force stays inside BH #2A flat-tree and bounded direct-force gates.
+8. Multi-step state stays inside BH #2A f64 trajectory gates.
+9. Workloads within the configured oracle limit also execute BH #2C serialized-GPU and BH #2B2 host-built-GPU parity checks.
+10. Same-state rebuilds preserve strict `(Morton code, body index)` order and the discrete GPU tree checksum.
+11. Tree-build timing separates bounds, Morton generation, radix ordering, target-position assignment, topology and aggregates.
+12. Software-Vulkan measurements are marked validation-only. Hardware performance claims require a non-software adapter and a receipt produced with `--require-hardware`.
+
+The initial CI fixture proves correctness through Mesa Vulkan but does not establish a hardware speedup. Real GPU performance evidence remains an explicit BH #2D completion item.
+
+## BH #2E — Hardware Promotion and Scaling
+
+After BH #2D obtains real-hardware receipts, the next promotion rung is:
+
+```text
+validated BH #2D parallel tree
+  -> real GPU scaling sweeps
+  -> memory/capacity characterization
+  -> repeat-matched BH #2C comparison where available
+  -> production promotion criteria
+```
+
+BH #2A, BH #2B2 and BH #2C remain correctness oracles until the parallel implementation earns promotion on measured hardware evidence.
 
 See `docs/BARNES-HUT.md` and `nbody/`.
 

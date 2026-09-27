@@ -154,6 +154,47 @@ jobs:
           assert state["velocity_max_relative"] < 0.30
           assert receipt["timings_seconds"]["gpu_tree_build_total"] >= 0
           PY
+      - name: Execute parallel GPU-built Barnes-Hut tree evolution
+        run: |
+          cargo run --manifest-path runtime/Cargo.toml --locked --bin galaxy-bh-gpu-tree-parallel -- \
+            --preset disc --particles 512 --steps 3 --dt-myr 0.01 \
+            --theta 0.5 --allow-software \
+            --benchmark-warmup 0 --benchmark-repeats 2 \
+            --receipt "$RUNNER_TEMP/barnes-hut-gpu-tree-parallel.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          receipt = json.loads(Path(os.environ["RUNNER_TEMP"], "barnes-hut-gpu-tree-parallel.json").read_text())
+          assert receipt["schema"] == "galaxy.barnes-hut-parallel-gpu-tree-receipt.v1"
+          assert receipt["phase"] == "BH-2D"
+          assert receipt["builder"] == "gpu-parallel-sparse-radix-v1"
+          assert receipt["measurement_class"] == "software-validation"
+          assert receipt["hardware_performance_claim_allowed"] is False
+          assert receipt["host_tree_rebuilds"] == 0
+          assert receipt["host_particle_readbacks_during_steps"] == 0
+          assert receipt["force_solves"] == 4
+          assert receipt["evolution_tree_builds"] == 4
+          assert receipt["tree"]["repeat_rebuild_matches"] is True
+          assert receipt["tree"]["active_cell_count"] > 0
+          assert receipt["gpu_oracles"]["status"] == "executed"
+          force = receipt["final_force"]
+          assert force["gpu_vs_bh2a_flat_rms_relative"] < 0.04
+          assert force["gpu_vs_bh2a_flat_max_relative"] < 0.30
+          assert force["direct_probe_rms_relative"] < 0.04
+          assert force["direct_probe_max_relative"] < 0.30
+          trajectory = receipt["trajectory_vs_bh2a_flat_f64"]
+          assert trajectory["status"] == "executed"
+          state = trajectory["state_error"]
+          assert state["position_rms_relative_l2"] < 0.03
+          assert state["position_max_relative"] < 0.30
+          assert state["velocity_rms_relative_l2"] < 0.03
+          assert state["velocity_max_relative"] < 0.30
+          bench = receipt["tree_build_benchmark"]
+          assert bench["sample_scope"].startswith("complete rebuild call")
+          assert bench["stage_timings_are_diagnostics"] is True
+          assert len(bench["parallel_samples_seconds"]) == 2
+          assert bench["bh2c_serial"]["status"] == "executed"
+          PY
       - name: Execute an end-to-end headless Vulkan job
         run: |
           python - <<'PY'

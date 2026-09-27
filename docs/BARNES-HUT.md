@@ -216,6 +216,79 @@ Cell numbering is level-order rather than BH #2A's recursive preorder, and bound
 
 The current builder intentionally serializes the control-heavy bounds, bitonic sort, topology and aggregate stages inside GPU kernels. This establishes device ownership and correctness; it is **not** a performance architecture claim.
 
+## BH #2D — parallel GPU tree construction
+
+BH #2C is frozen by merged PR #22 and immutable v0.7.0. BH #2D preserves the same device-owned evolution boundary while replacing the serialized construction stages with bounded parallel GPU work.
+
+The build is:
+
+```text
+persistent f32 state
+  -> workgroup-parallel bounds reduction
+  -> parallel Morton generation
+  -> stable block-parallel 4-bit LSD radix ordering
+  -> parallel target-position assignment
+  -> parallel sparse level-order cell ranges + links
+  -> reverse-depth parallel aggregates
+  -> frozen BH #2B1 traversal
+```
+
+### Stable Morton ordering
+
+The radix pipeline performs eight least-significant-digit passes over the 32-bit Morton code. Each pass uses:
+
+- per-workgroup 16-bin histograms;
+- digit/block prefix offsets;
+- stable per-workgroup scatter based on lane-order rank;
+- ping-pong entry buffers.
+
+Input entries begin in resident body-index order. Because each radix pass is stable, bodies with equal Morton codes retain resident order without a separate global body-index sort key.
+
+### Sparse deterministic topology
+
+BH #2D avoids concurrent cell-index allocation by assigning each possible occupied range a deterministic sparse slot:
+
+```text
+slot = depth * N + group_start
+```
+
+for Morton depths 0 through 16.
+
+A cell exists only when its sorted position is the start of an occupied prefix range and its parent was not already terminated by the bucket rule. Per-depth kernels build ranges and links in parallel. Aggregate kernels then run from the deepest level back to the root so every parent reads completed child mass/centre-of-mass values.
+
+This representation intentionally spends additional sparse cell-buffer memory to remove index-allocation races and make the discrete GPU topology reproducible. The initial phase cap is 65,536 resident bodies.
+
+### Verification
+
+`galaxy-bh-gpu-tree-parallel` keeps the entire BH #2D rebuild loop on the device and records:
+
+- zero host tree rebuilds during evolution;
+- zero host particle readbacks during evolution steps;
+- strict sorted `(Morton code, body index)` evidence;
+- same-state repeat tree checksum;
+- final force versus BH #2A f64 flat traversal;
+- bounded exact direct-force probes;
+- full BH #2A f64 trajectory comparison for bounded oracle workloads;
+- BH #2C serialized-GPU trajectory/force parity when within its 4,096-body cap;
+- BH #2B2 host-built-GPU trajectory/force parity for bounded oracle workloads.
+
+The full CPU/BH #2C/BH #2B2 oracle work is explicitly bounded. Larger BH #2D runs record those references as skipped instead of silently turning a GPU-scale workload into a CPU validation workload.
+
+### Timing and performance boundary
+
+Tree construction reports separate stage-family wall times for:
+
+- parallel bounds reduction;
+- Morton generation;
+- stable radix ordering;
+- target-position assignment;
+- topology construction;
+- reverse-depth aggregates.
+
+Kernel families are batched into command buffers to avoid measuring one CPU/GPU synchronization after every tiny kernel.
+
+Receipts classify the selected adapter as either `software-validation` or `hardware`. `--require-hardware` rejects software adapters. Mesa/llvmpipe timing is therefore correctness and diagnostic evidence only; a hardware performance claim requires a receipt from a real GPU.
+
 ## Next rung
 
-BH #2D can parallelize each verified construction stage—especially scalable ordering, topology construction and aggregation—while keeping both BH #2C and BH #2B2 as reference paths.
+After real-hardware BH #2D receipts exist, BH #2E can evaluate scaling, memory/capacity limits and production promotion while retaining BH #2A/B2B2/B2C as frozen oracles.

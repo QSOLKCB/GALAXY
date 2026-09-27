@@ -131,10 +131,10 @@ pub struct StageTiming {
 
 #[derive(Debug)]
 pub struct EvolvingState {
-    state: wgpu::Buffer,
-    acceleration: wgpu::Buffer,
-    count: u32,
-    bytes: u64,
+    pub(crate) state: wgpu::Buffer,
+    pub(crate) acceleration: wgpu::Buffer,
+    pub(crate) count: u32,
+    pub(crate) bytes: u64,
 }
 
 #[derive(Debug)]
@@ -310,10 +310,10 @@ fn describe(adapter: &wgpu::Adapter, index: usize) -> Value {
 
 pub struct NbodyGpu {
     info: Value,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::ComputePipeline,
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    pub(crate) layout: wgpu::BindGroupLayout,
+    pub(crate) pipeline: wgpu::ComputePipeline,
     evolve_layout: wgpu::BindGroupLayout,
     kick_drift_pipeline: wgpu::ComputePipeline,
     final_kick_pipeline: wgpu::ComputePipeline,
