@@ -247,7 +247,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dt-myr", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=303)
     parser.add_argument("--theta", type=float, default=0.5)
-    parser.add_argument("--softening-kpc", type=float, default=0.02)
+    parser.add_argument("--softening-kpc", type=float, default=0.05)
     parser.add_argument("--direct-probes", type=int, default=12)
     parser.add_argument("--oracle-limit", type=int, default=4096)
     parser.add_argument("--benchmark-warmup", type=int, default=2)
@@ -265,6 +265,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
+    manifest_path: Path | None = None
+    manifest: dict[str, Any] | None = None
     try:
         particles_list = parse_particles(args.particles)
         require(1 <= args.steps <= 256, "--steps must be in 1..=256")
@@ -286,7 +288,7 @@ def main() -> int:
 
         output.mkdir(parents=True)
         manifest_path = output / "manifest.json"
-        manifest: dict[str, Any] = {
+        manifest = {
             "schema": MANIFEST_SCHEMA,
             "status": "running",
             "claim_boundary": (
@@ -373,6 +375,13 @@ def main() -> int:
         print(manifest_path)
         return 0
     except (OSError, json.JSONDecodeError, SweepError) as exc:
+        if manifest_path is not None and manifest is not None and manifest_path.parent.exists():
+            manifest["status"] = "failed"
+            manifest["error"] = str(exc)
+            try:
+                manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            except OSError:
+                pass
         print(f"BH #2D hardware sweep: {exc}", file=sys.stderr)
         return 1
 
