@@ -696,30 +696,24 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
 
     def test_dry_run_normalizes_output_and_cargo_paths(self):
         import sys
-        with tempfile.TemporaryDirectory() as tmp:
-            fake_home = Path(tmp) / "home"
-            fake_home.mkdir()
-            env = dict(os.environ)
-            env["HOME"] = str(fake_home)
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    str(MODULE_PATH),
-                    "--output",
-                    "~/evidence",
-                    "--particles",
-                    "512",
-                    "--dry-run",
-                ],
-                capture_output=True,
-                text=True,
-                env=env,
-            )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(MODULE_PATH),
+                "--output",
+                "~/evidence",
+                "--particles",
+                "512",
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         command = __import__("shlex").split(result.stdout.strip())
         self.assertTrue(Path(command[0]).is_absolute())
-        expected = str((fake_home / "evidence" / "n000512" / "receipt.json").resolve())
+        expected = str((Path.home() / "evidence" / "n000512" / "receipt.json").resolve())
         self.assertIn(expected, command)
         self.assertNotIn("~/evidence", result.stdout)
 
