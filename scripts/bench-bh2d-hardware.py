@@ -24,6 +24,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tomllib
 from pathlib import Path
@@ -72,9 +73,10 @@ BUILD_ENV_EXACT = {
 }
 BUILD_ENV_PATTERNS = (
     re.compile(r"^CARGO_TARGET_.+_(?:RUSTFLAGS|LINKER|RUNNER)$"),
-    re.compile(
-        r"^CARGO_PROFILE_.+_(?:CODEGEN_UNITS|DEBUG|INCREMENTAL|LTO|OPT_LEVEL|PANIC|RPATH|STRIP)$"
-    ),
+    # Cargo exposes profile configuration through CARGO_PROFILE_<name>_*.
+    # Fail closed for the whole namespace so newly added profile keys cannot
+    # silently change evidence-build semantics.
+    re.compile(r"^CARGO_PROFILE_.+$"),
 )
 
 
@@ -103,26 +105,54 @@ def git_invocation(command: list[str], cwd: Path) -> tuple[list[str], dict[str, 
     if git is None:
         raise SweepError("system Git is required")
     # rev-parse also handles a linked worktree's .git file. No ambient selectors.
-    result = subprocess.run([git, "-C", str(cwd), "rev-parse", "--absolute-git-dir"],
-                            env=env, capture_output=True, check=False)
+    result = subprocess.run(
+        [git, "--no-replace-objects", "-C", str(cwd), "rev-parse", "--absolute-git-dir"],
+        env=env,
+        capture_output=True,
+        check=False,
+    )
     if result.returncode:
         raise SweepError("could not locate the checkout Git directory")
     git_dir = result.stdout.decode("utf-8").strip()
-    return [git, "--git-dir", git_dir, "--work-tree", str(cwd.resolve()),
-            "-c", "core.fsmonitor=false", *command[1:]], env
+    return [
+        git,
+        "--no-replace-objects",
+        "--git-dir",
+        git_dir,
+        "--work-tree",
+        str(cwd.resolve()),
+        "-c",
+        "core.fsmonitor=false",
+        *command[1:],
+    ], env
 
 
-def run_checked(command: list[str], cwd: Path) -> str:
+def run_checked_bytes(command: list[str], cwd: Path) -> bytes:
     env = None
     if command[0] == "git":
         command, env = git_invocation(command, cwd)
-    completed = subprocess.run(command, cwd=cwd, env=env, check=False,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).decode("utf-8", errors="replace").strip()
-        raise SweepError(f"command failed ({completed.returncode}): {' '.join(command)}\n{detail}")
+        detail = (completed.stderr or completed.stdout).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        raise SweepError(
+            f"command failed ({completed.returncode}): {' '.join(command)}\n{detail}"
+        )
+    return completed.stdout
+
+
+def run_checked(command: list[str], cwd: Path) -> str:
+    payload = run_checked_bytes(command, cwd)
     try:
-        return completed.stdout.decode("utf-8")
+        return payload.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise SweepError("command output is not valid UTF-8") from exc
 
@@ -430,6 +460,50 @@ def cargo_config_context(repo_root: Path) -> list[dict[str, str]]:
     return context
 
 
+def require_raw_tracked_worktree_matches_index(repo_root: Path) -> None:
+    records = run_checked(["git", "ls-files", "--stage", "-z"], repo_root)
+    for record in (item for item in records.split("\0") if item):
+        try:
+            metadata, relative = record.split("\t", 1)
+            mode, object_id, stage = metadata.split(" ")
+        except ValueError as exc:
+            raise SweepError("could not parse tracked index evidence") from exc
+        if stage != "0":
+            raise SweepError(
+                f"tracked path has an unresolved index stage and cannot be evidence: {relative}"
+            )
+
+        candidate = repo_root / relative
+        expected = run_checked_bytes(["git", "cat-file", "blob", object_id], repo_root)
+        if mode == "120000":
+            if not candidate.is_symlink():
+                raise SweepError(
+                    f"tracked source tree is dirty; symlink state changed: {relative}"
+                )
+            actual = os.fsencode(os.readlink(candidate))
+        elif mode in ("100644", "100755"):
+            if candidate.is_symlink() or not candidate.is_file():
+                raise SweepError(
+                    f"tracked source tree is dirty; file state changed: {relative}"
+                )
+            actual = candidate.read_bytes()
+            executable = bool(candidate.stat().st_mode & stat.S_IXUSR)
+            if executable != (mode == "100755"):
+                raise SweepError(
+                    f"tracked source tree is dirty; executable mode changed: {relative}"
+                )
+        else:
+            raise SweepError(
+                f"unsupported tracked Git mode {mode} during evidence capture: {relative}"
+            )
+
+        if actual != expected:
+            raise SweepError(
+                "tracked source tree is dirty in raw bytes; commit or revert changes "
+                f"before hardware evidence capture: {relative}"
+            )
+
+
 def require_clean_source_tree(
     repo_root: Path,
     allowed_untracked_root: Path | None = None,
@@ -451,16 +525,20 @@ def require_clean_source_tree(
             f"clear assume-unchanged/skip-worktree and restore a normal index first: {preview}{suffix}"
         )
 
-    for command in (
-        ["git", "diff", "--no-ext-diff", "--quiet", "--"],
+    git_command, git_env = git_invocation(
         ["git", "diff", "--no-ext-diff", "--cached", "--quiet", "--"],
-    ):
-        git_command, git_env = git_invocation(command, repo_root)
-        completed = subprocess.run(git_command, env=git_env, cwd=repo_root, check=False)
-        if completed.returncode != 0:
-            raise SweepError(
-                "tracked source tree is dirty; commit or revert changes before hardware evidence capture"
-            )
+        repo_root,
+    )
+    completed = subprocess.run(git_command, env=git_env, cwd=repo_root, check=False)
+    if completed.returncode != 0:
+        raise SweepError(
+            "tracked index differs from HEAD; commit or revert changes before hardware evidence capture"
+        )
+
+    # Git worktree diffs can apply repository-local clean filters. Compare the
+    # raw filesystem bytes against the index blobs instead, so attributes and
+    # filter commands cannot make altered compiler inputs appear clean.
+    require_raw_tracked_worktree_matches_index(repo_root)
 
     raw_untracked = run_checked(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"],
@@ -823,6 +901,10 @@ def validate_receipt(
         max_depth <= TREE_LEVELS - 1,
         "receipt.tree.max_depth exceeds the frozen Morton depth",
     )
+    require(
+        active_cell_count >= max_depth + 1,
+        "receipt.tree.active_cell_count is too small for the reported maximum depth",
+    )
     if particles > TREE_BUCKET_SIZE:
         require(
             active_cell_count > leaf_count,
@@ -1127,15 +1209,17 @@ def main() -> int:
         require(1 <= args.direct_probes <= 64, "--direct-probes must be in 1..=64")
         require(0 <= args.seed <= 2**64 - 1, "--seed must fit u64")
 
+        output = args.output.expanduser().resolve()
         if args.dry_run:
+            plan_args = argparse.Namespace(**vars(args))
+            plan_args.cargo = tool_record(args.cargo, "cargo", repo_root)["executable"]
             for particles in particles_list:
-                run_dir = args.output / f"n{particles:06d}"
+                run_dir = output / f"n{particles:06d}"
                 receipt = run_dir / "receipt.json"
                 target_dir = run_dir / "cargo-target"
-                print(shlex.join(command_for(args, particles, receipt, target_dir)))
+                print(shlex.join(command_for(plan_args, particles, receipt, target_dir)))
             return 0
 
-        output = args.output.expanduser().resolve()
         if output.exists():
             raise SweepError(f"output directory already exists: {output}")
 
