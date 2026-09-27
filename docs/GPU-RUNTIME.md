@@ -29,7 +29,9 @@ Install Rust through [rustup](https://rustup.rs/) and a working native GPU drive
 The repository pins Rust 1.85.1. Linux uses Vulkan; Windows can use Vulkan or
 D3D12, and macOS uses Metal through [wgpu](https://github.com/gfx-rs/wgpu/tree/v24.0.5).
 The Linux path is the cloud target. Windows/Metal hardware execution has not been
-validated by the Linux CI gate.
+validated by the Linux CI gate. The BH #2D evidence harness itself is platform-aware:
+use `scripts\\bench-bh2d-hardware-launch.cmd` on native Windows so Cargo can retain
+its recorded MSVC/LLVM linker environment without requiring a POSIX `cc`.
 
 On Ubuntu, with the GPU vendor driver already installed:
 
