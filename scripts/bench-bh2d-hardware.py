@@ -18,6 +18,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +41,32 @@ GPU_CELL_BYTES = 64
 TREE_META_BYTES = 32
 BOUNDS_RECORD_BYTES = 16
 RADIX_DIGITS = 16
+BUILD_ENV_EXACT = {
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_BUILD_RUSTFLAGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTC_BOOTSTRAP",
+    "RUSTUP_TOOLCHAIN",
+    "CARGO_BUILD_TARGET",
+    "CARGO_INCREMENTAL",
+    "CC",
+    "CXX",
+    "AR",
+    "RANLIB",
+    "CFLAGS",
+    "CXXFLAGS",
+    "CPPFLAGS",
+    "LDFLAGS",
+}
+BUILD_ENV_PATTERNS = (
+    re.compile(r"^CARGO_TARGET_.+_(?:RUSTFLAGS|LINKER)$"),
+    re.compile(
+        r"^CARGO_PROFILE_.+_(?:CODEGEN_UNITS|DEBUG|INCREMENTAL|LTO|OPT_LEVEL|PANIC|RPATH|STRIP)$"
+    ),
+)
 
 
 class SweepError(RuntimeError):
@@ -122,6 +149,57 @@ def effective_cargo_config_paths(repo_root: Path) -> list[Path]:
     return unique
 
 
+def build_environment_overrides() -> list[str]:
+    names: list[str] = []
+    for name, value in os.environ.items():
+        if not value:
+            continue
+        if name in BUILD_ENV_EXACT or any(pattern.fullmatch(name) for pattern in BUILD_ENV_PATTERNS):
+            names.append(name)
+    return sorted(names)
+
+
+def require_no_build_environment_overrides() -> None:
+    overrides = build_environment_overrides()
+    if overrides:
+        raise SweepError(
+            "build-affecting environment overrides are not allowed for hardware evidence capture: "
+            + ", ".join(overrides)
+        )
+
+
+def resolve_executable(command: str, name: str) -> Path:
+    resolved = shutil.which(command)
+    if resolved is None:
+        raise SweepError(f"could not resolve {name} executable: {command}")
+    path = Path(resolved).resolve()
+    if not path.is_file():
+        raise SweepError(f"resolved {name} executable is not a file: {path}")
+    return path
+
+
+def toolchain_context(cargo_command: str, repo_root: Path) -> dict[str, Any]:
+    require_no_build_environment_overrides()
+    cargo_path = resolve_executable(cargo_command, "Cargo")
+    rustc_path = resolve_executable("rustc", "rustc")
+    return {
+        "cargo": {
+            "requested": cargo_command,
+            "path": path_label(cargo_path, repo_root),
+            "sha256": sha256_file(cargo_path),
+            "version_verbose": run_checked(
+                [str(cargo_path), "--version", "--verbose"],
+                repo_root,
+            ).strip(),
+        },
+        "rustc": {
+            "path": path_label(rustc_path, repo_root),
+            "sha256": sha256_file(rustc_path),
+            "version_verbose": run_checked([str(rustc_path), "-vV"], repo_root).strip(),
+        },
+    }
+
+
 def cargo_config_context(repo_root: Path) -> list[dict[str, str]]:
     context: list[dict[str, str]] = []
     root = repo_root.resolve()
@@ -153,6 +231,23 @@ def require_clean_source_tree(
     repo_root: Path,
     allowed_untracked_root: Path | None = None,
 ) -> None:
+    flagged_records = run_checked(["git", "ls-files", "-v", "-z"], repo_root)
+    flagged: list[str] = []
+    for record in (item for item in flagged_records.split("\0") if item):
+        if len(record) < 3 or record[1] != " ":
+            raise SweepError("could not parse git index flag evidence")
+        tag = record[0]
+        path = record[2:]
+        if tag != "H":
+            flagged.append(f"{tag} {path}")
+    if flagged:
+        preview = ", ".join(repr(item) for item in flagged[:8])
+        suffix = "" if len(flagged) <= 8 else f", ... (+{len(flagged) - 8} more)"
+        raise SweepError(
+            "tracked files use index flags or states that can hide worktree changes; "
+            f"clear assume-unchanged/skip-worktree and restore a normal index first: {preview}{suffix}"
+        )
+
     for command in (
         ["git", "diff", "--quiet", "--"],
         ["git", "diff", "--cached", "--quiet", "--"],
@@ -188,6 +283,8 @@ def require_source_provenance(
     revision: str,
     allowed_untracked_root: Path | None = None,
     expected_cargo_context: list[dict[str, str]] | None = None,
+    expected_toolchain_context: dict[str, Any] | None = None,
+    cargo_command: str = "cargo",
 ) -> None:
     current = git_revision(repo_root)
     if current != revision:
@@ -198,6 +295,24 @@ def require_source_provenance(
     current_cargo_context = cargo_config_context(repo_root)
     if expected_cargo_context is not None and current_cargo_context != expected_cargo_context:
         raise SweepError("effective Cargo configuration changed during hardware evidence capture")
+    current_toolchain_context = toolchain_context(cargo_command, repo_root)
+    if (
+        expected_toolchain_context is not None
+        and current_toolchain_context != expected_toolchain_context
+    ):
+        raise SweepError("Cargo/Rust toolchain changed during hardware evidence capture")
+
+
+def load_receipt(path: Path) -> Any:
+    payload = path.read_bytes()
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SweepError(f"receipt is not valid UTF-8: {path}") from exc
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SweepError(f"receipt is not valid JSON: {path}") from exc
 
 
 def sha256_file(path: Path) -> str:
@@ -456,6 +571,19 @@ def validate_receipt(
     )
     leaf_count = require_int(tree.get("leaf_count"), "receipt.tree.leaf_count", minimum=1)
     max_depth = require_int(tree.get("max_depth"), "receipt.tree.max_depth", minimum=0)
+    cell_capacity = TREE_LEVELS * particles
+    require(
+        active_cell_count <= cell_capacity,
+        "receipt.tree.active_cell_count exceeds the frozen sparse-cell capacity",
+    )
+    require(
+        leaf_count <= active_cell_count,
+        "receipt.tree.leaf_count cannot exceed active_cell_count",
+    )
+    require(
+        max_depth <= TREE_LEVELS - 1,
+        "receipt.tree.max_depth exceeds the frozen Morton depth",
+    )
 
     force = require_object(root.get("final_force"), "receipt.final_force")
     expected_probe_count = min(direct_probes, particles)
@@ -743,10 +871,13 @@ def main() -> int:
         revision = git_revision(repo_root)
         require_clean_source_tree(repo_root)
         build_cargo_context = cargo_config_context(repo_root)
+        build_toolchain_context = toolchain_context(args.cargo, repo_root)
         require_source_provenance(
             repo_root,
             revision,
             expected_cargo_context=build_cargo_context,
+            expected_toolchain_context=build_toolchain_context,
+            cargo_command=args.cargo,
         )
 
         output.mkdir(parents=True)
@@ -761,6 +892,8 @@ def main() -> int:
             "source_revision": revision,
             "build_context": {
                 "cargo_configuration": build_cargo_context,
+                "toolchain": build_toolchain_context,
+                "environment_overrides": [],
             },
             "host": {
                 "platform": platform.platform(),
@@ -792,6 +925,8 @@ def main() -> int:
                 revision,
                 output,
                 expected_cargo_context=build_cargo_context,
+                expected_toolchain_context=build_toolchain_context,
+                cargo_command=args.cargo,
             )
 
             run_dir = output / f"n{particles:06d}"
@@ -815,6 +950,8 @@ def main() -> int:
                 revision,
                 output,
                 expected_cargo_context=build_cargo_context,
+                expected_toolchain_context=build_toolchain_context,
+                cargo_command=args.cargo,
             )
             if completed.returncode != 0:
                 raise SweepError(
@@ -823,7 +960,7 @@ def main() -> int:
             if not receipt_path.is_file():
                 raise SweepError(f"missing receipt after {particles}-particle run")
 
-            receipt = json.loads(receipt_path.read_text())
+            receipt = load_receipt(receipt_path)
             summary = validate_receipt(
                 receipt,
                 particles=particles,
