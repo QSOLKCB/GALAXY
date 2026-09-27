@@ -185,16 +185,37 @@ Large GPU jobs do not silently run a full CPU trajectory first. The CPU trajecto
 
 The matched CUDA source includes the same 32-byte evolution settings/state ABI and kick/drift/final-kick kernels. Host-side CI checks source/layout parity but does not claim CUDA execution without an NVIDIA run.
 
-## Next rung
+## BH #2C — GPU-built flat tree
 
-BH #2C can investigate moving the tree rebuild itself onto the device:
+BH #2B2 is frozen by merged PR #21. BH #2C removes the per-step host rebuild boundary for workloads up to 4,096 resident bodies.
+
+The device build is:
 
 ```text
-persistent drifted GPU state
-  -> GPU bounds reduction
-  -> Morton key generation + stable sort
-  -> flat tree / aggregate construction
-  -> force traversal
+persistent f32 state
+  -> one-invocation f32 bounds reduction
+  -> parallel Morton generation
+  -> deterministic GPU bitonic sort on (Morton code, body index)
+  -> parallel target-position assignment
+  -> one-invocation level-order flat topology build
+  -> one-invocation reverse-order aggregate build
+  -> frozen BH #2B1 traversal
 ```
 
-That optimization must retain the current host-built BH #2A/B2 semantics as an oracle until a new GPU-built topology contract earns its own evidence.
+The sort's body-index tie break gives equal Morton keys the same resident-order intent as BH #2A's stable host sort. The flat GPU cell representation retains contiguous sorted ranges, explicit child indices, the 16-level Morton cap, target range membership, and bottom-up mass/centre-of-mass aggregates.
+
+Cell numbering is level-order rather than BH #2A's recursive preorder, and bounds/aggregates are f32. BH #2C therefore defines a **new GPU topology representation** instead of claiming bit-identical topology checksums with the f64 host tree. Its scientific gates are:
+
+- full final-force comparison against a freshly built BH #2A f64 flat tree;
+- bounded exact direct-force probes;
+- full multi-step trajectory comparison against BH #2A f64 leapfrog;
+- deterministic same-state rebuild checksum over sorted entries and discrete GPU cell ranges/links;
+- explicit capacity-overflow rejection.
+
+`galaxy-bh-gpu-tree` requires zero host particle readbacks and zero host tree rebuilds during the evolution loop. Final state/tree readbacks exist only for evidence.
+
+The current builder intentionally serializes the control-heavy bounds, bitonic sort, topology and aggregate stages inside GPU kernels. This establishes device ownership and correctness; it is **not** a performance architecture claim.
+
+## Next rung
+
+BH #2D can parallelize each verified construction stage—especially scalable ordering, topology construction and aggregation—while keeping both BH #2C and BH #2B2 as reference paths.
