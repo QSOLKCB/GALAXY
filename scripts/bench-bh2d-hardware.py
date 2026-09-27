@@ -14,7 +14,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -26,6 +28,18 @@ MANIFEST_SCHEMA = "galaxy.bh2d-hardware-scaling-manifest.v1"
 MAX_PARTICLES = 65_536
 BH2C_CAP = 4_096
 DEFAULT_PARTICLES = "512,1024,2048,4096,8192,16384,32768,65536"
+BENCHMARK_SAMPLE_SCOPE = (
+    "complete rebuild call including host-side uniform/bind-group setup, "
+    "command encoding, submit and synchronization"
+)
+WORKGROUP_SIZE = 128
+TREE_LEVELS = 17
+GPU_BODY_BYTES = 32
+GPU_ENTRY_BYTES = 16
+GPU_CELL_BYTES = 64
+TREE_META_BYTES = 32
+BOUNDS_RECORD_BYTES = 16
+RADIX_DIGITS = 16
 
 
 class SweepError(RuntimeError):
@@ -73,6 +87,68 @@ def is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def path_label(path: Path, repo_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(repo_root.resolve()))
+    except ValueError:
+        home = Path.home().resolve()
+        try:
+            return str(Path("$HOME") / resolved.relative_to(home))
+        except ValueError:
+            return str(resolved)
+
+
+def effective_cargo_config_paths(repo_root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    current = repo_root.resolve()
+    while True:
+        cargo_dir = current / ".cargo"
+        candidates.extend((cargo_dir / "config.toml", cargo_dir / "config"))
+        if current.parent == current:
+            break
+        current = current.parent
+
+    cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")).expanduser().resolve()
+    candidates.extend((cargo_home / "config.toml", cargo_home / "config"))
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved not in seen and resolved.is_file():
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
+
+
+def cargo_config_context(repo_root: Path) -> list[dict[str, str]]:
+    context: list[dict[str, str]] = []
+    root = repo_root.resolve()
+    for path in effective_cargo_config_paths(repo_root):
+        if is_within(path, root):
+            relative = path.relative_to(root)
+            tracked = subprocess.run(
+                ["git", "ls-files", "--error-unmatch", "--", str(relative)],
+                cwd=repo_root,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if tracked.returncode != 0:
+                raise SweepError(
+                    "untracked or ignored Cargo configuration affects the evidence build: "
+                    f"{relative}"
+                )
+        context.append(
+            {
+                "path": path_label(path, repo_root),
+                "sha256": sha256_file(path),
+            }
+        )
+    return context
+
+
 def require_clean_source_tree(
     repo_root: Path,
     allowed_untracked_root: Path | None = None,
@@ -111,6 +187,7 @@ def require_source_provenance(
     repo_root: Path,
     revision: str,
     allowed_untracked_root: Path | None = None,
+    expected_cargo_context: list[dict[str, str]] | None = None,
 ) -> None:
     current = git_revision(repo_root)
     if current != revision:
@@ -118,6 +195,9 @@ def require_source_provenance(
             f"source revision changed during hardware evidence capture: expected {revision}, got {current}"
         )
     require_clean_source_tree(repo_root, allowed_untracked_root)
+    current_cargo_context = cargo_config_context(repo_root)
+    if expected_cargo_context is not None and current_cargo_context != expected_cargo_context:
+        raise SweepError("effective Cargo configuration changed during hardware evidence capture")
 
 
 def sha256_file(path: Path) -> str:
@@ -161,7 +241,10 @@ def require_number(
         isinstance(value, (int, float)) and not isinstance(value, bool),
         f"{name} must be numeric",
     )
-    numeric = float(value)
+    try:
+        numeric = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise SweepError(f"{name} cannot be represented as a finite number") from exc
     require(math.isfinite(numeric), f"{name} must be finite")
     if positive:
         require(numeric > 0.0, f"{name} must be positive")
@@ -175,6 +258,34 @@ def require_string(value: Any, name: str, *, nonempty: bool = False) -> str:
     if nonempty:
         require(bool(value.strip()), f"{name} must not be empty")
     return value
+
+
+def require_checksum(value: Any, name: str) -> str:
+    checksum = require_string(value, name, nonempty=True)
+    require(
+        re.fullmatch(r"[0-9a-f]{16}", checksum) is not None,
+        f"{name} must be a 16-digit lowercase hexadecimal checksum",
+    )
+    return checksum
+
+
+def expected_parallel_tree_buffer_bytes(particles: int) -> int:
+    blocks = (particles + WORKGROUP_SIZE - 1) // WORKGROUP_SIZE
+    body_bytes = particles * GPU_BODY_BYTES
+    entry_bytes = particles * GPU_ENTRY_BYTES
+    cell_bytes = particles * TREE_LEVELS * GPU_CELL_BYTES
+    bounds_bytes = blocks * BOUNDS_RECORD_BYTES
+    histogram_bytes = blocks * RADIX_DIGITS * 4
+    offsets_bytes = histogram_bytes
+    return (
+        body_bytes
+        + entry_bytes * 2
+        + cell_bytes
+        + TREE_META_BYTES
+        + bounds_bytes * 2
+        + histogram_bytes
+        + offsets_bytes
+    )
 
 
 def require_same_number(actual: Any, expected: float, name: str) -> float:
@@ -322,6 +433,22 @@ def validate_receipt(
 
     tree = require_object(root.get("tree"), "receipt.tree")
     require(tree.get("repeat_rebuild_matches") is True, "same-state repeat tree checksum changed")
+    require_checksum(
+        tree.get("initial_checksum_fnv_mix64"),
+        "receipt.tree.initial_checksum_fnv_mix64",
+    )
+    final_checksum = require_checksum(
+        tree.get("final_checksum_fnv_mix64"),
+        "receipt.tree.final_checksum_fnv_mix64",
+    )
+    repeat_checksum = require_checksum(
+        tree.get("repeat_checksum_fnv_mix64"),
+        "receipt.tree.repeat_checksum_fnv_mix64",
+    )
+    require(
+        final_checksum == repeat_checksum,
+        "receipt repeat tree checksum does not match the final tree checksum",
+    )
     active_cell_count = require_int(
         tree.get("active_cell_count"),
         "receipt.tree.active_cell_count",
@@ -417,8 +544,9 @@ def validate_receipt(
             benchmark.get("sample_scope"),
             "receipt.tree_build_benchmark.sample_scope",
             nonempty=True,
-        ).startswith("complete rebuild call"),
-        "benchmark sample scope does not cover the complete rebuild call",
+        )
+        == BENCHMARK_SAMPLE_SCOPE,
+        "benchmark sample scope does not match the frozen complete-rebuild declaration",
     )
     require(
         benchmark.get("stage_timings_are_diagnostics") is True,
@@ -501,6 +629,11 @@ def validate_receipt(
         root.get("parallel_tree_buffer_bytes"),
         "receipt.parallel_tree_buffer_bytes",
         minimum=1,
+    )
+    expected_buffer_bytes = expected_parallel_tree_buffer_bytes(particles)
+    require(
+        parallel_tree_buffer_bytes == expected_buffer_bytes,
+        "receipt.parallel_tree_buffer_bytes does not match the frozen BH #2D allocation formula",
     )
 
     return {
@@ -608,7 +741,13 @@ def main() -> int:
             raise SweepError(f"output directory already exists: {output}")
 
         revision = git_revision(repo_root)
-        require_source_provenance(repo_root, revision)
+        require_clean_source_tree(repo_root)
+        build_cargo_context = cargo_config_context(repo_root)
+        require_source_provenance(
+            repo_root,
+            revision,
+            expected_cargo_context=build_cargo_context,
+        )
 
         output.mkdir(parents=True)
         manifest_path = output / "manifest.json"
@@ -620,6 +759,9 @@ def main() -> int:
                 "this manifest does not by itself promote BH #2D to production"
             ),
             "source_revision": revision,
+            "build_context": {
+                "cargo_configuration": build_cargo_context,
+            },
             "host": {
                 "platform": platform.platform(),
                 "python": sys.version.split()[0],
@@ -645,7 +787,12 @@ def main() -> int:
 
         adapter: str | None = None
         for particles in particles_list:
-            require_source_provenance(repo_root, revision, output)
+            require_source_provenance(
+                repo_root,
+                revision,
+                output,
+                expected_cargo_context=build_cargo_context,
+            )
 
             run_dir = output / f"n{particles:06d}"
             run_dir.mkdir()
@@ -663,7 +810,12 @@ def main() -> int:
             )
             log_path.write_text(completed.stdout)
 
-            require_source_provenance(repo_root, revision, output)
+            require_source_provenance(
+                repo_root,
+                revision,
+                output,
+                expected_cargo_context=build_cargo_context,
+            )
             if completed.returncode != 0:
                 raise SweepError(
                     f"BH #2D hardware run failed at {particles} particles; see {log_path}"
@@ -704,7 +856,12 @@ def main() -> int:
             manifest["adapter_identity"] = adapter
             manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
-        require_source_provenance(repo_root, revision, output)
+        require_source_provenance(
+            repo_root,
+            revision,
+            output,
+            expected_cargo_context=build_cargo_context,
+        )
         manifest["status"] = "complete"
         manifest["completed_run_count"] = len(manifest["runs"])
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
