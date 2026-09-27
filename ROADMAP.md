@@ -16,7 +16,7 @@ The governing rule remains:
 
 ## Current status
 
-**PE #15 is frozen in immutable v0.6.0. BH #1 is frozen by merged PR #18. The active experimental phase is BH #2A: Morton/Z-order flat-tree substrate.**
+**PE #15 is frozen in immutable v0.6.0. BH #1 is frozen by merged PR #18 and BH #2A by merged PR #19. The active experimental phase is BH #2B1: explicit GPU transfer ABI + traversal.**
 
 The existing prescribed-field, logical-u64, CPU and GPU execution contracts remain intact. Self-gravity is a separate resident execution family because forces couple bodies across the complete resident set.
 
@@ -73,19 +73,45 @@ bounding box
 7. Maximum final-quantized leaf occupancy is explicit receipt evidence.
 8. No GPU speed claim is made.
 
-## BH #2B — GPU Transfer + Traversal
+## BH #2B1 — GPU Transfer ABI + Traversal
 
-After BH #2A closes:
+BH #2A has closed. This phase moves the frozen CPU-built tree across an explicit shader boundary:
 
 ```text
-frozen Morton entries / flat cells
-  -> explicit f32 packed transfer records
-  -> Vulkan/WGSL and CUDA buffer parity
-  -> GPU traversal
-  -> GPU leapfrog update
+BH #2A f64/u32 flat tree
+  -> checked f32/u32 transfer packing
+  -> frozen Rust/WGSL/CUDA record ABI
+  -> Vulkan/WGSL traversal
+  -> CUDA traversal source with the same ABI
+  -> GPU-vs-flat-CPU and GPU-vs-direct error evidence
 ```
 
-GPU tree construction, transfer, and traversal timing must remain separate. Third-party benchmark numbers are research context, not GALAXY evidence.
+### Acceptance
+
+1. Rust transfer records have frozen byte sizes and a canonical byte fixture.
+2. CUDA and Rust agree on the canonical packed fixture without requiring a CUDA device.
+3. WGSL traversal executes in CI through explicit Mesa software Vulkan.
+4. GPU accelerations remain inside the BH #1 direct-force error gates with a stated f32 allowance.
+5. GPU traversal remains closely aligned with the BH #2A flat CPU oracle.
+6. CPU tree build, f32 packing, GPU transfer, dispatch, and readback timings are reported separately.
+7. Tree construction remains CPU-side and is not presented as GPU construction.
+8. CUDA source presence/layout parity is not presented as executed CUDA evidence.
+9. No host-independent performance claim is made.
+
+## BH #2B2 — Evolving GPU Self-Gravity
+
+After BH #2B1 closes:
+
+```text
+verified GPU force traversal
+  -> GPU kick / drift
+  -> host-visible rebuild boundary
+  -> second GPU force solve
+  -> final kick
+  -> multi-step receipt + drift diagnostics
+```
+
+A later phase may investigate GPU-side Morton sorting/tree construction only after the host-built transfer/traversal contract is stable. Tree construction, transfer, traversal, integration, and readback timing must remain separate. Third-party benchmark numbers are research context, not GALAXY evidence.
 
 See `docs/BARNES-HUT.md` and `nbody/`.
 
