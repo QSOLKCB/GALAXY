@@ -35,5 +35,10 @@ jobs:
           node tests/smoke.mjs
           node tests/physics.mjs
           node tests/app.mjs
+      - name: Check Barnes-Hut self-gravity reference
+        run: |
+          node tests/barnes-hut.mjs
+          cargo test --manifest-path nbody/Cargo.toml --locked --offline
+          cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify
       - name: Verify static distribution
         run: node scripts/build-site.mjs
