@@ -37,9 +37,29 @@ struct TreeMeta {
 @group(0) @binding(0) var<uniform> settings: TreeSettings;
 @group(0) @binding(1) var<storage, read> states: array<EvolveState>;
 @group(0) @binding(2) var<storage, read_write> bodies: array<BhBody>;
-@group(0) @binding(3) var<storage, read> entries: array<BhEntry>;
+@group(0) @binding(3) var<storage, read_write> entries: array<BhEntry>;
 @group(0) @binding(4) var<storage, read_write> cells: array<BhCell>;
 @group(0) @binding(5) var<storage, read_write> tree_meta: TreeMeta;
+
+fn spread16(input: u32) -> u32 {
+    var value = input & 0x0000ffffu;
+    value = (value | (value << 8u)) & 0x00ff00ffu;
+    value = (value | (value << 4u)) & 0x0f0f0f0fu;
+    value = (value | (value << 2u)) & 0x33333333u;
+    value = (value | (value << 1u)) & 0x55555555u;
+    return value;
+}
+
+fn morton2(x: u32, y: u32) -> u32 {
+    return spread16(x) | (spread16(y) << 1u);
+}
+
+fn quantize_axis(value: f32, center: f32, half: f32) -> u32 {
+    let low = center - half;
+    let width = 2.0 * half;
+    let scaled = floor((value - low) / width * 65536.0);
+    return u32(clamp(scaled, 0.0, 65535.0));
+}
 
 fn prefix_for(code: u32, depth: u32) -> u32 {
     if depth == 0u {
@@ -132,6 +152,19 @@ fn empty_cell(bounds: vec3<f32>, start: u32, end: u32, depth: u32) -> BhCell {
     cell.range_depth = vec4<u32>(start, end, depth, 1u);
     cell.children = vec4<u32>(NO_CHILD);
     return cell;
+}
+
+@compute @workgroup_size(128)
+fn bh_parallel_tree_morton(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= settings.info.x {
+        return;
+    }
+    let state = states[id.x];
+    let qx = quantize_axis(state.position_mass.x, tree_meta.bounds.x, tree_meta.bounds.z);
+    let qy = quantize_axis(state.position_mass.y, tree_meta.bounds.y, tree_meta.bounds.z);
+    entries[id.x].data = vec4<u32>(morton2(qx, qy), id.x, 0u, 0u);
+    bodies[id.x].position_mass = state.position_mass;
+    bodies[id.x].index_data = vec4<u32>(0u);
 }
 
 @compute @workgroup_size(128)
