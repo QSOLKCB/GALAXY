@@ -10,6 +10,15 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "bench-bh2d-hardware.py"
+LAUNCHER_PATH = ROOT / "scripts" / "bench-bh2d-hardware-launch.sh"
+
+
+def launched_env():
+    env = os.environ.copy()
+    env["GALAXY_BH2D_CLEAN_LAUNCH"] = "1"
+    return env
+
+
 SPEC = importlib.util.spec_from_file_location("bench_bh2d_hardware", MODULE_PATH)
 sweep = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -625,17 +634,92 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             self.assertEqual(len(context["cargo"]["sha256"]), 64)
             self.assertEqual(len(context["rustc"]["sha256"]), 64)
 
-    def test_cli_requires_isolation_before_optional_imports(self):
+    def test_cli_requires_clean_launcher_and_isolated_python(self):
         import sys
-        for isolated, expected in ((False, 1), (True, 0)):
+        for isolated in (False, True):
             result = subprocess.run(
                 [sys.executable, *(["-I"] if isolated else []), str(MODULE_PATH),
                  "--output", "/unused", "--particles", "512", "--dry-run"],
                 capture_output=True, text=True,
             )
-            self.assertEqual(result.returncode, expected, result.stderr)
-            if not isolated:
-                self.assertIn("isolated Python", result.stderr)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("clean launcher", result.stderr)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [
+                    "sh",
+                    str(LAUNCHER_PATH),
+                    "--output",
+                    str(Path(tmp) / "plan"),
+                    "--particles",
+                    "512",
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_platform_tool_paths_cover_windows_and_darwin(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SystemRoot": r"C:\\Windows",
+                "ProgramFiles": r"C:\\Program Files",
+                "USERPROFILE": r"C:\\Users\\tester",
+            },
+            clear=True,
+        ):
+            windows = sweep.trusted_system_path("Windows")
+        self.assertIn(";", windows)
+        self.assertIn(r"C:\\Windows\\System32", windows)
+        self.assertIn(r"C:\\Program Files\\Git\\cmd", windows)
+        self.assertIn(r"C:\\Users\\tester\\.cargo\\bin", windows)
+
+        darwin = sweep.trusted_system_path("Darwin")
+        self.assertIn("/usr/bin", darwin)
+        self.assertIn("/opt/homebrew/bin", darwin)
+
+    def test_windows_toolchain_does_not_require_posix_cc(self):
+        records = {
+            "cargo": {
+                "path": "cargo.exe",
+                "executable": r"C:\\Rust\\cargo.exe",
+                "sha256": "a" * 64,
+                "invocation": r"C:\\Rust\\cargo.exe",
+                "proxy_sha256": None,
+                "version_verbose": "cargo fixture",
+            },
+            "rustc": {
+                "path": "rustc.exe",
+                "executable": r"C:\\Rust\\rustc.exe",
+                "sha256": "b" * 64,
+                "invocation": r"C:\\Rust\\rustc.exe",
+                "proxy_sha256": None,
+                "version_verbose": "rustc fixture",
+            },
+        }
+
+        def which(name, path=None):
+            if name == "git":
+                return r"C:\\Program Files\\Git\\cmd\\git.exe"
+            if name == "link":
+                return r"C:\\VS\\bin\\link.exe"
+            return None
+
+        with mock.patch.object(sweep, "require_no_build_environment_overrides"), \
+             mock.patch.object(sweep.platform, "system", return_value="Windows"), \
+             mock.patch.object(sweep, "tool_record", side_effect=lambda command, name, root: dict(records[name])), \
+             mock.patch.object(sweep.shutil, "which", side_effect=which), \
+             mock.patch.object(sweep, "sha256_file", return_value="c" * 64):
+            context = sweep.toolchain_context("cargo", ROOT)
+
+        self.assertEqual(context["platform"], "Windows")
+        self.assertIn("git", context["system_tools"])
+        self.assertIn("link", context["system_tools"])
+        self.assertNotIn("cc", context["system_tools"])
+        self.assertIn(";", context["build_path"])
 
     def test_system_build_path_and_explicit_rustc(self):
         with mock.patch.dict(
@@ -660,8 +744,11 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 "VK_LOADER_DRIVERS_DISABLE": "*other*",
             },
         ):
-            env = sweep.build_environment({"rustc": {"executable": "/selected/bin/rustc"}})
-        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+            env = sweep.build_environment({
+                "build_path": "/trusted/bin:/trusted/tools",
+                "rustc": {"executable": "/selected/bin/rustc"},
+            })
+        self.assertEqual(env["PATH"], "/trusted/bin:/trusted/tools")
         self.assertEqual(env["RUSTC"], "/selected/bin/rustc")
         self.assertNotIn("GIT_WORK_TREE", env)
         self.assertNotIn("LD_AUDIT", env)
@@ -744,8 +831,12 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                             ("--seed", str(2**64))):
             with self.subTest(flag=flag), tempfile.TemporaryDirectory() as tmp:
                 output = Path(tmp) / "evidence"
-                result = subprocess.run([sys.executable, "-I", str(MODULE_PATH),
-                                         "--output", str(output), flag, value], capture_output=True)
+                result = subprocess.run(
+                    [sys.executable, "-I", str(MODULE_PATH),
+                     "--output", str(output), flag, value],
+                    capture_output=True,
+                    env=launched_env(),
+                )
                 self.assertEqual(result.returncode, 1)
                 self.assertFalse(output.exists())
 
@@ -766,8 +857,10 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                                       direct_probes=12, oracle_limit=4096, benchmark_warmup=2,
                                       benchmark_repeats=7, adapter=None, cargo="cargo", dry_run=False)
             context = {"cargo": {"executable": "/selected/cargo"},
-                       "rustc": {"executable": "/selected/rustc"}}
-            with mock.patch.object(sweep, "parse_args", return_value=args), \
+                       "rustc": {"executable": "/selected/rustc"},
+                       "build_path": "/usr/bin:/bin"}
+            with mock.patch.dict(os.environ, {sweep.CLEAN_LAUNCH_ENV: "1"}, clear=False), \
+                 mock.patch.object(sweep, "parse_args", return_value=args), \
                  mock.patch.object(sweep, "git_revision", return_value="fixture"), \
                  mock.patch.object(sweep, "require_clean_source_tree"), \
                  mock.patch.object(sweep, "cargo_config_context", return_value=[]), \
@@ -823,6 +916,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 context = {
                     "cargo": {"executable": "/selected/cargo"},
                     "rustc": {"executable": "/selected/rustc"},
+                    "build_path": "/usr/bin:/bin",
                 }
 
                 def verifier_run(command, **kwargs):
@@ -835,7 +929,8 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                         b"exited cleanly but no usable receipt\n",
                     )
 
-                with mock.patch.object(sweep, "parse_args", return_value=args), \
+                with mock.patch.dict(os.environ, {sweep.CLEAN_LAUNCH_ENV: "1"}, clear=False), \
+                 mock.patch.object(sweep, "parse_args", return_value=args), \
                      mock.patch.object(sweep, "git_revision", return_value="fixture"), \
                      mock.patch.object(sweep, "require_clean_source_tree"), \
                      mock.patch.object(sweep, "cargo_config_context", return_value=[]), \
@@ -936,6 +1031,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
+                env=launched_env(),
             )
         self.assertEqual(result.returncode, 1)
         self.assertIn("at least 4", result.stderr)
@@ -965,6 +1061,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
+                env=launched_env(),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(marker.exists())
@@ -985,6 +1082,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             ],
             capture_output=True,
             text=True,
+            env=launched_env(),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         command = __import__("shlex").split(result.stdout.strip())
