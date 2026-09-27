@@ -13,7 +13,9 @@ from __future__ import annotations
 # sys is built in: fail before importing anything from a caller-controlled path.
 import sys
 if __name__ == "__main__" and not sys.flags.isolated:
-    raise SystemExit("Hardware capture requires isolated Python: python3 -I scripts/bench-bh2d-hardware.py ...")
+    raise SystemExit(
+        "Hardware capture requires the clean launcher: scripts/bench-bh2d-hardware ..."
+    )
 
 import argparse
 import hashlib
@@ -27,7 +29,7 @@ import shutil
 import stat
 import subprocess
 import tomllib
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 RECEIPT_SCHEMA = "galaxy.barnes-hut-parallel-gpu-tree-receipt.v1"
@@ -48,7 +50,7 @@ GPU_CELL_BYTES = 64
 TREE_META_BYTES = 32
 BOUNDS_RECORD_BYTES = 16
 RADIX_DIGITS = 16
-SYSTEM_PATH = "/usr/bin:/bin"
+CLEAN_LAUNCH_ENV = "GALAXY_BH2D_CLEAN_LAUNCH"
 BUILD_ENV_EXACT = {
     "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "LIBRARY_PATH", "COMPILER_PATH",
     "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES", "VK_ICD_FILENAMES",
@@ -93,6 +95,71 @@ class SweepError(RuntimeError):
     pass
 
 
+def trusted_system_path(system_name: str | None = None) -> str:
+    """Return the minimal host-tool search path used after tool selection."""
+    system_name = system_name or platform.system()
+    if system_name == "Windows":
+        candidates: list[str] = []
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        candidates.append(str(PureWindowsPath(system_root) / "System32"))
+        for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+            root = os.environ.get(variable)
+            if root:
+                base = PureWindowsPath(root) / "Git"
+                candidates.extend((str(base / "cmd"), str(base / "bin")))
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            base = PureWindowsPath(local) / "Programs" / "Git"
+            candidates.extend((str(base / "cmd"), str(base / "bin")))
+        home = os.environ.get("USERPROFILE")
+        if home:
+            candidates.append(str(PureWindowsPath(home) / ".cargo" / "bin"))
+        separator = ";"
+    elif system_name == "Darwin":
+        candidates = [
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+        ]
+        separator = ":"
+    else:
+        candidates = ["/usr/bin", "/bin", "/usr/local/bin"]
+        separator = ":"
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.casefold() if system_name == "Windows" else candidate
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return separator.join(unique)
+
+
+def extend_tool_path(base: str, directories: list[str], system_name: str) -> str:
+    separator = ";" if system_name == "Windows" else ":"
+    parts = [item for item in base.split(separator) if item]
+    seen = {item.casefold() if system_name == "Windows" else item for item in parts}
+    for directory in directories:
+        key = directory.casefold() if system_name == "Windows" else directory
+        if key not in seen:
+            seen.add(key)
+            parts.append(directory)
+    return separator.join(parts)
+
+
+def require_clean_launcher() -> None:
+    if os.environ.get(CLEAN_LAUNCH_ENV) != "1":
+        raise SweepError(
+            "hardware evidence capture must start through the clean launcher "
+            "(scripts/bench-bh2d-hardware on POSIX or "
+            "scripts\\bench-bh2d-hardware.cmd on Windows)"
+        )
+
+
 def parse_particles(raw: str) -> list[int]:
     try:
         values = [int(item.strip()) for item in raw.split(",") if item.strip()]
@@ -108,9 +175,10 @@ def parse_particles(raw: str) -> list[int]:
 
 
 def git_invocation(command: list[str], cwd: Path) -> tuple[list[str], dict[str, str]]:
+    system_path = trusted_system_path()
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    env.update(PATH=SYSTEM_PATH, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-    git = shutil.which("git", path=SYSTEM_PATH)
+    env.update(PATH=system_path, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    git = shutil.which("git", path=system_path)
     if git is None:
         raise SweepError("system Git is required")
     # rev-parse also handles a linked worktree's .git file. No ambient selectors.
@@ -271,16 +339,46 @@ def tool_record(command: str, name: str, repo_root: Path) -> dict[str, Any]:
 
 def toolchain_context(cargo_command: str, repo_root: Path) -> dict[str, Any]:
     require_no_build_environment_overrides()
+    system_name = platform.system()
+    base_path = trusted_system_path(system_name)
     cargo = tool_record(cargo_command, "cargo", repo_root)
     cargo["requested"] = cargo_command
     rustc = tool_record("rustc", "rustc", repo_root)
-    system_tools = {}
-    for name in ("cc", "c++", "gcc", "g++", "ld", "as", "ar", "ranlib", "git"):
-        path = shutil.which(name, path=SYSTEM_PATH)
+
+    if system_name == "Windows":
+        candidates = ("git", "cl", "link", "lib", "rc", "lld-link")
+        discovery_path = os.environ.get("PATH", "")
+    else:
+        candidates = ("cc", "c++", "clang", "clang++", "gcc", "g++", "ld", "as", "ar", "ranlib", "git")
+        discovery_path = base_path
+
+    system_tools: dict[str, dict[str, str]] = {}
+    tool_directories: list[str] = []
+    for name in candidates:
+        path = shutil.which(name, path=discovery_path)
         if path:
-            system_tools[name] = {"path": str(Path(path).resolve()), "sha256": sha256_file(Path(path))}
-    require("cc" in system_tools, "system C linker (cc) is required")
-    return {"cargo": cargo, "rustc": rustc, "build_path": SYSTEM_PATH, "system_tools": system_tools}
+            resolved = Path(path).resolve()
+            system_tools[name] = {
+                "path": str(resolved),
+                "sha256": sha256_file(resolved),
+            }
+            tool_directories.append(str(resolved.parent))
+
+    require("git" in system_tools, "trusted Git executable is required")
+    if system_name != "Windows":
+        require(
+            "cc" in system_tools or "clang" in system_tools or "gcc" in system_tools,
+            "system C compiler/linker driver is required",
+        )
+
+    build_path = extend_tool_path(base_path, tool_directories, system_name)
+    return {
+        "platform": system_name,
+        "cargo": cargo,
+        "rustc": rustc,
+        "build_path": build_path,
+        "system_tools": system_tools,
+    }
 
 
 def build_environment(context: dict[str, Any]) -> dict[str, str]:
@@ -291,7 +389,7 @@ def build_environment(context: dict[str, Any]) -> dict[str, str]:
         and key not in BUILD_ENV_EXACT
         and not any(pattern.fullmatch(key) for pattern in BUILD_ENV_PATTERNS)
     }
-    env["PATH"] = SYSTEM_PATH
+    env["PATH"] = context["build_path"]
     env["RUSTC"] = context["rustc"]["executable"]
     return env
 
@@ -1357,6 +1455,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    require_clean_launcher()
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
     manifest_path: Path | None = None
