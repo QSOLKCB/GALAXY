@@ -246,7 +246,11 @@
       e.preventDefault(); state.zoom = Math.max(0.3, Math.min(3, state.zoom * Math.exp(-e.deltaY * 0.001)));
       byId("zoom").value = state.zoom; syncControlLabels(); draw();
     }, { passive: false });
-    document.addEventListener("visibilitychange", () => { clock.reset(); });
+    document.addEventListener("visibilitychange", () => {
+      clock.reset();
+      state.frames = 0;
+      state.fpsStart = performance.now();
+    });
     motion.addEventListener("change", e => {
       if (e.matches) { state.running = false; state.trails = false; clock.reset(); history.length = 0; syncControlLabels(); updateReadouts(); draw(); }
     });
