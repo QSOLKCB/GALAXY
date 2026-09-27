@@ -843,8 +843,9 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
         receipt = receipt_for(512)
-        receipt["tree"]["active_cell_count"] = 600
+        receipt["tree"]["active_cell_count"] = 1201
         receipt["tree"]["leaf_count"] = 600
+        receipt["tree"]["max_depth"] = 16
         with self.assertRaisesRegex(sweep.SweepError, "resident particle count"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
