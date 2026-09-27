@@ -272,6 +272,16 @@ BH #2D is the active optimization path. It retains BH #2C and BH #2B2 as executa
 
 BH #2D correctness is exercised through software Vulkan in CI, but **software-Vulkan timings are not hardware performance evidence**. A hardware speed claim requires a non-software adapter receipt.
 
+The remaining BH #2D evidence item has a fail-closed real-GPU sweep runner:
+
+```bash
+python3 scripts/bench-bh2d-hardware.py \
+  --output runs/bh2d-hardware-sweep \
+  --adapter 0
+```
+
+It runs a source-pinned 512→65,536 resident-body sweep by default, requires hardware receipts, validates the frozen correctness/oracle gates, and hashes each receipt/log into a scaling manifest. The manifest is evidence for that exact source/workload/adapter, not an automatic production-promotion claim.
+
 `--allow-software` enables verification through software Vulkan and must not be interpreted as hardware GPU performance evidence.
 
 The CUDA checker freezes ABI/source parity without claiming CUDA execution where no NVIDIA CUDA run occurred.
@@ -466,6 +476,9 @@ sh scripts/test-cpu-runtime.sh
 
 # Retro CPU portability
 sh scripts/test-retro-cpu.sh
+
+# GPU evidence-runner host-side tests
+python3 tests/test_bh2d_hardware_sweep.py
 
 # CUDA host-side tests
 python3 tests/test_cuda_u64.py
