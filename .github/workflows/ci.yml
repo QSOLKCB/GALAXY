@@ -35,5 +35,20 @@ jobs:
           node tests/smoke.mjs
           node tests/physics.mjs
           node tests/app.mjs
+      - name: Check Barnes-Hut self-gravity reference
+        run: |
+          node tests/barnes-hut.mjs
+          cargo test --manifest-path nbody/Cargo.toml --locked --offline
+          cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify
+          artifact_root="$RUNNER_TEMP/galaxy-bh/nested"
+          rm -rf "$RUNNER_TEMP/galaxy-bh"
+          cargo run --manifest-path nbody/Cargo.toml --locked --offline -- \
+            run --preset disc --particles 32 --steps 2 --theta 0.5 \
+            --receipt "$artifact_root/receipt.json" \
+            --snapshot "$artifact_root/final.csv" \
+            > "$RUNNER_TEMP/galaxy-bh-stdout.json"
+          test -s "$artifact_root/receipt.json"
+          test -s "$artifact_root/final.csv"
+          node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$artifact_root/receipt.json"
       - name: Verify static distribution
         run: node scripts/build-site.mjs
