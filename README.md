@@ -39,7 +39,7 @@ The current immutable software release is **v0.6.0**. The v0.4.0 native-CPU evid
 | Wide logical addressing | `split-u64-hash32-avalanche-v1` across CPU and wide-address GPU paths |
 | Barnes–Hut self-gravity | Separate resident planar N-body reference, exact O(N²) oracle, leapfrog integration, browser tree overlay |
 | Barnes–Hut flat substrate | Stable 32-bit Morton ordering, pointer-free flat cells, bottom-up aggregates, flat traversal receipts |
-| Barnes–Hut GPU traversal | CPU-built flat tree packed to frozen f32/u32 records; Vulkan/WGSL traversal verified against flat/direct CPU oracles; CUDA ABI/source parity |
+| Barnes–Hut GPU traversal | CPU-built flat tree packed to frozen f32/u32 records; Vulkan/WGSL traversal verified against the full flat CPU oracle plus bounded direct-force probes; CUDA ABI/source parity |
 | Formal release | Immutable `v0.6.0`, commit `fa1c76fb49664ae4cdd6dc090cccd702399c2b60` |
 | CPU baseline archival record | Zenodo DOI `10.5281/zenodo.22756969` |
 | Active experimental phase | BH #2B1 GPU transfer ABI + force traversal; evolving GPU leapfrog remains deferred |
