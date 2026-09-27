@@ -115,18 +115,46 @@ The flat reference remains f64. This avoids combining a topology migration with 
 5. stable ordering for equal Morton keys;
 6. exact root range and total mass preservation.
 
+## BH #2B1 — explicit GPU transfer + traversal
+
+BH #2A is frozen by merged PR #19. The recursive BH #1 tree and the flat f64 BH #2A tree remain the scientific oracles.
+
+The GPU-facing ABI is intentionally explicit:
+
+| Record | Bytes | Contents |
+| --- | ---: | --- |
+| settings | 32 | body/cell/root counts + theta, softening, G |
+| body | 32 | f32 x/y/mass + Morton-entry position |
+| Morton entry | 16 | Morton code + resident body index |
+| flat cell | 64 | f32 bounds/mass/COM + u32 range/depth/children |
+| acceleration | 16 | f32 ax/ay + reserved lanes |
+
+Rust, WGSL and CUDA share that record contract. A canonical 144-byte fixture freezes the Rust/CUDA byte representation. The CUDA verifier is host-side structural evidence only; it does not claim that a CUDA kernel executed when no NVIDIA device is present.
+
+The Vulkan path executes the actual flat traversal in WGSL. It preserves:
+
+- Morton-range target membership instead of geometric containment;
+- direct evaluation inside leaf ranges;
+- the same `s / d < theta` aggregate rule;
+- deterministic child visitation order;
+- a bounded local DFS stack justified by the 16-level Morton cap.
+
+The evidence binary `galaxy-bh-gpu` reports CPU tree-build time, f32 packing time, GPU transfer, GPU dispatch, GPU readback, flat-CPU reference traversal, and direct-force reference time separately. Error fields compare GPU accelerations against both the flat f64 CPU oracle and the independent direct O(N²) oracle.
+
+This phase does **not** perform GPU tree construction or evolve multiple self-gravity steps.
+
 ## Next rung
 
-Do **not** start by porting the recursive CPU tree literally to a GPU.
-
-BH #2A freezes the Morton ordering and flat cell contract. The next performance phase is therefore narrower:
+BH #2B2 adds the evolving-state boundary:
 
 ```text
-frozen Morton entries + flat cells
-  -> explicit f32 transfer packing
-  -> WGSL/CUDA key/cell buffer validation
-  -> GPU traversal
-  -> GPU leapfrog update
+verified GPU traversal
+  -> first acceleration
+  -> GPU kick/drift
+  -> rebuild flat tree for drifted positions
+  -> second GPU acceleration
+  -> final kick
+  -> multi-step receipts and drift diagnostics
 ```
 
-That phase must retain direct-force small-N fixtures plus both recursive and flat CPU comparisons. GPU tree construction, host/device transfer, and traversal timing must remain separately visible. GPU performance is not inferred from third-party benchmark numbers.
+GPU-side Morton sorting/tree construction remains a later optimization candidate. It must not be silently conflated with traversal correctness or inferred from third-party benchmark numbers.
