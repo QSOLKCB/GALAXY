@@ -1393,7 +1393,7 @@ impl NbodyGpu {
             std::mem::size_of::<TreeMeta>() as u64,
             "BH #2C metadata readback",
         )?;
-        let meta = *bytemuck::from_bytes::<TreeMeta>(&meta_bytes);
+        let meta = bytemuck::pod_read_unaligned::<TreeMeta>(&meta_bytes);
         if meta.data[3] != 0 {
             return Err("BH #2C GPU tree reported cell-capacity overflow".into());
         }
@@ -1407,14 +1407,20 @@ impl NbodyGpu {
             tree.count as u64 * std::mem::size_of::<GpuEntry>() as u64,
             "BH #2C entry readback",
         )?;
-        let entries = bytemuck::cast_slice::<u8, GpuEntry>(&entry_bytes).to_vec();
+        let entries = entry_bytes
+            .chunks_exact(std::mem::size_of::<GpuEntry>())
+            .map(bytemuck::pod_read_unaligned::<GpuEntry>)
+            .collect();
 
         let cell_bytes = self.read_buffer_bytes(
             &tree.cells,
             cell_count as u64 * std::mem::size_of::<GpuCell>() as u64,
             "BH #2C cell readback",
         )?;
-        let cells = bytemuck::cast_slice::<u8, GpuCell>(&cell_bytes).to_vec();
+        let cells = cell_bytes
+            .chunks_exact(std::mem::size_of::<GpuCell>())
+            .map(bytemuck::pod_read_unaligned::<GpuCell>)
+            .collect();
 
         Ok(GpuTreeEvidence { meta, entries, cells })
     }
