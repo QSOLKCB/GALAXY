@@ -50,7 +50,7 @@ BOUNDS_RECORD_BYTES = 16
 RADIX_DIGITS = 16
 SYSTEM_PATH = "/usr/bin:/bin"
 BUILD_ENV_EXACT = {
-    "LD_PRELOAD", "LD_LIBRARY_PATH", "LIBRARY_PATH", "COMPILER_PATH",
+    "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "LIBRARY_PATH", "COMPILER_PATH",
     "GCC_EXEC_PREFIX", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
     "RUSTFLAGS",
     "CARGO_ENCODED_RUSTFLAGS",
@@ -277,7 +277,13 @@ def toolchain_context(cargo_command: str, repo_root: Path) -> dict[str, Any]:
 
 
 def build_environment(context: dict[str, Any]) -> dict[str, str]:
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+        and key not in BUILD_ENV_EXACT
+        and not any(pattern.fullmatch(key) for pattern in BUILD_ENV_PATTERNS)
+    }
     env["PATH"] = SYSTEM_PATH
     env["RUSTC"] = context["rustc"]["executable"]
     return env
@@ -769,7 +775,11 @@ def validate_state_error(value: Any, name: str) -> dict[str, float]:
     return result
 
 
-def validate_force_errors(value: Any, name: str) -> tuple[float, float]:
+def validate_force_errors(
+    value: Any,
+    name: str,
+    sample_count: int,
+) -> tuple[float, float]:
     evidence = require_object(value, name)
     rms = require_number(
         evidence.get("force_rms_relative"),
@@ -782,14 +792,25 @@ def validate_force_errors(value: Any, name: str) -> tuple[float, float]:
         nonnegative=True,
     )
     require(rms <= maximum, f"{name} force RMS cannot exceed force maximum")
+    require(
+        maximum <= rms * math.sqrt(sample_count),
+        f"{name} force maximum is too large for RMS and sample count",
+    )
     require(rms < 0.04, f"{name} force RMS gate failed")
     require(maximum < 0.30, f"{name} force max gate failed")
     return rms, maximum
 
 
-def adapter_identity(gpu: Any) -> str:
+def adapter_identity(gpu: Any, adapter_selector: str | None = None) -> str:
     info = require_object(gpu, "receipt.gpu")
+    index = require_int(info.get("index"), "receipt.gpu.index", minimum=0)
+    if adapter_selector is not None and re.fullmatch(r"[0-9]+", adapter_selector):
+        require(
+            index == int(adapter_selector),
+            "receipt.gpu.index does not match the numeric adapter selector",
+        )
     required = {
+        "index": index,
         "name": require_string(info.get("name"), "receipt.gpu.name", nonempty=True),
         "backend": require_string(info.get("backend"), "receipt.gpu.backend", nonempty=True),
         "device_type": require_string(
@@ -820,6 +841,7 @@ def validate_receipt(
     oracle_limit: int,
     benchmark_warmup: int,
     benchmark_repeats: int,
+    adapter_selector: str | None = None,
 ) -> dict[str, Any]:
     root = require_object(receipt, "receipt")
     require(root.get("schema") == RECEIPT_SCHEMA, "unexpected BH #2D receipt schema")
@@ -860,7 +882,7 @@ def validate_receipt(
     require(root.get("force_solves") == steps + 1, "unexpected force-solve count")
     require(root.get("evolution_tree_builds") == steps + 1, "unexpected tree-build count")
 
-    identity = adapter_identity(root.get("gpu"))
+    identity = adapter_identity(root.get("gpu"), adapter_selector)
 
     tree = require_object(root.get("tree"), "receipt.tree")
     require(tree.get("repeat_rebuild_matches") is True, "same-state repeat tree checksum changed")
@@ -913,6 +935,10 @@ def validate_receipt(
         active_cell_count >= max_depth + 1,
         "receipt.tree.active_cell_count is too small for the reported maximum depth",
     )
+    require(
+        internal_cell_count >= max_depth,
+        "receipt.tree has too few internal cells for the reported maximum depth",
+    )
     if max_depth < TREE_LEVELS - 1:
         minimum_leaf_count = (particles + TREE_BUCKET_SIZE - 1) // TREE_BUCKET_SIZE
         require(
@@ -947,6 +973,10 @@ def validate_receipt(
         nonnegative=True,
     )
     require(direct_rms <= direct_max, "direct-force RMS cannot exceed maximum")
+    require(
+        direct_max <= direct_rms * math.sqrt(expected_probe_count),
+        "direct-force maximum is too large for RMS and probe count",
+    )
     require(direct_rms < 0.04, "direct-force RMS gate failed")
     require(direct_max < 0.30, "direct-force max gate failed")
 
@@ -970,6 +1000,10 @@ def validate_receipt(
             flat_rms <= flat_max,
             "BH #2A final-force RMS cannot exceed maximum",
         )
+        require(
+            flat_max <= flat_rms * math.sqrt(particles),
+            "BH #2A final-force maximum is too large for RMS and particle count",
+        )
         require(flat_rms < 0.04, "BH #2A final-force RMS gate failed")
         require(flat_max < 0.30, "BH #2A final-force max gate failed")
 
@@ -985,7 +1019,7 @@ def validate_receipt(
         ):
             oracle = require_object(oracles.get(key), label)
             validate_state_error(oracle.get("state_error"), f"{label}.state_error")
-            validate_force_errors(oracle, label)
+            validate_force_errors(oracle, label, particles)
     else:
         require(
             require_int(oracles.get("limit"), "receipt.gpu_oracles.limit") == oracle_limit,
@@ -1197,7 +1231,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the exact hardware commands without creating files or running cargo",
+        help="print planned hardware commands without creating files or running Cargo",
     )
     return parser.parse_args()
 
@@ -1231,7 +1265,7 @@ def main() -> int:
         output = args.output.expanduser().resolve()
         if args.dry_run:
             plan_args = argparse.Namespace(**vars(args))
-            plan_args.cargo = tool_record(args.cargo, "cargo", repo_root)["executable"]
+            plan_args.cargo = str(resolve_executable(args.cargo, "cargo").absolute())
             for particles in particles_list:
                 run_dir = output / f"n{particles:06d}"
                 receipt = run_dir / "receipt.json"
@@ -1363,6 +1397,7 @@ def main() -> int:
                 oracle_limit=args.oracle_limit,
                 benchmark_warmup=args.benchmark_warmup,
                 benchmark_repeats=args.benchmark_repeats,
+                adapter_selector=args.adapter,
             )
             if adapter is None:
                 adapter = summary["adapter_identity"]
