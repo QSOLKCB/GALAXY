@@ -404,6 +404,9 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
     def test_build_environment_overrides_are_rejected(self):
         for name in (
             "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FRAMEWORK_PATH",
             "VK_DRIVER_FILES",
             "VK_ADD_DRIVER_FILES",
             "VK_ICD_FILENAMES",
@@ -574,6 +577,9 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
                 "GIT_WORK_TREE": "/other",
                 "LD_AUDIT": "/tmp/audit.so",
                 "LD_PRELOAD": "/tmp/preload.so",
+                "DYLD_INSERT_LIBRARIES": "/tmp/inject.dylib",
+                "DYLD_LIBRARY_PATH": "/tmp/dylibs",
+                "DYLD_FRAMEWORK_PATH": "/tmp/frameworks",
                 "VK_DRIVER_FILES": "/tmp/icd.json",
                 "VK_ADD_DRIVER_FILES": "/tmp/additional-icd.json",
                 "VK_ICD_FILENAMES": "/tmp/legacy-icd.json",
@@ -593,6 +599,9 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         self.assertNotIn("LD_AUDIT", env)
         self.assertNotIn("LD_PRELOAD", env)
         for name in (
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FRAMEWORK_PATH",
             "VK_DRIVER_FILES",
             "VK_ADD_DRIVER_FILES",
             "VK_ICD_FILENAMES",
@@ -711,6 +720,82 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             self.assertEqual(failed["exit_code"], 1)
             self.assertEqual(failed["log"], "n000512/run.log")
             self.assertEqual(failed["log_sha256"], sweep.sha256_file(log_path))
+
+    def test_successful_unusable_receipts_bind_run_log(self):
+        import argparse
+        import json
+
+        cases = {
+            "missing": None,
+            "malformed": b"{not-json",
+            "rejected": (lambda: (
+                lambda receipt: json.dumps(receipt).encode()
+            )({**receipt_for(512), "status": "incomplete"}))(),
+        }
+        for name, receipt_payload in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "evidence"
+                args = argparse.Namespace(
+                    output=output,
+                    particles="512",
+                    preset="disc",
+                    steps=3,
+                    dt_myr=0.01,
+                    seed=303,
+                    theta=0.5,
+                    softening_kpc=0.05,
+                    direct_probes=12,
+                    oracle_limit=4096,
+                    benchmark_warmup=2,
+                    benchmark_repeats=7,
+                    adapter=None,
+                    cargo="cargo",
+                    dry_run=False,
+                )
+                context = {
+                    "cargo": {"executable": "/selected/cargo"},
+                    "rustc": {"executable": "/selected/rustc"},
+                }
+
+                def verifier_run(command, **kwargs):
+                    receipt_arg = Path(command[command.index("--receipt") + 1])
+                    if receipt_payload is not None:
+                        receipt_arg.write_bytes(receipt_payload)
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        b"exited cleanly but no usable receipt\n",
+                    )
+
+                with mock.patch.object(sweep, "parse_args", return_value=args), \
+                     mock.patch.object(sweep, "git_revision", return_value="fixture"), \
+                     mock.patch.object(sweep, "require_clean_source_tree"), \
+                     mock.patch.object(sweep, "cargo_config_context", return_value=[]), \
+                     mock.patch.object(sweep, "toolchain_context", return_value=context), \
+                     mock.patch.object(sweep, "dependency_source_context", return_value=[]), \
+                     mock.patch.object(sweep, "require_source_provenance"), \
+                     mock.patch.object(sweep.platform, "platform", return_value="fixture"), \
+                     mock.patch.object(sweep.subprocess, "run", side_effect=verifier_run):
+                    self.assertEqual(sweep.main(), 1)
+
+                log_path = output / "n000512/run.log"
+                manifest = json.loads((output / "manifest.json").read_text())
+                self.assertEqual(manifest["status"], "failed")
+                self.assertEqual(len(manifest["runs"]), 1)
+                failed = manifest["runs"][0]
+                self.assertEqual(failed["status"], "failed")
+                self.assertEqual(failed["exit_code"], 0)
+                self.assertEqual(failed["log"], "n000512/run.log")
+                self.assertEqual(failed["log_sha256"], sweep.sha256_file(log_path))
+                receipt_path = output / "n000512/receipt.json"
+                if receipt_payload is None:
+                    self.assertNotIn("receipt", failed)
+                else:
+                    self.assertEqual(failed["receipt"], "n000512/receipt.json")
+                    self.assertEqual(
+                        failed["receipt_sha256"],
+                        sweep.sha256_file(receipt_path),
+                    )
 
     def test_receipt_rejects_nonstandard_json_constants(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -963,6 +1048,14 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             with self.subTest(field=field):
                 receipt = receipt_for(512)
                 receipt[field] = False
+                with self.assertRaisesRegex(sweep.SweepError, field):
+                    sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_execution_counters_require_integer_types(self):
+        for field in ("force_solves", "evolution_tree_builds"):
+            with self.subTest(field=field):
+                receipt = receipt_for(512)
+                receipt[field] = 4.0
                 with self.assertRaisesRegex(sweep.SweepError, field):
                     sweep.validate_receipt(receipt, **validation_kwargs(512))
 
