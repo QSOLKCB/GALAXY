@@ -321,6 +321,7 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             "RUSTC_WRAPPER",
             "RUSTUP_TOOLCHAIN",
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
             "CARGO_PROFILE_RELEASE_LTO",
         ):
             with self.subTest(name=name), mock.patch.dict(
@@ -330,6 +331,50 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(sweep.SweepError, name):
                     sweep.require_no_build_environment_overrides()
+
+    def test_cargo_config_execution_and_source_redirects_are_rejected(self):
+        cases = {
+            "rustc-wrapper": '[build]\nrustc-wrapper = "/tmp/wrapper"\n',
+            "target-linker": (
+                '[target.x86_64-unknown-linux-gnu]\n'
+                'linker = "/tmp/linker"\n'
+            ),
+            "target-runner": (
+                '[target.x86_64-unknown-linux-gnu]\n'
+                'runner = "/tmp/runner"\n'
+            ),
+            "target-rustflags": (
+                '[target.x86_64-unknown-linux-gnu]\n'
+                'rustflags = ["-C", "linker=/tmp/linker"]\n'
+            ),
+            "source": (
+                '[source.crates-io]\n'
+                'replace-with = "vendored"\n'
+                '[source.vendored]\n'
+                'directory = "/tmp/vendor"\n'
+            ),
+            "paths": 'paths = ["/tmp/override"]\n',
+            "env": '[env]\nRUSTFLAGS = "-C target-cpu=native"\n',
+        }
+        for name, payload in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+                subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+                subprocess.run(
+                    ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                    cwd=repo,
+                    check=True,
+                )
+                cargo = repo / ".cargo"
+                cargo.mkdir()
+                config = cargo / "config.toml"
+                config.write_text(payload)
+                subprocess.run(["git", "add", ".cargo/config.toml"], cwd=repo, check=True)
+                subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+
+                with self.assertRaisesRegex(sweep.SweepError, "unsupported|not allowed"):
+                    sweep.cargo_config_context(repo)
 
     def test_toolchain_context_records_resolved_binaries_and_versions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -362,6 +407,29 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             path.write_bytes(b"{\xff}")
             with self.assertRaisesRegex(sweep.SweepError, "not valid UTF-8"):
                 sweep.load_receipt(path)
+
+    def test_verifier_command_uses_fresh_explicit_target_directory(self):
+        args = __import__("argparse").Namespace(
+            cargo="cargo",
+            preset="disc",
+            steps=3,
+            dt_myr=0.01,
+            seed=303,
+            theta=0.5,
+            softening_kpc=0.05,
+            direct_probes=12,
+            oracle_limit=4096,
+            benchmark_warmup=2,
+            benchmark_repeats=7,
+            adapter=None,
+        )
+        receipt = Path("/evidence/n000512/receipt.json")
+        target_dir = Path("/evidence/n000512/cargo-target")
+        command = sweep.command_for(args, 512, receipt, target_dir)
+        self.assertIn("--target-dir", command)
+        index = command.index("--target-dir")
+        self.assertEqual(command[index + 1], str(target_dir))
+        self.assertNotIn("runtime/target", " ".join(command))
 
     def test_hardware_receipt_at_oracle_size_is_accepted(self):
         summary = sweep.validate_receipt(receipt_for(4096), **validation_kwargs(4096))
@@ -468,6 +536,12 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt["tree"]["active_cell_count"] = 17
         receipt["tree"]["leaf_count"] = 18
         with self.assertRaisesRegex(sweep.SweepError, "cannot exceed active_cell_count"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["active_cell_count"] = 600
+        receipt["tree"]["leaf_count"] = 600
+        with self.assertRaisesRegex(sweep.SweepError, "resident particle count"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
         receipt = receipt_for(512)
