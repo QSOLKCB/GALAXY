@@ -106,8 +106,11 @@ def receipt_for(
         "host_particle_readbacks_during_steps": 0,
         "force_solves": steps + 1,
         "evolution_tree_builds": steps + 1,
-        "parallel_tree_buffer_bytes": particles * 1024,
+        "parallel_tree_buffer_bytes": sweep.expected_parallel_tree_buffer_bytes(particles),
         "tree": {
+            "initial_checksum_fnv_mix64": "1111111111111111",
+            "final_checksum_fnv_mix64": "2222222222222222",
+            "repeat_checksum_fnv_mix64": "2222222222222222",
             "repeat_rebuild_matches": True,
             "active_cell_count": 17,
             "leaf_count": 8,
@@ -124,10 +127,7 @@ def receipt_for(
         "trajectory_vs_bh2a_flat_f64": trajectory,
         "gpu_oracles": oracles,
         "tree_build_benchmark": {
-            "sample_scope": (
-                "complete rebuild call including host-side uniform/bind-group setup, "
-                "command encoding, submit and synchronization"
-            ),
+            "sample_scope": sweep.BENCHMARK_SAMPLE_SCOPE,
             "stage_timings_are_diagnostics": True,
             "warmup": warmup,
             "repeats": repeats,
@@ -185,6 +185,30 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
             with self.assertRaisesRegex(sweep.SweepError, "untracked files"):
                 sweep.require_clean_source_tree(repo)
 
+    def test_ignored_cargo_config_is_rejected_even_when_git_hides_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            (repo / "tracked.txt").write_text("tracked\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+
+            info_exclude = repo / ".git" / "info" / "exclude"
+            info_exclude.write_text(".cargo/\n")
+            cargo = repo / ".cargo"
+            cargo.mkdir()
+            (cargo / "config.toml").write_text('[build]\nrustflags = ["-C", "target-cpu=native"]\n')
+
+            sweep.require_clean_source_tree(repo)
+            with self.assertRaisesRegex(sweep.SweepError, "Cargo configuration"):
+                sweep.cargo_config_context(repo)
+
     def test_cleanliness_allows_only_the_evidence_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -230,6 +254,33 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
 
             with self.assertRaisesRegex(sweep.SweepError, "source revision changed"):
                 sweep.require_source_provenance(repo, revision)
+
+    def test_cargo_config_context_detects_mid_sweep_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "GALAXY Test"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "galaxy-test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            cargo = repo / ".cargo"
+            cargo.mkdir()
+            config = cargo / "config.toml"
+            config.write_text("[build]\nincremental = false\n")
+            subprocess.run(["git", "add", ".cargo/config.toml"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+            revision = sweep.git_revision(repo)
+            context = sweep.cargo_config_context(repo)
+
+            config.write_text("[build]\nincremental = true\n")
+            with self.assertRaises(sweep.SweepError):
+                sweep.require_source_provenance(
+                    repo,
+                    revision,
+                    expected_cargo_context=context,
+                )
 
     def test_hardware_receipt_at_oracle_size_is_accepted(self):
         summary = sweep.validate_receipt(receipt_for(4096), **validation_kwargs(4096))
@@ -310,6 +361,22 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         with self.assertRaisesRegex(sweep.SweepError, "repeat tree checksum"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
+    def test_repeat_tree_checksum_fields_are_required_and_compared(self):
+        receipt = receipt_for(512)
+        del receipt["tree"]["final_checksum_fnv_mix64"]
+        with self.assertRaisesRegex(sweep.SweepError, "final_checksum_fnv_mix64"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["repeat_checksum_fnv_mix64"] = "3333333333333333"
+        with self.assertRaisesRegex(sweep.SweepError, "does not match"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+        receipt = receipt_for(512)
+        receipt["tree"]["repeat_checksum_fnv_mix64"] = "NOT-A-CHECKSUM"
+        with self.assertRaisesRegex(sweep.SweepError, "16-digit lowercase hexadecimal"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
     def test_executed_oracle_payloads_are_required(self):
         receipt = receipt_for(512)
         receipt["gpu_oracles"] = {"status": "executed"}
@@ -319,6 +386,34 @@ class Bh2dHardwareSweepTests(unittest.TestCase):
         receipt = receipt_for(512)
         receipt["trajectory_vs_bh2a_flat_f64"] = {"status": "executed"}
         with self.assertRaisesRegex(sweep.SweepError, "state_error"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_numeric_overflow_is_normalized_to_sweep_error(self):
+        receipt = receipt_for(512)
+        receipt["dt_myr"] = 10 ** 400
+        with self.assertRaisesRegex(sweep.SweepError, "finite number"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_tree_buffer_size_is_bound_to_particle_count(self):
+        for particles in (2, 127, 128, 129, 4096, 65536):
+            with self.subTest(particles=particles):
+                expected = 1152 * particles + 160 * ((particles + 127) // 128) + 32
+                self.assertEqual(
+                    sweep.expected_parallel_tree_buffer_bytes(particles),
+                    expected,
+                )
+
+        receipt = receipt_for(512)
+        receipt["parallel_tree_buffer_bytes"] = 1
+        with self.assertRaisesRegex(sweep.SweepError, "allocation formula"):
+            sweep.validate_receipt(receipt, **validation_kwargs(512))
+
+    def test_benchmark_scope_must_match_frozen_declaration(self):
+        receipt = receipt_for(512)
+        receipt["tree_build_benchmark"]["sample_scope"] = (
+            "complete rebuild call excluding queue submit and GPU synchronization"
+        )
+        with self.assertRaisesRegex(sweep.SweepError, "frozen complete-rebuild declaration"):
             sweep.validate_receipt(receipt, **validation_kwargs(512))
 
     def test_parallel_median_is_recomputed_from_samples(self):
