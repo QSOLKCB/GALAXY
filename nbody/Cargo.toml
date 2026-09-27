@@ -1,0 +1,12 @@
+[package]
+name = "galaxy-nbody"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Deterministic planar Barnes-Hut self-gravity reference runtime for GALAXY"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[dependencies]
