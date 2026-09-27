@@ -905,6 +905,12 @@ def validate_receipt(
         active_cell_count >= max_depth + 1,
         "receipt.tree.active_cell_count is too small for the reported maximum depth",
     )
+    if max_depth < TREE_LEVELS - 1:
+        minimum_leaf_count = (particles + TREE_BUCKET_SIZE - 1) // TREE_BUCKET_SIZE
+        require(
+            leaf_count >= minimum_leaf_count,
+            "receipt.tree.leaf_count is too small for the frozen bucket size below maximum depth",
+        )
     if particles > TREE_BUCKET_SIZE:
         require(
             active_cell_count > leaf_count,
