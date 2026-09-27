@@ -768,6 +768,16 @@ def validate_state_error(value: Any, name: str) -> dict[str, float]:
             nonnegative=True,
         ),
     }
+    require(
+        (result["position_rms_relative_l2"] == 0.0)
+        == (result["position_max_relative"] == 0.0),
+        f"{name} position RMS/max zero-state mismatch",
+    )
+    require(
+        (result["velocity_rms_relative_l2"] == 0.0)
+        == (result["velocity_max_relative"] == 0.0),
+        f"{name} velocity RMS/max zero-state mismatch",
+    )
     require(result["position_rms_relative_l2"] < 0.03, f"{name} position RMS gate failed")
     require(result["position_max_relative"] < 0.30, f"{name} position max gate failed")
     require(result["velocity_rms_relative_l2"] < 0.03, f"{name} velocity RMS gate failed")
