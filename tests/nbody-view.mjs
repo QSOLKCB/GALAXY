@@ -14,7 +14,7 @@ class Element {
   setPointerCapture() {}
 }
 function boot(reduced = false) {
-  const elements = new Map(); let scheduled, bodies, steps = 0, draws = 0;
+  const elements = new Map(); let scheduled, bodies, latest, steps = 0, draws = 0;
   for (const m of read('index.html').matchAll(/<(\w+)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const el = new Element(m[1]); el.value = m[0].match(/value="([^"]*)"/)?.[1] || '';
     el.checked = m[0].includes(' checked'); elements.set(m[2], el);
@@ -28,12 +28,12 @@ function boot(reduced = false) {
     requestAnimationFrame(fn){scheduled=fn;}, devicePixelRatio:1, addEventListener(){}, console});
   vm.runInContext(read('barnes-hut.js'),ctx);
   const solver = ctx.GalaxyBarnesHut;
-  ctx.GalaxyBarnesHut = {...solver, accelerations(b,o){bodies=b;return solver.accelerations(b,o);},
-    stepLeapfrog(b,dt,o){steps++; bodies=b;return solver.stepLeapfrog(b,dt,o);} };
+  ctx.GalaxyBarnesHut = {...solver, accelerations(b,o){bodies=b;latest=solver.accelerations(b,o);return latest;},
+    stepLeapfrog(b,dt,o){steps++; bodies=b;latest=solver.stepLeapfrog(b,dt,o);return latest;} };
   vm.runInContext(read('nbody-clock.js'),ctx);
   vm.runInContext(read('nbody-viz.js'),ctx);
   return {elements, doc, motion, frame:now=>scheduled(now), steps:()=>steps, draws:()=>draws,
-    bodies:()=>JSON.parse(JSON.stringify(bodies)), click:id=>elements.get(id).emit('click'),
+    bodies:()=>JSON.parse(JSON.stringify(bodies)), latest:()=>latest, click:id=>elements.get(id).emit('click'),
     set(id,value,event='input'){elements.get(id).value=String(value);elements.get(id).emit(event);} };
 }
 function clockSteps(hz, speed) {
@@ -49,6 +49,10 @@ assert.equal(clockSteps(100, 4), 240);
 
 // Same simulated wall time on 60 and 144 Hz displays gives the same trajectory.
 const a=boot(), b=boot();
+assert.equal(
+  a.elements.get('depthReadout').textContent,
+  (a.latest().tree.maxDepth + 1) + " levels · " + a.latest().tree.leafCount.toLocaleString("en-US") + " leaves"
+);
 a.set('count',128,'change'); b.set('count',128,'change');
 for(let i=0;i<=60;i++)a.frame(i*1000/60);
 for(let i=0;i<=144;i++)b.frame(i*1000/144);
