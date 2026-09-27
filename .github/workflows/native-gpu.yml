@@ -85,6 +85,7 @@ jobs:
           assert receipt["schema"] == "galaxy.barnes-hut-gpu-traversal-receipt.v1"
           assert receipt["phase"] == "BH-2B1"
           assert receipt["packed_transfer_bytes"] > 0
+          assert receipt["direct_probe_count"] == 12
           assert receipt["errors"]["gpu_vs_direct_rms_relative"] < 0.04
           assert receipt["errors"]["gpu_vs_direct_max_relative"] < 0.30
           assert receipt["errors"]["gpu_vs_flat_cpu_rms_relative"] < 0.01
