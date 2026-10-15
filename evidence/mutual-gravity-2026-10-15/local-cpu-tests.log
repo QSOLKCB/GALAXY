@@ -1,0 +1,150 @@
+   Compiling galaxy-cpu-runtime v0.1.0 ($CHECKOUT/cpu-runtime)
+   Compiling galaxy-sampler v0.2.0 ($CHECKOUT/rust)
+   Compiling galaxy-retro-math v0.1.0 ($CHECKOUT/retro)
+warning: function `usage` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/legacy_runtime.inc.rs:126:4
+    |
+126 | fn usage() -> &'static str {
+    |    ^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: function `run_range` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/legacy_runtime.inc.rs:198:4
+    |
+198 | fn run_range(args: &[String]) -> Result<(), String> {
+    |    ^^^^^^^^^
+
+warning: function `run_bench` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/legacy_runtime.inc.rs:795:4
+    |
+795 | fn run_bench(config: Config) -> Result<(), String> {
+    |    ^^^^^^^^^
+
+warning: function `run_verify` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/legacy_runtime.inc.rs:857:4
+    |
+857 | fn run_verify(requested_workers: usize) -> Result<(), String> {
+    |    ^^^^^^^^^^
+
+warning: function `main` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/legacy_runtime.inc.rs:905:4
+    |
+905 | fn main() {
+    |    ^^^^
+
+warning: function `usage` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/worker_soa_probe.inc.rs:182:4
+    |
+182 | fn usage() -> &'static str {
+    |    ^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: function `run_bench` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/worker_soa_probe.inc.rs:666:4
+    |
+666 | fn run_bench(config: Config) -> Result<(), String> {
+    |    ^^^^^^^^^
+
+warning: function `help_requested` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/worker_soa_probe.inc.rs:776:4
+    |
+776 | fn help_requested(args: &[String]) -> bool {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `main` is never used
+   --> $TMPDIR/cargo-target/debug/build/galaxy-cpu-runtime-e471b60c3a1b7db0/out/worker_soa_probe.inc.rs:780:4
+    |
+780 | fn main() {
+    |    ^^^^
+
+warning: `galaxy-cpu-runtime` (bin "galaxy-cpu-oversubscription" test) generated 5 warnings
+warning: `galaxy-cpu-runtime` (bin "galaxy-cpu" test) generated 4 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.26s
+     Running unittests src/bin/galaxy_cpu_dispatch.rs ($TMPDIR/cargo-target/debug/deps/galaxy_cpu-62e6f14d82e319a9)
+
+running 34 tests
+test integrated_soa::pooled::auto::auto_tests::lifecycle_cost_is_amortized_together ... ok
+test integrated_soa::pooled::auto::auto_tests::calibration_preserves_requested_frame_depth ... ok
+test integrated_soa::pooled::auto::auto_tests::full_pool_teardown_can_block_persistent_promotion ... ok
+test integrated_soa::pooled::auto::auto_tests::projected_full_work_can_preserve_persistent_win ... ok
+test integrated_soa::pooled::auto::auto_tests::promotion_margin_keeps_near_ties_canonical ... ok
+test integrated_soa::pooled::auto::auto_tests::full_pool_startup_can_block_persistent_promotion ... ok
+test integrated_soa::pooled::auto::auto_tests::physical_first_fallback_is_reported_as_logical_execution ... ok
+test integrated_soa::pooled::auto::auto_tests::projection_scales_particle_frame_work ... ok
+test integrated_soa::pooled::auto::auto_tests::tile_faithful_calibration_can_stop_below_full_resident ... ok
+test integrated_soa::pooled::auto::auto_tests::tile_faithful_calibration_expands_for_large_worker_count ... ok
+test integrated_soa::pooled::auto::auto_tests::tile_shape_guard_rejects_collapsed_calibration_tile ... ok
+test integrated_soa::pooled::pooled_tests::cpu_list_parser_handles_ranges_and_singletons ... ok
+test integrated_soa::pooled::pooled_tests::first_touch_primes_full_capacity_and_preserves_reuse_shape ... ok
+test integrated_soa::pooled::pooled_tests::physical_first_caps_workers_when_topology_is_known ... ok
+test integrated_soa::pooled::pooled_tests::physical_first_falls_back_when_topology_is_unknown ... ok
+test integrated_soa::tests::batch_hash_matches_canonical_contribution ... ok
+test integrated_soa::tests::receipt_labels_end_to_end_scope ... ok
+test integrated_soa::tests::reference_layout_matches_canonical_particle_size ... ok
+test integrated_soa::tests::receipt_reports_actual_soa_capacity_and_zero_for_reference ... ok
+test integrated_soa::tests::soa_tile_capacity_matches_actual_worker_allocations ... ok
+test integrated_soa::tests::worker_partition_covers_population_exactly ... ok
+test legacy::tests::help_flags_are_recognized_as_control_flow ... ok
+test legacy::tests::logical_sampling_uses_the_full_u64_address_space ... ok
+test legacy::tests::receipt_includes_repeat_count_and_sampled_lut_metadata ... ok
+test legacy::tests::split_u64_addressing_distinguishes_u32_boundary ... ok
+test legacy::tests::worker_resolution_never_exceeds_capacity_or_work ... ok
+test legacy::tests::verify_parser_rejects_benchmark_options ... ok
+test legacy::tests::range_regeneration_matches_both_full_backends_and_rejects_invalid_geometry ... ok
+test integrated_soa::pooled::auto::auto_tests::streaming_oracle_matches_existing_reference ... ok
+test legacy::tests::sampled_lut_error_is_labeled_and_covers_known_probe ... ok
+test integrated_soa::tests::soa_checksum_is_worker_count_invariant ... ok
+test legacy::tests::scalar_and_parallel_checksums_match ... ok
+test legacy::tests::interleaved_backend_measurement_preserves_parity ... ok
+test integrated_soa::tests::soa_matches_reference_across_tiles_and_workers ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/bin/oversubscription_probe.rs ($TMPDIR/cargo-target/debug/deps/galaxy_cpu_oversubscription-e4b4e259f97245d6)
+
+running 10 tests
+test canonical::tests::help_flags_are_recognized_as_control_flow ... ok
+test canonical::tests::logical_sampling_uses_the_full_u64_address_space ... ok
+test canonical::tests::receipt_includes_repeat_count_and_sampled_lut_metadata ... ok
+test canonical::tests::split_u64_addressing_distinguishes_u32_boundary ... ok
+test canonical::tests::verify_parser_rejects_benchmark_options ... ok
+test canonical::tests::worker_resolution_never_exceeds_capacity_or_work ... ok
+test canonical::tests::interleaved_backend_measurement_preserves_parity ... ok
+test canonical::tests::scalar_and_parallel_checksums_match ... ok
+test canonical::tests::range_regeneration_matches_both_full_backends_and_rejects_invalid_geometry ... ok
+test canonical::tests::sampled_lut_error_is_labeled_and_covers_known_probe ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/bin/memory_wall_probe.rs ($TMPDIR/cargo-target/debug/deps/memory_wall_probe-975e9cd8dc54b405)
+
+running 4 tests
+test tests::fused_mode_removes_eight_scratch_bytes_per_particle ... ok
+test tests::fused_reduction_matches_materialized_reduction ... ok
+test tests::partition_covers_population ... ok
+test tests::compressed_luts_are_exact_and_smaller ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/bin/simd_probe.rs ($TMPDIR/cargo-target/debug/deps/simd_probe-43e882220b35d408)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/worker_soa_probe.rs ($TMPDIR/cargo-target/debug/deps/worker_soa_probe-5f0d3571972afd93)
+
+running 8 tests
+test tests::reference_layout_matches_canonical_particle_size ... ok
+test tests::receipt_labels_end_to_end_scope ... ok
+test tests::batch_hash_matches_canonical_contribution ... ok
+test tests::receipt_reports_actual_soa_capacity_and_zero_for_reference ... ok
+test tests::soa_tile_capacity_matches_actual_worker_allocations ... ok
+test tests::worker_partition_covers_population_exactly ... ok
+test tests::soa_checksum_is_worker_count_invariant ... ok
+test tests::soa_matches_reference_across_tiles_and_workers ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

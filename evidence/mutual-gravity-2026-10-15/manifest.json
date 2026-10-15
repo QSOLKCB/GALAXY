@@ -1,0 +1,15 @@
+{
+  "schema": "galaxy.mutual-gravity-manifest.v1",
+  "status": "passed",
+  "sourceSHA256": {
+    "barnes-hut.js": "2e16cda1377e3d62368aac30eb7fb717563239fa96e20fd1caae6650624136d8",
+    "mutual-gravity.js": "40f2c330c9cec9591deb7e4886094457123801f0c98a3f9f1ffc7c2414b4cdba",
+    "tests/mutual-gravity.mjs": "adb152ba8e8d244d224dc6feeed9815dd650d4edf76bf0a33bd8c4362474541d",
+    "scripts/bench-mutual-gravity.mjs": "a2593cbdd78cec290bd3fac695148a057da6af38d4d392f7c6fa53395f08c327",
+    "scripts/lib/mutual-gravity-evidence.mjs": "7fea1541fd7ed8328cf6b77f92147887a746ce1a281aeed9c8f885f171965086"
+  },
+  "files": {
+    "receipt.json": "c786882c7a7c9dbf110a27b47bc0b38b03533d3093917d6fb81b24ce2c9eb368",
+    "tests.log": "d6e9b9afa25b45e58c9d8a121e30c6bc47f8b3d86b7ee201809cf79fcecf0a01"
+  }
+}

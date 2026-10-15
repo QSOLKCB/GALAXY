@@ -1,0 +1,87 @@
+{
+  "schema": "galaxy.mutual-gravity-local-regression.v1",
+  "upstream_commit": "e051324b1263f20ebb88d0e585992c7c1838504a",
+  "execution": "CPU-only local cloud workspace; no hardware GPU runs",
+  "node": "v24.19.0",
+  "rustc": "1.85.0 (4d91de4e4 2025-02-17), existing toolchain; repository-pinned 1.85.1 is delegated to CI",
+  "passed": [
+    {
+      "command": "node tests/smoke.mjs",
+      "scope": "browser sampling, orbital invariants, Rust/Wasm parity, assets"
+    },
+    {
+      "command": "node tests/physics.mjs",
+      "scope": "195 pinned UFF predictions and model invariants"
+    },
+    {
+      "command": "node tests/app.mjs",
+      "scope": "browser application integration"
+    },
+    {
+      "command": "node tests/retro-math.mjs",
+      "scope": "23 shared deterministic vectors"
+    },
+    {
+      "command": "node tests/barnes-hut.mjs",
+      "scope": "unchanged independent browser reference"
+    },
+    {
+      "command": "node tests/nbody-view.mjs",
+      "scope": "existing view scheduling and isolation"
+    },
+    {
+      "command": "node scripts/build-site.mjs",
+      "scope": "static bundle complete; wasm binary reconstructed from verified shipped base64 and checked against upstream Git blob"
+    },
+    {
+      "command": "python -m unittest discover -s tests -p 'test_*.py'",
+      "tests": 77
+    },
+    {
+      "command": "python runtime/tests/test_runner.py",
+      "tests": 25
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --locked --offline",
+      "tests": 6
+    },
+    {
+      "command": "cargo test --manifest-path retro/Cargo.toml --locked --offline",
+      "tests": 4
+    },
+    {
+      "command": "cargo run --manifest-path retro/Cargo.toml --example retro_vectors --locked --offline",
+      "scope": "23 shared vectors"
+    },
+    {
+      "command": "cargo test --manifest-path nbody/Cargo.toml --locked --offline",
+      "tests": 18
+    },
+    {
+      "command": "cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify",
+      "scope": "native recursive reference"
+    },
+    {
+      "command": "cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify-flat",
+      "scope": "native flat reference"
+    },
+    {
+      "command": "cargo test --manifest-path cpu-runtime/Cargo.toml --locked --offline",
+      "tests": 56
+    }
+  ],
+  "initial_environment_failures": "First Python run had 2 failures because cargo was absent from PATH and 1 error because connector-materialized source had no .git. Existing cargo was added to PATH and local Git metadata initialized solely for infrastructure tests; all 77 then passed. Local metadata commit is not an upstream/source provenance claim.",
+  "not_run_locally": [
+    "pinned Rust 1.85.1 WebAssembly rebuild (required GitHub CI)",
+    "GPU hardware/driver execution",
+    "cross-platform runner matrix (GitHub CI)"
+  ],
+  "solver_sha256": "40f2c330c9cec9591deb7e4886094457123801f0c98a3f9f1ffc7c2414b4cdba",
+  "source_preservation": "Every materialized existing text blob matches its upstream Git blob except README.md and .github/workflows/ci.yml. Historical source, tests and fixtures unchanged.",
+  "log_path_normalization": "Workspace and temporary root prefixes replaced by $CHECKOUT and $TMPDIR; test content otherwise preserved.",
+  "logs": {
+    "local-cpu-tests.log": "b76769b32551228b2a10c92842b9a636dea6cedea941ca5fbe31647020d2880a",
+    "local-python-tests.log": "fab4d3612182d3257372a56ce1ee8d4b5a1d4ef7edc87f5dea58f15c31baba26",
+    "local-runtime-runner-tests.log": "f69a4ce03cee1b00c3be5a2e9d75788251659661efc839c0df19735afd9c6d87"
+  }
+}

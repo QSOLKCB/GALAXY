@@ -1,0 +1,9 @@
+................................BH #2D hardware sweep: BH #2D hardware run failed at 512 particles; see $TMPDIR/tmp7g0zqtte/evidence/n000512/run.log
+...................BH #2D hardware sweep: missing receipt after 512-particle run
+BH #2D hardware sweep: receipt is not valid JSON: $TMPDIR/tmpnsbvhou9/evidence/n000512/receipt.json
+BH #2D hardware sweep: BH #2D receipt is not complete
+..........................
+----------------------------------------------------------------------
+Ran 77 tests in 1.171s
+
+OK
