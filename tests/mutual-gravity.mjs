@@ -216,6 +216,17 @@ for (const [i, expected] of [[0, 1e-140], [2, 2e-210], [5, 6e-280]])
 assert.throws(() => MUTUAL.pairedExpansion(unitCell, { ...unitCell, comX: 1e108 }), /supported f64 range/);
 assert.throws(() => MUTUAL.accelerations(farBodies, { G: 1e-200, theta: 0 }), /supported f64 range/);
 
+// Nonzero directional terms must not disappear before a large mass can
+// recover a representable acceleration. Unsupported anisotropy fails closed.
+const anisotropic = [{ x: 0, y: 0, mass: 1e100 }, { x: 1e-100, y: 1e100, mass: 1e100 }];
+assert.throws(() => MUTUAL.accelerations(anisotropic, { theta: 0 }), /supported f64 range/);
+assert.throws(() => MUTUAL.pairedExpansion({ ...unitCell, mass: 1e100 },
+  { ...unitCell, mass: 1e100, comX: 1e-100, comY: 1e100 }), /supported f64 range/);
+assert.throws(() => MUTUAL.accelerations([{ x: 0, y: 0, mass: 1 },
+  { x: 1e-300, y: 1e100, mass: 1 }], { theta: 0 }), /supported f64 range/);
+assert.throws(() => MUTUAL.accelerations([{ x: 0, y: 0, mass: 1 },
+  { x: 1e-200, y: 0, mass: 1 }]), /supported f64 range/);
+
 const initial = fixture('collision', 64, 17), dt = .001, steps = 16;
 const fine = trajectory(initial, 'mutual', OPTIONS, dt / 2, steps * 2);
 const coarse = trajectory(initial, 'mutual', OPTIONS, dt, steps);

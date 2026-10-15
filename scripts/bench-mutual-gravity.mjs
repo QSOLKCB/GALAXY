@@ -161,13 +161,13 @@ export function verify(output, { quiet = false } = {}) {
 }
 
 function main() {
-let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r2'), verification = false;
+let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r3'), verification = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === '--output' && process.argv[i + 1]) output = path.resolve(process.argv[++i]);
   else if (arg === '--verify' && process.argv[i + 1]) { output = path.resolve(process.argv[++i]); verification = true; }
   else if (arg === '--help') {
-    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r2 (must not exist)');
+    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r3 (must not exist)');
     process.exit(0);
   } else throw new Error(`Unknown or incomplete argument: ${arg}`);
 }

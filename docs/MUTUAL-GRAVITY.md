@@ -131,7 +131,13 @@ inverse cube. Accepted expansions additionally require representable positive
 second/third derivative scales; `pairedExpansion` at that separation deliberately
 throws because its required higher coefficients cannot be represented. This lane
 fails closed outside that coefficient range rather than returning an all-zero
-polynomial. Bucket is a positive
+polynomial. Nonzero directional products, mass-weighted force/coefficient products,
+source-moment contractions, weighted centre offsets and central-moment products
+also fail closed if they overflow or become zero through underflow. This is a
+conservative representability boundary, not an arbitrary-scale arithmetic library:
+for example, a tiny x displacement combined with a huge y displacement and source
+mass is rejected even if a rearranged high-range calculation could recover the final
+x force. Rescale/nondimensionalize such inputs. Bucket is a positive
 safe integer; maximum depth is an integer from 1 to 64. Coincident or terminal cells
 are evaluated directly, and may cost quadratic work. No universal force-error bound
 is promised by theta. A tree partition may change under rotation, so approximate
@@ -151,7 +157,7 @@ Run from the repository root:
 ```
 node tests/mutual-gravity.mjs
 node tests/mutual-gravity-evidence.mjs
-node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r2
+node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r3
 # New captures refuse to overwrite any existing evidence directory:
 node scripts/bench-mutual-gravity.mjs --output runs/my-mutual-capture
 ```

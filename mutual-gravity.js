@@ -33,31 +33,47 @@
     return value;
   }
 
+  function product(a, b) {
+    const value = a * b;
+    if (!Number.isFinite(value) || (value === 0 && a !== 0 && b !== 0))
+      throw new RangeError("kernel product is outside the supported f64 range; nondimensionalize the state");
+    return value;
+  }
+  function direction(value, radius) {
+    const result = value / radius;
+    if (result === 0 && value !== 0)
+      throw new RangeError("normalized displacement is outside the supported f64 range; nondimensionalize the state");
+    return result;
+  }
+
   // Coefficient order: ax, ay, Jxx, Jxy, Jyy, Kxxx, Kxxy, Kxyy, Kyyy.
   // a(u) = a0 + J u + (1/2) K:uu. Both cells share the SAME derivatives.
   function expansion(a, b, G, epsilon) {
     const x = a.comX - b.comX, y = a.comY - b.comY;
     const s2 = finite(x * x + y * y + epsilon * epsilon, "pair distance squared");
-    const radius = Math.sqrt(s2), ux = x / radius, uy = y / radius;
+    const radius = Math.sqrt(s2), ux = direction(x, radius), uy = direction(y, radius);
     // Normalize displacement before applying inverse powers: forming 1/r^3
     // first can underflow even when the acceleration 1/r^2 is representable.
     const forceScale = positiveScale(G / s2, "force kernel");
     const hessianScale = positiveScale(forceScale / radius, "second derivative");
     const thirdScale = positiveScale(hessianScale / radius, "third derivative");
-    const hx = -forceScale * ux, hy = -forceScale * uy;
-    const xx = hessianScale * (3 * ux * ux - 1), xy = hessianScale * 3 * ux * uy;
-    const yy = hessianScale * (3 * uy * uy - 1);
-    const xxx = thirdScale * (9 * ux - 15 * ux * ux * ux);
-    const xxy = thirdScale * (3 * uy - 15 * ux * ux * uy);
-    const xyy = thirdScale * (3 * ux - 15 * ux * uy * uy);
-    const yyy = thirdScale * (9 * uy - 15 * uy * uy * uy);
+    // Fail closed on lost directional/moment products as well as radial scales:
+    // a later large source mass could otherwise recover an already lost term.
+    const ux2 = product(ux, ux), uy2 = product(uy, uy), uxuy = product(ux, uy);
+    const hx = product(-forceScale, ux), hy = product(-forceScale, uy);
+    const xx = product(hessianScale, 3 * ux2 - 1), xy = product(hessianScale, 3 * uxuy);
+    const yy = product(hessianScale, 3 * uy2 - 1);
+    const xxx = product(thirdScale, 9 * ux - 15 * product(ux2, ux));
+    const xxy = product(thirdScale, 3 * uy - 15 * product(ux2, uy));
+    const xyy = product(thirdScale, 3 * ux - 15 * product(ux, uy2));
+    const yyy = product(thirdScale, 9 * uy - 15 * product(uy2, uy));
     function coefficients(source, sign) {
       const m = source.mass;
       return new Float64Array([
-        sign * m * (hx + 0.5 * (xxx * source.qxx + 2 * xxy * source.qxy + xyy * source.qyy)),
-        sign * m * (hy + 0.5 * (xxy * source.qxx + 2 * xyy * source.qxy + yyy * source.qyy)),
-        m * xx, m * xy, m * yy,
-        sign * m * xxx, sign * m * xxy, sign * m * xyy, sign * m * yyy
+        product(sign * m, hx + 0.5 * (product(xxx, source.qxx) + 2 * product(xxy, source.qxy) + product(xyy, source.qyy))),
+        product(sign * m, hy + 0.5 * (product(xxy, source.qxx) + 2 * product(xyy, source.qxy) + product(yyy, source.qyy))),
+        product(m, xx), product(m, xy), product(m, yy),
+        product(sign * m, xxx), product(sign * m, xxy), product(sign * m, xyy), product(sign * m, yyy)
       ]);
     }
     return { a: coefficients(b, 1), b: coefficients(a, -1) };
@@ -89,14 +105,16 @@
       let mass = 0, wx = 0, wy = 0;
       for (const i of indices) {
         const b = bodies[i]; mass += b.mass;
-        wx += b.mass * (b.x - anchor.x); wy += b.mass * (b.y - anchor.y);
+        wx += product(b.mass, b.x - anchor.x); wy += product(b.mass, b.y - anchor.y);
       }
       finite(mass, "cell mass");
-      const comX = finite(anchor.x + wx / mass, "cell centre x"), comY = finite(anchor.y + wy / mass, "cell centre y");
+      const comX = finite(anchor.x + direction(wx, mass), "cell centre x");
+      const comY = finite(anchor.y + direction(wy, mass), "cell centre y");
       let qxx = 0, qxy = 0, qyy = 0, radius = 0;
       for (const i of indices) {
-        const b = bodies[i], x = b.x - comX, y = b.y - comY, w = b.mass / mass;
-        qxx += w * x * x; qxy += w * x * y; qyy += w * y * y;
+        const b = bodies[i], x = b.x - comX, y = b.y - comY;
+        const w = positiveScale(b.mass / mass, "normalized cell mass");
+        qxx += product(w, product(x, x)); qxy += product(w, product(x, y)); qyy += product(w, product(y, y));
         radius = Math.max(radius, Math.hypot(x, y));
       }
       for (const x of [qxx, qxy, qyy, radius]) finite(x, "cell moment/radius");
@@ -142,9 +160,9 @@
       const a = bodies[i], b = bodies[j], x = b.x - a.x, y = b.y - a.y;
       const s2 = finite(x * x + y * y + eps2, "direct distance squared");
       const radius = Math.sqrt(s2), scale = positiveScale(o.G / s2, "direct force kernel");
-      const fx = (x / radius) * scale, fy = (y / radius) * scale;
-      values[i].ax += b.mass * fx; values[i].ay += b.mass * fy;
-      values[j].ax -= a.mass * fx; values[j].ay -= a.mass * fy;
+      const fx = product(direction(x, radius), scale), fy = product(direction(y, radius), scale);
+      values[i].ax += product(b.mass, fx); values[i].ay += product(b.mass, fy);
+      values[j].ax -= product(a.mass, fx); values[j].ay -= product(a.mass, fy);
       stats.direct++;
     }
     function interact(a, b) {
