@@ -47,6 +47,15 @@
     return result;
   }
 
+  function momentSum(a, b, c) {
+    const sum = finite(a + b + c, "moment contraction");
+    const magnitude = Math.abs(a) + Math.abs(b) + Math.abs(c);
+    if (Math.min(a, b, c) < 0 && Math.max(a, b, c) > 0 &&
+        Math.abs(sum) <= 32 * Number.EPSILON * magnitude)
+      throw new RangeError("ill-conditioned moment contraction; nondimensionalize or use direct mode");
+    return sum;
+  }
+
   // Coefficient order: ax, ay, Jxx, Jxy, Jyy, Kxxx, Kxxy, Kxyy, Kyyy.
   // a(u) = a0 + J u + (1/2) K:uu. Both cells share the SAME derivatives.
   function expansion(a, b, G, epsilon) {
@@ -70,11 +79,17 @@
     const yyy = product(thirdScale, 9 * uy - 15 * product(uy2, uy));
     function coefficients(source, sign) {
       const m = source.mass;
+      // Scale each derivative by source mass before moment contraction. Opposing
+      // small normal kernels can otherwise lose a recoverable residual in a
+      // subnormal sum before a later large mass is applied.
+      const mx = product(sign * m, hx), my = product(sign * m, hy);
+      const mxxx = product(sign * m, xxx), mxxy = product(sign * m, xxy);
+      const mxyy = product(sign * m, xyy), myyy = product(sign * m, yyy);
       return new Float64Array([
-        product(sign * m, hx + product(0.5, product(xxx, source.qxx) + 2 * product(xxy, source.qxy) + product(xyy, source.qyy))),
-        product(sign * m, hy + product(0.5, product(xxy, source.qxx) + 2 * product(xyy, source.qxy) + product(yyy, source.qyy))),
+        mx + product(0.5, momentSum(product(mxxx, source.qxx), 2 * product(mxxy, source.qxy), product(mxyy, source.qyy))),
+        my + product(0.5, momentSum(product(mxxy, source.qxx), 2 * product(mxyy, source.qxy), product(myyy, source.qyy))),
         product(m, xx), product(m, xy), product(m, yy),
-        product(sign * m, xxx), product(sign * m, xxy), product(sign * m, xyy), product(sign * m, yyy)
+        mxxx, mxxy, mxyy, myyy
       ]);
     }
     return { a: coefficients(b, 1), b: coefficients(a, -1) };

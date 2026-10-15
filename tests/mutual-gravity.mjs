@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { BH, MUTUAL, ROOT, OPTIONS, BUDGET, clone, errorMetrics, forceDiagnostics,
-  fixture, trajectory, stateDifference } from '../scripts/lib/mutual-gravity-evidence.mjs';
+  fixture, trajectory, stateDifference, loadedSource } from '../scripts/lib/mutual-gravity-evidence.mjs';
 
 const summary = { cases: [], pairedPotential: null, trajectory: null };
 function near(actual, expected, relative = 2e-12, absolute = 2e-13, label = '') {
@@ -42,7 +42,7 @@ function checkState(name, bodies, { accepted = false, ...options } = {}) {
 }
 
 const browserContext = vm.createContext({});
-vm.runInContext(fs.readFileSync(new URL('mutual-gravity.js', ROOT), 'utf8'), browserContext);
+vm.runInContext(loadedSource('mutual-gravity.js'), browserContext);
 assert.ok(Object.isFrozen(MUTUAL));
 assert.equal(browserContext.GalaxyMutualGravity.DEFAULTS.theta, OPTIONS.theta);
 assert.deepEqual(JSON.parse(JSON.stringify(browserContext.GalaxyMutualGravity.accelerations(fixture('disc', 24, 17)).values)),
@@ -263,5 +263,10 @@ assert.throws(() => MUTUAL.pairedExpansion(
   { mass: 1e308, comX: 1, comY: 0, qxx: 5e-17, qxy: 0, qyy: 0.6672666666666666 },
   1e-308, .03), RangeError);
 
+// Reject near-cancelling contractions instead of silently losing amplified residuals.
+assert.throws(() => MUTUAL.pairedExpansion(
+  { mass: 1, comX: 0, comY: 0, qxx: 0, qxy: 0, qyy: 0 },
+  { mass: 1e307, comX: 1, comY: 0, qxx: 1, qxy: 0, qyy: 1.9955040463582787 },
+  1e-307, .03), /ill-conditioned moment contraction/);
 console.log('Mutual-gravity CPU/f64 checks passed');
 console.log(JSON.stringify(summary, null, 2));

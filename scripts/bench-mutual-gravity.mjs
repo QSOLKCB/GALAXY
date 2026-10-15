@@ -8,17 +8,35 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual, TextDecoder } from 'node:util';
-import { ROOT, BH, MUTUAL, OPTIONS, BUDGET, sha256, errorMetrics, forceDiagnostics,
-  fixture, trajectory, stateDifference, quantile, LOADED_SOURCE_SHA256 } from './lib/mutual-gravity-evidence.mjs';
-
-const root = fileURLToPath(ROOT);
+// The file entry is a bootstrap only. Snapshot EVERY project executable before
+// evaluating any implementation, then replay this harness and its helper from
+// those exact UTF-8 bytes as native-realm ESM data URLs. The Node runtime and
+// this small bootstrap are the trust root; no previously imported file module
+// or CommonJS cache can supply benchmark functions.
 const SOURCE_FILES = ['barnes-hut.js', 'mutual-gravity.js', 'tests/mutual-gravity.mjs',
   'scripts/bench-mutual-gravity.mjs', 'scripts/lib/mutual-gravity-evidence.mjs',
   'tests/mutual-gravity-evidence.mjs'];
+function moduleURL(source, name) { return 'data:text/javascript;base64,' + Buffer.from(source + '\n//# sourceURL=retained-' + name + '\n').toString('base64'); }
+function utf8(bytes) { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+const replay = import.meta.url.startsWith('file:') ? await (async () => {
+  const rootURL = new URL('../', import.meta.url);
+  const bytes = Object.fromEntries(SOURCE_FILES.map(name => [name, fs.readFileSync(new URL(name, rootURL))]));
+  const base64 = Object.fromEntries(Object.entries(bytes).map(([name, value]) => [name, value.toString('base64')]));
+  const prefix = `const __EVIDENCE_ROOT = ${JSON.stringify(rootURL.href)};\nconst __EVIDENCE_SOURCE_BASE64 = ${JSON.stringify(base64)};\n`;
+  const helperURL = moduleURL(prefix + utf8(bytes['scripts/lib/mutual-gravity-evidence.mjs']), 'mutual-gravity-evidence.mjs');
+  const harnessURL = moduleURL(prefix + `const __EVIDENCE_HELPER_URL = ${JSON.stringify(helperURL)};\n` +
+    utf8(bytes['scripts/bench-mutual-gravity.mjs']).replace(/^#![^\n]*\n/, ''), 'bench-mutual-gravity.mjs');
+  return import(harnessURL);
+})() : null;
+export const EVIDENCE = replay ? replay.EVIDENCE : await import(__EVIDENCE_HELPER_URL);
+const { ROOT, BH, MUTUAL, OPTIONS, BUDGET, sha256, errorMetrics, forceDiagnostics,
+  fixture, trajectory, stateDifference, quantile, LOADED_SOURCE_SHA256, VERIFIER_COMPLETION } = EVIDENCE;
+const root = fileURLToPath(ROOT);
 export function sourceHashes() {
+  if (replay) return replay.sourceHashes();
   const hashes = Object.fromEntries(SOURCE_FILES.map(p => [p, sha256(fs.readFileSync(path.join(root, p)))]));
   for (const [name, loadedHash] of Object.entries(LOADED_SOURCE_SHA256))
-    assert(hashes[name] === loadedHash, `Loaded solver source differs from capture source: ${name}`);
+    assert(hashes[name] === loadedHash, `Loaded executable source differs from capture source: ${name}`);
   return hashes;
 }
 function sameHashes(a, b) {
@@ -34,6 +52,7 @@ function strictJSON(data) {
 // JSON.parse alone silently keeps the last duplicate key. Scan the validated
 // JSON token stream and compare decoded keys in each object before trusting it.
 export function parseArtifact(bytes, label) {
+  if (replay) return replay.parseArtifact(bytes, label);
   const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   const result = JSON.parse(text);
   let at = 0;
@@ -139,6 +158,67 @@ function selectCalibration(candidates, target) {
     tailMatchedWithin25Percent: p99RatioBHToMutual >= .8 && p99RatioBHToMutual <= 1.25,
     candidates };
 }
+const scientificCache = new Map();
+function freezeDeep(value) {
+  if (value && typeof value === 'object') { for (const item of Object.values(value)) freezeDeep(item); Object.freeze(value); }
+  return value;
+}
+export function recomputeForceCase(preset, count, seed) {
+  if (replay) return replay.recomputeForceCase(preset, count, seed);
+  const key = JSON.stringify([preset, count, seed]);
+  if (!scientificCache.has(key)) {
+    const bodies = fixture(preset, count, seed), exact = BH.directAccelerations(bodies, OPTIONS);
+    const mutual = describe(MUTUAL.accelerations(bodies, OPTIONS), bodies, exact);
+    const calibration = calibrateBH(bodies, exact, mutual.error);
+    scientificCache.set(key, freezeDeep({ mutual, direct: { force: forceDiagnostics(bodies, exact) }, calibration,
+      barnesHutTheta05: describe(BH.accelerations(bodies, { ...OPTIONS, theta: .5 }), bodies, exact),
+      barnesHutMatched: describe(BH.accelerations(bodies, { ...OPTIONS, theta: calibration.theta }), bodies, exact) }));
+  }
+  return structuredClone(scientificCache.get(key));
+}
+function validateScientificCase(row, smallN = false) {
+  const expected = recomputeForceCase(row.preset, row.count, row.seed);
+  for (const key of smallN ? ['mutual', 'calibration', 'barnesHutMatched'] : Object.keys(expected))
+    assert(isDeepStrictEqual(row[key], expected[key]), `${row.id}: recomputed scientific record differs: ${key}`);
+}
+const trajectoryCache = new Map();
+export function recomputeTrajectoryCase(preset, count, seed) {
+  if (replay) return replay.recomputeTrajectoryCase(preset, count, seed);
+  const key = JSON.stringify([preset, count, seed]);
+  if (!trajectoryCache.has(key)) {
+    const bodies = fixture(preset, count, seed);
+    const barnesHutTheta = recomputeForceCase(preset, count, seed).calibration.theta;
+    const runs = {}, diagnostics = {};
+    for (const method of ['direct', 'mutual', 'barnes-hut']) {
+      const options = { ...OPTIONS, theta: method === 'barnes-hut' ? barnesHutTheta : OPTIONS.theta };
+      runs[method] = { coarse: trajectory(bodies, method, options, .001, 64), fine: trajectory(bodies, method, options, .0005, 128) };
+    }
+    for (const method of ['direct', 'mutual', 'barnes-hut']) diagnostics[method] = {
+      coarse: runs[method].coarse.diagnostic, fine: runs[method].fine.diagnostic,
+      timestepControl: stateDifference(runs[method].coarse.bodies, runs[method].fine.bodies),
+      versusDirectSameDt: stateDifference(runs[method].coarse.bodies, runs.direct.coarse.bodies),
+      versusDirectHalfDt: stateDifference(runs[method].fine.bodies, runs.direct.fine.bodies)
+    };
+    trajectoryCache.set(key, freezeDeep({ barnesHutTheta, diagnostics }));
+  }
+  return structuredClone(trajectoryCache.get(key));
+}
+function validateTimings(row) {
+  const timings = row.wholeSolveTimings;
+  assert(timings && isDeepStrictEqual(Object.keys(timings).sort(), ['barnesHutMatched', 'direct', 'mutual']), `${row.id}: invalid timing methods`);
+  for (const timing of Object.values(timings)) {
+    assert(timing.warmups === 2 && timing.repeats === 9 && Array.isArray(timing.samplesMs) && timing.samplesMs.length === 9 &&
+      timing.samplesMs.every(nonnegativeFinite), `${row.id}: invalid timing samples`);
+    const sorted = [...timing.samplesMs].sort((a, b) => a - b);
+    assert(timing.medianMs === quantile(sorted, .5) && timing.p90Ms === quantile(sorted, .9), `${row.id}: timing summary differs from raw samples`);
+    assert(Array.isArray(timing.memoryObservations) && timing.memoryObservations.length === 9, `${row.id}: invalid memory observations`);
+    for (const observation of timing.memoryObservations) {
+      assert(isDeepStrictEqual(Object.keys(observation).sort(), ['arrayBuffersDelta', 'heapUsedAfter', 'heapUsedBefore', 'heapUsedDelta', 'rssDelta']) &&
+        Object.values(observation).every(Number.isSafeInteger) && observation.heapUsedBefore >= 0 && observation.heapUsedAfter >= 0 &&
+        observation.heapUsedDelta === observation.heapUsedAfter - observation.heapUsedBefore, `${row.id}: invalid memory observation`);
+    }
+  }
+}
 function expectedWorkloads() {
   const forceCases = [], smallNCases = [], trajectoryCases = [];
   const tuple = (preset, count, seed) => ({ id: `${preset}-${count}-${seed}`, preset, count, seed });
@@ -165,6 +245,7 @@ function verifyWorkloadMatrix(rows, expected, name) {
   assert(seen.size === wanted.size, `${name}: missing workload identity`);
 }
 export function summarizeCases(forceCases, trajectoryCases) {
+  if (replay) return replay.summarizeCases(forceCases, trajectoryCases);
   const baseline = forceCases.filter(row => row.count === 128 || row.count === 512);
   return {
     forceCases: forceCases.length, trajectoryCases: trajectoryCases.length,
@@ -210,7 +291,7 @@ function validateSummaryInputs(row) {
 }
 const TEST_COMMANDS = Object.freeze([['node', 'tests/mutual-gravity.mjs'], ['node', 'tests/mutual-gravity-evidence.mjs']].map(Object.freeze));
 function commandOutcome(run) {
-  return { command: run.command, exitCode: run.exitCode, signal: run.signal, error: run.error,
+  return { command: run.command, execution: run.execution, exitCode: run.exitCode, signal: run.signal, error: run.error,
     stdoutSHA256: sha256(run.stdout), stderrSHA256: sha256(run.stderr) };
 }
 function validateTestEvidence(tests, log) {
@@ -220,7 +301,7 @@ function validateTestEvidence(tests, log) {
     'Malformed structured test log');
   for (let i = 0; i < log.runs.length; i++) {
     const run = log.runs[i];
-    assert(isDeepStrictEqual(run.command, TEST_COMMANDS[i]) && run.exitCode === 0 && run.signal === null && run.error === null &&
+    assert(isDeepStrictEqual(run.command, TEST_COMMANDS[i]) && run.execution === 'retained-source-esm-stdin-v1' && run.exitCode === 0 && run.signal === null && run.error === null &&
       typeof run.stdout === 'string' && typeof run.stderr === 'string', 'Test command did not complete successfully');
     if (i === 0) {
       const marker = 'Mutual-gravity CPU/f64 checks passed\n';
@@ -228,12 +309,13 @@ function validateTestEvidence(tests, log) {
       const summary = parseArtifact(Buffer.from(run.stdout.slice(marker.length)), 'numerical test output');
       assert(summary && Array.isArray(summary.cases) && summary.cases.length >= 27 && summary.pairedPotential && summary.trajectory,
         'Numerical test output is incomplete');
-    } else assert(/^Mutual-gravity evidence verifier checks passed \([1-9][0-9]* checks; synthetic fixtures only\)\n$/.test(run.stdout),
+    } else assert(run.stdout === VERIFIER_COMPLETION,
       'Verifier test log lacks its completion marker');
   }
   assert(isDeepStrictEqual(tests.outcomes, log.runs.map(commandOutcome)), 'Test outcomes disagree with structured log');
 }
 export function verify(output, { quiet = false } = {}) {
+  if (replay) return replay.verify(output, { quiet });
   const manifestBytes = fs.readFileSync(path.join(output, 'manifest.json'));
   const manifest = parseArtifact(manifestBytes, 'manifest.json');
   assert(manifest.schema === 'galaxy.mutual-gravity-manifest.v1', 'Wrong manifest schema');
@@ -279,17 +361,41 @@ export function verify(output, { quiet = false } = {}) {
   assert(isDeepStrictEqual(receipt.summary, summarizeCases(receipt.forceCases, receipt.trajectoryCases)),
     'Receipt summary does not exactly match validated cases');
   validateTestEvidence(receipt.tests, testLog);
+  for (const row of receipt.forceCases) { validateScientificCase(row); validateTimings(row); }
+  for (const row of receipt.smallNCases) { validateScientificCase(row, true); validateTimings(row); }
+  for (const row of receipt.trajectoryCases) {
+    const expected = recomputeTrajectoryCase(row.preset, row.count, row.seed);
+    assert(isDeepStrictEqual({ barnesHutTheta: row.barnesHutTheta, diagnostics: row.diagnostics }, expected),
+      `${row.id}: recomputed trajectory record differs`);
+  }
+  sourceHashes();
   if (!quiet) console.log(`Verified source hashes, artifact hashes, and exact workload identities: ${output}`);
 }
 
-function main() {
-let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r5'), verification = false;
+export function runRetainedTest(index) {
+  if (replay) return replay.runRetainedTest(index);
+  assert(Number.isInteger(index) && index >= 0 && index < TEST_COMMANDS.length, 'Unknown retained test command');
+  sourceHashes();
+  const command = TEST_COMMANDS[index];
+    const testSource = utf8(Buffer.from(__EVIDENCE_SOURCE_BASE64[command[1]], 'base64'))
+      .replaceAll("'../scripts/lib/mutual-gravity-evidence.mjs'", JSON.stringify(__EVIDENCE_HELPER_URL))
+      .replaceAll("'../scripts/bench-mutual-gravity.mjs'", JSON.stringify(import.meta.url));
+    const run = spawnSync(process.execPath, ['--input-type=module'], { cwd: root, encoding: 'utf8', input: testSource,
+      maxBuffer: 8 * 1024 * 1024, timeout: 120000 });
+    sourceHashes();
+    return { command, execution: 'retained-source-esm-stdin-v1', exitCode: run.status, signal: run.signal ?? null, error: run.error ? String(run.error) : null,
+      stdout: run.stdout || '', stderr: run.stderr || '' };
+}
+
+export function main() {
+if (replay) return replay.main();
+let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r6'), verification = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === '--output' && process.argv[i + 1]) output = path.resolve(process.argv[++i]);
   else if (arg === '--verify' && process.argv[i + 1]) { output = path.resolve(process.argv[++i]); verification = true; }
   else if (arg === '--help') {
-    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r5 (must not exist)');
+    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r6 (must not exist)');
     process.exit(0);
   } else throw new Error(`Unknown or incomplete argument: ${arg}`);
 }
@@ -298,12 +404,7 @@ if (fs.existsSync(output)) throw new Error(`Refusing to overwrite existing evide
 fs.mkdirSync(path.dirname(output), { recursive: true }); fs.mkdirSync(output);
 const sourceSHA256 = sourceHashes(), startedAt = new Date().toISOString();
 try {
-  const testRuns = TEST_COMMANDS.map(command => {
-    const run = spawnSync(process.execPath, command.slice(1), { cwd: root, encoding: 'utf8',
-      maxBuffer: 8 * 1024 * 1024, timeout: 120000 });
-    return { command, exitCode: run.status, signal: run.signal ?? null, error: run.error ? String(run.error) : null,
-      stdout: run.stdout || '', stderr: run.stderr || '' };
-  });
+  const testRuns = TEST_COMMANDS.map((_, index) => runRetainedTest(index));
   writeNew(output, 'tests.log', strictJSON({ schema: 'galaxy.mutual-gravity-test-log.v1', runs: testRuns }));
   for (const run of testRuns)
     assert(run.exitCode === 0 && run.error === null && run.signal === null, `${run.command.join(' ')} failed: ${run.error || run.exitCode}`);
@@ -338,32 +439,8 @@ try {
   const trajectoryCases = [];
   for (const seed of [17, 303, 991]) for (const preset of ['disc', 'collision']) {
     const id = `${preset}-128-${seed}`, bodies = fixture(preset, 128, seed);
-    const bhTheta = forceCases.find(row => row.id === id).calibration.theta;
-    const runs = {};
-    for (const method of ['direct', 'mutual', 'barnes-hut']) {
-      const options = { ...OPTIONS, theta: method === 'barnes-hut' ? bhTheta : OPTIONS.theta };
-      runs[method] = {
-        coarse: trajectory(bodies, method, options, .001, 64),
-        fine: trajectory(bodies, method, options, .0005, 128)
-      };
-    }
-    const diagnostics = {};
-    for (const method of ['direct', 'mutual', 'barnes-hut']) {
-      diagnostics[method] = {
-        coarse: runs[method].coarse.diagnostic, fine: runs[method].fine.diagnostic,
-        timestepControl: stateDifference(runs[method].coarse.bodies, runs[method].fine.bodies),
-        versusDirectSameDt: stateDifference(runs[method].coarse.bodies, runs.direct.coarse.bodies),
-        versusDirectHalfDt: stateDifference(runs[method].fine.bodies, runs.direct.fine.bodies)
-      };
-    }
-    for (const resolution of ['coarse', 'fine']) {
-      assert(runs.mutual[resolution].diagnostic.maxNormalizedNetForce < BUDGET.normalizedNetForce,
-        `${id}: trajectory net force exceeded tolerance`);
-      assert(runs.mutual[resolution].diagnostic.maxMomentumDrift < 2e-12, `${id}: trajectory momentum drift`);
-      assert(runs.mutual[resolution].diagnostic.maxCOMBallisticDrift < 2e-12, `${id}: trajectory COM drift`);
-    }
-    trajectoryCases.push({ id, count: 128, seed, preset, initialStateSHA256: sha256(JSON.stringify(bodies)),
-      barnesHutTheta: bhTheta, diagnostics });
+    const computed = recomputeTrajectoryCase(preset, 128, seed);
+    trajectoryCases.push({ id, count: 128, seed, preset, initialStateSHA256: sha256(JSON.stringify(bodies)), ...computed });
     console.error(`${id}: KDK dt and dt/2 trajectory diagnostics complete`);
   }
   sameHashes(sourceSHA256, sourceHashes());
@@ -382,6 +459,7 @@ try {
       forceWorkloads: '12 seeded disc/collision states at N128/512 plus two bounded N2048 states; full independent symmetric direct forces for every body.',
       accuracy: 'Per-body relative errors use max(|direct acceleration|, 1e-30); p50/p90/p95/p99 use linear interpolation. The inherited browser BH gates are RMS < 0.03 and max < 0.25.',
       balance: 'Normalized internal force is |sum m*a| / max(sum m*|a|,1e-30). No mean-force subtraction or post-hoc balancing.',
+      verification: 'Recomputes all force/error/balance/tree/stat records, all 41 BH calibration candidates per force/small-N state, and full six-state KDK diagnostics from source-bound deterministic fixtures. Checks timing summaries against raw samples; timings, memory samples, and captured test output remain unsigned observational evidence.',
       matching: 'BH theta grid 0:0.025:1; choose closest achieved RMS among inherited-budget-passing candidates. RMS match means BH/mutual ratio in [0.8,1.25]. p99 and maximum are separately reported; matching is per state, not a portable theta equivalence.',
       timing: 'Both implementations are compiled from retained source-hashed byte buffers in the same native Node realm, bypassing the CommonJS cache (no asymmetric vm context). Two warmup solves and nine measured solves, alternating method order. Timed whole calls include validation, allocations, fresh tree construction, moments, traversal, and propagation. Diagnostics, direct oracle comparison, and calibration are outside the timed call. No forced GC; JIT/GC/scheduling noise remains. Raw wall times only.',
       integration: 'Shared-step kick-drift-kick with a fresh force state after every drift and cached boundary acceleration: steps+1 solves. Six N128 states, duration 0.064, dt=.001 and dt/2=.0005. Every step measures exact all-pairs Plummer potential plus kinetic energy, momentum, ballistic COM, angular momentum, and torque.',
@@ -402,4 +480,6 @@ try {
 }
 
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (replay && process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try { main(); } catch (error) { console.error(error.stack); process.exitCode = 1; }
+}

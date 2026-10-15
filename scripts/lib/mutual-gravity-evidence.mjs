@@ -6,17 +6,24 @@ import { compileFunction } from 'node:vm';
 import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
-export const ROOT = new URL('../../', import.meta.url);
+export const ROOT = typeof __EVIDENCE_ROOT === 'undefined' ? new URL('../../', import.meta.url) : new URL(__EVIDENCE_ROOT);
 // Read and hash both solver byte strings before evaluating either. Compile
 // those exact UTF-8 bytes in the current native realm, never through require's
 // mutable cache or an asymmetric vm context. These retained identities bind
 // the executable functions to the later capture source-hash checks.
-const solverBytes = Object.fromEntries(['barnes-hut.js', 'mutual-gravity.js'].map(name =>
-  [name, fs.readFileSync(new URL(name, ROOT))]));
+const loadedBytes = typeof __EVIDENCE_SOURCE_BASE64 === 'undefined'
+  ? Object.fromEntries(['barnes-hut.js', 'mutual-gravity.js'].map(name => [name, fs.readFileSync(new URL(name, ROOT))]))
+  : Object.fromEntries(Object.entries(__EVIDENCE_SOURCE_BASE64).map(([name, value]) => [name, Buffer.from(value, 'base64')]));
 export const LOADED_SOURCE_SHA256 = Object.freeze(Object.fromEntries(
-  Object.entries(solverBytes).map(([name, bytes]) => [name, sha256(bytes)])));
+  Object.entries(loadedBytes).map(([name, bytes]) => [name, sha256(bytes)])));
+export const VERIFIER_CHECK_COUNT = 166;
+export const VERIFIER_COMPLETION = `Mutual-gravity evidence verifier checks passed (${VERIFIER_CHECK_COUNT} checks; deterministic fixtures)\n`;
+export function loadedSource(name) {
+  if (!Object.hasOwn(loadedBytes, name)) throw new Error(`Source was not captured: ${name}`);
+  return new TextDecoder('utf-8', { fatal: true }).decode(loadedBytes[name]);
+}
 function evaluate(name, globalName) {
-  const source = new TextDecoder('utf-8', { fatal: true }).decode(solverBytes[name]);
+  const source = new TextDecoder('utf-8', { fatal: true }).decode(loadedBytes[name]);
   const module = { exports: {} }, namespace = Object.create(null);
   // Export names are private to this evaluation; existing real-global getters
   // or setters cannot substitute an old API. Intrinsics remain native-realm.

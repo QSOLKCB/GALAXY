@@ -1,0 +1,16 @@
+{
+  "schema": "galaxy.mutual-gravity-manifest.v1",
+  "status": "passed",
+  "sourceSHA256": {
+    "barnes-hut.js": "2e16cda1377e3d62368aac30eb7fb717563239fa96e20fd1caae6650624136d8",
+    "mutual-gravity.js": "9ba0f8ae8ea84d60647598f6d92af3fd5983dbb47390bf1059aaa6888a6e8696",
+    "tests/mutual-gravity.mjs": "a20d79c5c9044d9ec8d516d4a10dcf92ff31dadcac547b9e93a513c33110d924",
+    "scripts/bench-mutual-gravity.mjs": "1fd71995b7dfdd7b457bb3d4d4038647c368b30db917daf20c1c85d19d0055ba",
+    "scripts/lib/mutual-gravity-evidence.mjs": "89bab1b57e90de2c6f1cbed2fa1e327fb8894e5859537bef7b592bd5d14f16a9",
+    "tests/mutual-gravity-evidence.mjs": "7b191daf74e4874ec1914effc5b3590bd7a3cbe1ec79a609fc804e06702d2592"
+  },
+  "files": {
+    "receipt.json": "17d0daca672f882c396e553a5ca49eac727248cdf2feee1a288f40737316c92c",
+    "tests.log": "8914e8e03188d057f96b41fc8cb1e475dd40fd5f5b8521383aa394abcbd65f1e"
+  }
+}
