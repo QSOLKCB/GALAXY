@@ -107,9 +107,16 @@ difference, and are not wall-time speedups.
 
 Defaults: `theta=0.3`, `softening=0.03`, `G=1`, `bucket=4`, `maxDepth=40`.
 Bodies are an array of at least two finite x/y positions and positive finite masses.
-`accelerations` does not change them. `stepLeapfrog` also validates optional finite
-vx/vy, treats omitted velocities as zero, and changes the caller's bodies only
-after the complete step succeeds. Its returned forces/tree are at the final state.
+`accelerations` does not change them. `stepLeapfrog` accepts ordinary data objects
+with own writable x/y fields and an own data mass field. Own vx/vy fields must also
+be writable data fields; missing velocities require an extensible body and are
+initialized to zero, without invoking inherited getters/setters. Every destination
+is preflighted before computation, and only x/y/vx/vy are committed after the
+complete numerical step succeeds. Frozen bodies, accessor-backed state fields,
+and sealed bodies missing velocities are rejected without changing other bodies.
+Unrelated fields are preserved. Proxy objects and objects that mutate themselves
+through traps are unsupported; the transactional guarantee is for ordinary data
+objects. Its returned forces/tree are at the final state.
 A positive finite dt is required. Integration timestep selection remains the caller's
 responsibility.
 
@@ -117,7 +124,14 @@ This lane deliberately requires strictly positive softening; squared softening m
 be finite and nonzero. This excludes the old solver's zero-softening option and its
 singular coincident-particle case. Nonfinite intermediate or output arithmetic is
 rejected, not silently presented as a result. Extreme scales can overflow even if
-individual inputs are finite; nondimensionalize such states. Bucket is a positive
+individual inputs are finite; nondimensionalize such states. Kernel derivatives
+use normalized displacement before inverse powers, so a two-body acceleration at
+separation 1e108 is retained as about 1e-216 rather than lost through an underflowed
+inverse cube. Accepted expansions additionally require representable positive
+second/third derivative scales; `pairedExpansion` at that separation deliberately
+throws because its required higher coefficients cannot be represented. This lane
+fails closed outside that coefficient range rather than returning an all-zero
+polynomial. Bucket is a positive
 safe integer; maximum depth is an integer from 1 to 64. Coincident or terminal cells
 are evaluated directly, and may cost quadratic work. No universal force-error bound
 is promised by theta. A tree partition may change under rotation, so approximate
@@ -136,7 +150,8 @@ Run from the repository root:
 
 ```
 node tests/mutual-gravity.mjs
-node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15
+node tests/mutual-gravity-evidence.mjs
+node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r2
 # New captures refuse to overwrite any existing evidence directory:
 node scripts/bench-mutual-gravity.mjs --output runs/my-mutual-capture
 ```
@@ -147,7 +162,7 @@ below 0.03 and maximum below 0.25 (`tests/barnes-hut.mjs`). Qualification additi
 requires normalized net internal force near f64 accumulation roundoff, with the
 explicit tolerance `5e-13` recorded by the tests/harness. The large-translation
 fixture (offsets 1e4 and -2e4) reaches about `1.40e-13`, while the ordinary
-seeded force states stay below `4.05e-17`. Centre representation and mass-weighted
+seeded force states stay below `4.31e-17`. Centre representation and mass-weighted
 reductions are still floating-point operations; the claim is not bitwise zero or
 translation-independent error at arbitrary coordinate scales. Near-zero reference accelerations
 make pointwise relative errors ill-conditioned; also inspect globally scaled error

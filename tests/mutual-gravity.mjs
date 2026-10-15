@@ -172,6 +172,50 @@ const beforeOverflow = structuredClone(overflowingStep);
 assert.throws(() => MUTUAL.stepLeapfrog(overflowingStep, 2));
 assert.deepEqual(overflowingStep, beforeOverflow);
 
+// Transactional commit preflight: a later unsupported destination must not leave
+// earlier ordinary bodies advanced. No getters/setters are invoked by commit.
+for (const kind of ['frozen', 'sealed-missing-velocity', 'readonly-x', 'setter-x', 'getter-vx']) {
+  const state = [{ x: 0, y: 0, mass: 1 }, { x: 1, y: 0, mass: 2 }];
+  if (kind === 'frozen') Object.freeze(state[1]);
+  if (kind === 'sealed-missing-velocity') Object.seal(state[1]);
+  if (kind === 'readonly-x') Object.defineProperty(state[1], 'x', { writable: false });
+  if (kind === 'setter-x') Object.defineProperty(state[1], 'x', {
+    get() { return 1; }, set() { throw new Error('setter must not be invoked'); }
+  });
+  if (kind === 'getter-vx') Object.defineProperty(state[1], 'vx', {
+    get() { throw new Error('getter must not be invoked'); }
+  });
+  const saved = state.map(body => Object.getOwnPropertyDescriptors(body));
+  assert.throws(() => MUTUAL.stepLeapfrog(state, .01), TypeError, kind);
+  assert.deepEqual(state.map(body => Object.getOwnPropertyDescriptors(body)), saved, kind);
+}
+const ordinary = [{ x: 0, y: 0, vx: 0, vy: 0, mass: 1 }, { x: 1, y: 0, vx: 0, vy: 0, mass: 1 }];
+Object.defineProperty(ordinary[0], 'annotation', { value: 'preserve', writable: false });
+Object.seal(ordinary[1]);
+MUTUAL.stepLeapfrog(ordinary, .001);
+assert.equal(ordinary[0].annotation, 'preserve');
+assert.notEqual(ordinary[1].x, 1);
+let inheritedSetterCalls = 0;
+const inherited = Object.create({ set vx(value) { inheritedSetterCalls++; }, get vy() { throw new Error('inherited getter'); } });
+Object.assign(inherited, { x: 0, y: 0, mass: 1 });
+MUTUAL.stepLeapfrog([inherited, { x: 1, y: 0, mass: 1 }], .001);
+assert.equal(inheritedSetterCalls, 0);
+assert.ok(Object.hasOwn(inherited, 'vx') && Object.hasOwn(inherited, 'vy'));
+
+// Large-scale direct acceleration stays representable even if 1/r^3 does not.
+const farBodies = [{ x: 0, y: 0, mass: 1 }, { x: 1e108, y: 0, mass: 1 }];
+for (const theta of [0, .3]) {
+  const far = MUTUAL.accelerations(farBodies, { theta }).values;
+  assert.ok(Math.abs(far[0].ax / 1e-216 - 1) < 1e-14);
+  assert.equal(far[1].ax, -far[0].ax);
+}
+const unitCell = { mass: 1, comX: 0, comY: 0, qxx: 0, qxy: 0, qyy: 0 };
+const widePair = MUTUAL.pairedExpansion(unitCell, { ...unitCell, comX: 1e70 });
+for (const [i, expected] of [[0, 1e-140], [2, 2e-210], [5, 6e-280]])
+  assert.ok(Math.abs(widePair.a[i] / expected - 1) < 1e-14, `wide derivative ${i}`);
+assert.throws(() => MUTUAL.pairedExpansion(unitCell, { ...unitCell, comX: 1e108 }), /supported f64 range/);
+assert.throws(() => MUTUAL.accelerations(farBodies, { G: 1e-200, theta: 0 }), /supported f64 range/);
+
 const initial = fixture('collision', 64, 17), dt = .001, steps = 16;
 const fine = trajectory(initial, 'mutual', OPTIONS, dt / 2, steps * 2);
 const coarse = trajectory(initial, 'mutual', OPTIONS, dt, steps);

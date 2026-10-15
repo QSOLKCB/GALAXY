@@ -1,0 +1,1060 @@
+$ node tests/mutual-gravity.mjs
+Mutual-gravity CPU/f64 checks passed
+{
+  "cases": [
+    {
+      "name": "disc-128-17",
+      "n": 128,
+      "error": {
+        "rmsRelative": 0.00686400310541839,
+        "p50Relative": 0.0013889171739233622,
+        "p90Relative": 0.0056230972601750305,
+        "p95Relative": 0.010226275758116582,
+        "p99Relative": 0.03299398654328295,
+        "maxRelative": 0.04659134363459495,
+        "rmsAbsolute": 0.01599887624855949,
+        "globalRelativeL2": 0.0032483288074810746
+      },
+      "forces": {
+        "netForceX": 9.367506770274758e-17,
+        "netForceY": -5.204170427930421e-17,
+        "netForce": 1.0716042783326733e-16,
+        "sumForceMagnitudes": 4.477933066905698,
+        "normalizedNetForce": 2.393077927520618e-17,
+        "torqueAboutCOM": 0.0001824376343886238,
+        "normalizedAbsTorque": 0.00012092296479310076
+      },
+      "stats": {
+        "visited": 1734,
+        "approximated": 847,
+        "direct": 2283,
+        "propagated": 85
+      }
+    },
+    {
+      "name": "collision-128-17",
+      "n": 128,
+      "error": {
+        "rmsRelative": 0.005408607867222925,
+        "p50Relative": 0.001657823174994691,
+        "p90Relative": 0.005869049365623367,
+        "p95Relative": 0.008329680109542345,
+        "p99Relative": 0.011986015119316714,
+        "maxRelative": 0.047178912495506146,
+        "rmsAbsolute": 0.018275320279788877,
+        "globalRelativeL2": 0.0029694682615127675
+      },
+      "forces": {
+        "netForceX": 6.938893903907228e-17,
+        "netForceY": -3.8163916471489756e-17,
+        "netForce": 7.919159918457851e-17,
+        "sumForceMagnitudes": 5.7076509441890195,
+        "normalizedNetForce": 1.3874639489859444e-17,
+        "torqueAboutCOM": -0.000018718477892969154,
+        "normalizedAbsTorque": 0.000004123125967933676
+      },
+      "stats": {
+        "visited": 1316,
+        "approximated": 515,
+        "direct": 1924,
+        "propagated": 97
+      }
+    },
+    {
+      "name": "disc-128-303",
+      "n": 128,
+      "error": {
+        "rmsRelative": 0.008773882521993907,
+        "p50Relative": 0.0027370882838590495,
+        "p90Relative": 0.01319728274265816,
+        "p95Relative": 0.019097033200472756,
+        "p99Relative": 0.03463718367072143,
+        "maxRelative": 0.03878956636392125,
+        "rmsAbsolute": 0.019904255566580938,
+        "globalRelativeL2": 0.004770447664138243
+      },
+      "forces": {
+        "netForceX": 7.28583859910259e-17,
+        "netForceY": -2.42861286636753e-17,
+        "netForce": 7.679948212511534e-17,
+        "sumForceMagnitudes": 3.714122338187633,
+        "normalizedNetForce": 2.0677693175446373e-17,
+        "torqueAboutCOM": -0.00002144311687120575,
+        "normalizedAbsTorque": 0.000015243454806964028
+      },
+      "stats": {
+        "visited": 1918,
+        "approximated": 907,
+        "direct": 2693,
+        "propagated": 85
+      }
+    },
+    {
+      "name": "collision-128-303",
+      "n": 128,
+      "error": {
+        "rmsRelative": 0.003102722221210317,
+        "p50Relative": 0.000862960606178955,
+        "p90Relative": 0.00407576298622587,
+        "p95Relative": 0.005816015038888047,
+        "p99Relative": 0.012494618489349366,
+        "maxRelative": 0.013505046685196613,
+        "rmsAbsolute": 0.012454310867454773,
+        "globalRelativeL2": 0.0022846844194467975
+      },
+      "forces": {
+        "netForceX": 9.912318361948724e-17,
+        "netForceY": 1.3877787807814457e-17,
+        "netForce": 1.0008995216954252e-16,
+        "sumForceMagnitudes": 4.997791101929541,
+        "normalizedNetForce": 2.0026837882619767e-17,
+        "torqueAboutCOM": 0.00004008658281246663,
+        "normalizedAbsTorque": 0.000010058535415229912
+      },
+      "stats": {
+        "visited": 1031,
+        "approximated": 382,
+        "direct": 2216,
+        "propagated": 82
+      }
+    },
+    {
+      "name": "disc-128-991",
+      "n": 128,
+      "error": {
+        "rmsRelative": 0.0034018771574415344,
+        "p50Relative": 0.0015337528149344734,
+        "p90Relative": 0.0047902677675494415,
+        "p95Relative": 0.007644266846793751,
+        "p99Relative": 0.009686361123293992,
+        "maxRelative": 0.01609393847556972,
+        "rmsAbsolute": 0.011007162662674968,
+        "globalRelativeL2": 0.0025455555118624787
+      },
+      "forces": {
+        "netForceX": 1.1796119636642288e-16,
+        "netForceY": -1.3877787807814457e-17,
+        "netForce": 1.18774731498903e-16,
+        "sumForceMagnitudes": 3.892129605368719,
+        "normalizedNetForce": 3.051664346815885e-17,
+        "torqueAboutCOM": 0.00006386266361414587,
+        "normalizedAbsTorque": 0.000042355628389241626
+      },
+      "stats": {
+        "visited": 1620,
+        "approximated": 751,
+        "direct": 2776,
+        "propagated": 78
+      }
+    },
+    {
+      "name": "collision-128-991",
+      "n": 128,
+      "error": {
+        "rmsRelative": 0.005385576223713384,
+        "p50Relative": 0.0016152554700656326,
+        "p90Relative": 0.0071039089550687905,
+        "p95Relative": 0.008805479104323794,
+        "p99Relative": 0.026466518215705635,
+        "maxRelative": 0.031247509771776174,
+        "rmsAbsolute": 0.015642799717571536,
+        "globalRelativeL2": 0.002737628204050112
+      },
+      "forces": {
+        "netForceX": -9.71445146547012e-17,
+        "netForceY": -2.42861286636753e-17,
+        "netForce": 1.0013427371767394e-16,
+        "sumForceMagnitudes": 5.012535769723744,
+        "normalizedNetForce": 1.9976769906061466e-17,
+        "torqueAboutCOM": -0.00005920596843397505,
+        "normalizedAbsTorque": 0.000014442810506233197
+      },
+      "stats": {
+        "visited": 1184,
+        "approximated": 465,
+        "direct": 1803,
+        "propagated": 91
+      }
+    },
+    {
+      "name": "disc-512-17",
+      "n": 512,
+      "error": {
+        "rmsRelative": 0.004474424246774233,
+        "p50Relative": 0.0019407455772260873,
+        "p90Relative": 0.006145009562113673,
+        "p95Relative": 0.009665873880706579,
+        "p99Relative": 0.016226006159682865,
+        "maxRelative": 0.030577718391068612,
+        "rmsAbsolute": 0.010208095409078272,
+        "globalRelativeL2": 0.002920732761667143
+      },
+      "forces": {
+        "netForceX": -6.375108774214766e-17,
+        "netForceY": 7.112366251504909e-17,
+        "netForce": 9.551322713562561e-17,
+        "sumForceMagnitudes": 3.2852239476815037,
+        "normalizedNetForce": 2.907358178824692e-17,
+        "torqueAboutCOM": -2.1973557303204237e-7,
+        "normalizedAbsTorque": 1.6919241257372737e-7
+      },
+      "stats": {
+        "visited": 13090,
+        "approximated": 7568,
+        "direct": 11410,
+        "propagated": 344
+      }
+    },
+    {
+      "name": "collision-512-17",
+      "n": 512,
+      "error": {
+        "rmsRelative": 0.003881138406391786,
+        "p50Relative": 0.001723874152611715,
+        "p90Relative": 0.005674308639805914,
+        "p95Relative": 0.007343323664954258,
+        "p99Relative": 0.013114232842812141,
+        "maxRelative": 0.03784173504296538,
+        "rmsAbsolute": 0.011970358295212714,
+        "globalRelativeL2": 0.0026012069764724203
+      },
+      "forces": {
+        "netForceX": 1.7607443281164592e-16,
+        "netForceY": -6.418476861114186e-17,
+        "netForce": 1.8740835203268992e-16,
+        "sumForceMagnitudes": 4.355421287769183,
+        "normalizedNetForce": 4.302875420087759e-17,
+        "torqueAboutCOM": 0.000005825470434105834,
+        "normalizedAbsTorque": 0.0000017081346123815479
+      },
+      "stats": {
+        "visited": 10445,
+        "approximated": 5713,
+        "direct": 9560,
+        "propagated": 354
+      }
+    },
+    {
+      "name": "disc-512-303",
+      "n": 512,
+      "error": {
+        "rmsRelative": 0.0051038189997019865,
+        "p50Relative": 0.001945669053011155,
+        "p90Relative": 0.005688346334951307,
+        "p95Relative": 0.008107376885905166,
+        "p99Relative": 0.016154601543777864,
+        "maxRelative": 0.06542792405712684,
+        "rmsAbsolute": 0.01088998251880408,
+        "globalRelativeL2": 0.0030115959557717033
+      },
+      "forces": {
+        "netForceX": 5.724587470723463e-17,
+        "netForceY": -3.3176586478056436e-17,
+        "netForce": 6.616476449993882e-17,
+        "sumForceMagnitudes": 3.40612249385386,
+        "normalizedNetForce": 1.9425245163475212e-17,
+        "torqueAboutCOM": 0.00006406768866156263,
+        "normalizedAbsTorque": 0.00004854648736298883
+      },
+      "stats": {
+        "visited": 12590,
+        "approximated": 7228,
+        "direct": 11975,
+        "propagated": 339
+      }
+    },
+    {
+      "name": "collision-512-303",
+      "n": 512,
+      "error": {
+        "rmsRelative": 0.004286998280381648,
+        "p50Relative": 0.001640795816547334,
+        "p90Relative": 0.0050625982064686605,
+        "p95Relative": 0.0066820099724486425,
+        "p99Relative": 0.013477768498196097,
+        "maxRelative": 0.045400629232975394,
+        "rmsAbsolute": 0.011305270497880588,
+        "globalRelativeL2": 0.002426566503716067
+      },
+      "forces": {
+        "netForceX": -1.734723475976807e-17,
+        "netForceY": -1.457167719820518e-16,
+        "netForce": 1.4674571268244871e-16,
+        "sumForceMagnitudes": 4.416764621429758,
+        "normalizedNetForce": 3.3224707508851904e-17,
+        "torqueAboutCOM": 0.000030305096387682126,
+        "normalizedAbsTorque": 0.000008638336787051419
+      },
+      "stats": {
+        "visited": 10139,
+        "approximated": 5523,
+        "direct": 10952,
+        "propagated": 342
+      }
+    },
+    {
+      "name": "disc-512-991",
+      "n": 512,
+      "error": {
+        "rmsRelative": 0.004880196256256867,
+        "p50Relative": 0.0019611822917534596,
+        "p90Relative": 0.0055253156481710666,
+        "p95Relative": 0.007700580747332958,
+        "p99Relative": 0.022065283403365124,
+        "maxRelative": 0.03978919072923191,
+        "rmsAbsolute": 0.010776989718176486,
+        "globalRelativeL2": 0.0029512753752897023
+      },
+      "forces": {
+        "netForceX": -3.122502256758253e-17,
+        "netForceY": -6.591949208711867e-17,
+        "netForce": 7.294094509512294e-17,
+        "sumForceMagnitudes": 3.4662204912918075,
+        "normalizedNetForce": 2.1043365613460718e-17,
+        "torqueAboutCOM": -0.000028165093241275512,
+        "normalizedAbsTorque": 0.00002116379614232436
+      },
+      "stats": {
+        "visited": 12299,
+        "approximated": 7221,
+        "direct": 9656,
+        "propagated": 343
+      }
+    },
+    {
+      "name": "collision-512-991",
+      "n": 512,
+      "error": {
+        "rmsRelative": 0.0027520032626625317,
+        "p50Relative": 0.001374073328930228,
+        "p90Relative": 0.004416723063076961,
+        "p95Relative": 0.005615192520499547,
+        "p99Relative": 0.008330004843262,
+        "maxRelative": 0.01606510030454123,
+        "rmsAbsolute": 0.011018015337739141,
+        "globalRelativeL2": 0.0021982561154956226
+      },
+      "forces": {
+        "netForceX": 1.3270634591222574e-16,
+        "netForceY": -2.42861286636753e-17,
+        "netForce": 1.3491030461326481e-16,
+        "sumForceMagnitudes": 4.721230779701364,
+        "normalizedNetForce": 2.857524042105783e-17,
+        "torqueAboutCOM": 0.0000049462626850078906,
+        "normalizedAbsTorque": 0.0000013260581269237147
+      },
+      "stats": {
+        "visited": 9517,
+        "approximated": 5111,
+        "direct": 11564,
+        "propagated": 323
+      }
+    },
+    {
+      "name": "disc-2048-303",
+      "n": 2048,
+      "error": {
+        "rmsRelative": 0.004075128190433039,
+        "p50Relative": 0.001594246621638976,
+        "p90Relative": 0.004086513758689955,
+        "p95Relative": 0.0058748961086343456,
+        "p99Relative": 0.010336752729771784,
+        "maxRelative": 0.11716971521072359,
+        "rmsAbsolute": 0.007529945564852625,
+        "globalRelativeL2": 0.0022665070912418683
+      },
+      "forces": {
+        "netForceX": 7.806255641895632e-18,
+        "netForceY": -5.5294310796760726e-17,
+        "netForce": 5.584262201612132e-17,
+        "sumForceMagnitudes": 3.207628887087074,
+        "normalizedNetForce": 1.74093150990523e-17,
+        "torqueAboutCOM": -0.000002983978885883032,
+        "normalizedAbsTorque": 0.000002351874057270528
+      },
+      "stats": {
+        "visited": 63460,
+        "approximated": 39189,
+        "direct": 46153,
+        "propagated": 1306
+      }
+    },
+    {
+      "name": "collision-2048-303",
+      "n": 2048,
+      "error": {
+        "rmsRelative": 0.0027241110518551465,
+        "p50Relative": 0.0012596190163623533,
+        "p90Relative": 0.003560816944017149,
+        "p95Relative": 0.004767407043132889,
+        "p99Relative": 0.00824615698143924,
+        "maxRelative": 0.05710089643525367,
+        "rmsAbsolute": 0.007794541799459538,
+        "globalRelativeL2": 0.0017804467501714356
+      },
+      "forces": {
+        "netForceX": 1.1037178115902435e-16,
+        "netForceY": 2.211772431870429e-17,
+        "netForce": 1.125660863904123e-16,
+        "sumForceMagnitudes": 4.206731384485726,
+        "normalizedNetForce": 2.6758562908378693e-17,
+        "torqueAboutCOM": 0.000025387329519075416,
+        "normalizedAbsTorque": 0.000007614904136539484
+      },
+      "stats": {
+        "visited": 59169,
+        "approximated": 35828,
+        "direct": 44606,
+        "propagated": 1359
+      }
+    },
+    {
+      "name": "unequal-masses",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.0030938953383999996,
+        "p50Relative": 0.0007142667757709103,
+        "p90Relative": 0.0026408509238191324,
+        "p95Relative": 0.003115824931825871,
+        "p99Relative": 0.012444281621614607,
+        "maxRelative": 0.026286344900422906,
+        "rmsAbsolute": 0.012696912729046486,
+        "globalRelativeL2": 0.001720789765138038
+      },
+      "forces": {
+        "netForceX": 8.326672684688674e-17,
+        "netForceY": -7.632783294297951e-17,
+        "netForce": 1.1295700899707568e-16,
+        "sumForceMagnitudes": 6.664523614385155,
+        "normalizedNetForce": 1.6948999738445175e-17,
+        "torqueAboutCOM": 0.000017159040136553033,
+        "normalizedAbsTorque": 0.000003312886891104314
+      },
+      "stats": {
+        "visited": 1884,
+        "approximated": 572,
+        "direct": 4310,
+        "propagated": 108
+      }
+    },
+    {
+      "name": "clustered-unequal",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.0019370980698982356,
+        "p50Relative": 0.0005656917886270288,
+        "p90Relative": 0.0019690616995465234,
+        "p95Relative": 0.0032487718285094166,
+        "p99Relative": 0.0075178817970647,
+        "maxRelative": 0.015409175456249037,
+        "rmsAbsolute": 0.03324327545929093,
+        "globalRelativeL2": 0.0009694709168734869
+      },
+      "forces": {
+        "netForceX": -5.800915303666443e-15,
+        "netForceY": 2.831068712794149e-15,
+        "netForce": 6.45488717305527e-15,
+        "sumForceMagnitudes": 28.218527675181587,
+        "normalizedNetForce": 2.287464196345153e-16,
+        "torqueAboutCOM": -0.000030250794012150195,
+        "normalizedAbsTorque": 5.33869195310169e-7
+      },
+      "stats": {
+        "visited": 843,
+        "approximated": 196,
+        "direct": 1421,
+        "propagated": 134
+      }
+    },
+    {
+      "name": "all-coincident",
+      "n": 19,
+      "error": {
+        "rmsRelative": 0,
+        "p50Relative": 0,
+        "p90Relative": 0,
+        "p95Relative": 0,
+        "p99Relative": 0,
+        "maxRelative": 0,
+        "rmsAbsolute": 0,
+        "globalRelativeL2": 0
+      },
+      "forces": {
+        "netForceX": 0,
+        "netForceY": 0,
+        "netForce": 0,
+        "sumForceMagnitudes": 0,
+        "normalizedNetForce": 0,
+        "torqueAboutCOM": 0,
+        "normalizedAbsTorque": 0
+      },
+      "stats": {
+        "visited": 1,
+        "approximated": 0,
+        "direct": 171,
+        "propagated": 0
+      }
+    },
+    {
+      "name": "partial-coincidence",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.0020417780587829813,
+        "p50Relative": 0.0006821154566609793,
+        "p90Relative": 0.002733443118408053,
+        "p95Relative": 0.004123072670701214,
+        "p99Relative": 0.0075338278258943745,
+        "maxRelative": 0.013899776432490367,
+        "rmsAbsolute": 0.04006227341974431,
+        "globalRelativeL2": 0.001225717867141293
+      },
+      "forces": {
+        "netForceX": -1.6792123247455493e-15,
+        "netForceY": 4.90059381963448e-15,
+        "netForce": 5.18030634389676e-15,
+        "sumForceMagnitudes": 26.926202317051352,
+        "normalizedNetForce": 1.9238904480102885e-16,
+        "torqueAboutCOM": -0.00002863341088045479,
+        "normalizedAbsTorque": 5.293917188026992e-7
+      },
+      "stats": {
+        "visited": 1830,
+        "approximated": 463,
+        "direct": 516,
+        "propagated": 292
+      }
+    },
+    {
+      "name": "finite-depth-direct",
+      "n": 160,
+      "error": {
+        "rmsRelative": 3.642464432028876e-16,
+        "p50Relative": 2.290855727454844e-16,
+        "p90Relative": 5.153668822666907e-16,
+        "p95Relative": 7.097293683351245e-16,
+        "p99Relative": 1.2631147869582717e-15,
+        "maxRelative": 1.6116890132998822e-15,
+        "rmsAbsolute": 2.0845359084678153e-15,
+        "globalRelativeL2": 2.8251340565239266e-16
+      },
+      "forces": {
+        "netForceX": 4.0939474033052647e-16,
+        "netForceY": 3.8163916471489756e-17,
+        "netForce": 4.111697191315796e-16,
+        "sumForceMagnitudes": 6.664194564319448,
+        "normalizedNetForce": 6.169833656013141e-17,
+        "torqueAboutCOM": 2.740863092043355e-16,
+        "normalizedAbsTorque": 5.291936729361896e-17
+      },
+      "stats": {
+        "visited": 11,
+        "approximated": 0,
+        "direct": 12720,
+        "propagated": 4
+      }
+    },
+    {
+      "name": "large-bucket-direct",
+      "n": 160,
+      "error": {
+        "rmsRelative": 2.865867082660836e-16,
+        "p50Relative": 1.4519125890698585e-16,
+        "p90Relative": 4.068272862734807e-16,
+        "p95Relative": 5.517919160914871e-16,
+        "p99Relative": 7.940342668350348e-16,
+        "maxRelative": 1.9421051860284723e-15,
+        "rmsAbsolute": 1.5880973133228642e-15,
+        "globalRelativeL2": 2.15231974979041e-16
+      },
+      "forces": {
+        "netForceX": 4.2327252813834093e-16,
+        "netForceY": -2.7755575615628914e-17,
+        "netForce": 4.2418157085660555e-16,
+        "sumForceMagnitudes": 6.6641945643194465,
+        "normalizedNetForce": 6.365083833651897e-17,
+        "torqueAboutCOM": 4.198030811863873e-16,
+        "normalizedAbsTorque": 8.105371446237839e-17
+      },
+      "stats": {
+        "visited": 1,
+        "approximated": 0,
+        "direct": 12720,
+        "propagated": 0
+      }
+    },
+    {
+      "name": "nondefault-kernel",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.0011068470127756594,
+        "p50Relative": 0.00046009423184304517,
+        "p90Relative": 0.0017169963007032834,
+        "p95Relative": 0.002394447146600282,
+        "p99Relative": 0.004163420754253801,
+        "maxRelative": 0.004725059156182023,
+        "rmsAbsolute": 0.0028907534712420517,
+        "globalRelativeL2": 0.0010339275351766344
+      },
+      "forces": {
+        "netForceX": -4.7704895589362195e-17,
+        "netForceY": -5.0306980803327406e-17,
+        "netForce": 6.93292822747957e-17,
+        "sumForceMagnitudes": 2.5756020096621355,
+        "normalizedNetForce": 2.691770002302888e-17,
+        "torqueAboutCOM": 0.000043916732773994875,
+        "normalizedAbsTorque": 0.000021267418243029573
+      },
+      "stats": {
+        "visited": 1884,
+        "approximated": 572,
+        "direct": 4310,
+        "propagated": 108
+      }
+    },
+    {
+      "name": "maximum-depth-option",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.005163276845992049,
+        "p50Relative": 0.0017818063831593941,
+        "p90Relative": 0.007118943482346294,
+        "p95Relative": 0.009548295515832153,
+        "p99Relative": 0.02137899990396625,
+        "maxRelative": 0.028020743048282306,
+        "rmsAbsolute": 0.030809401617992557,
+        "globalRelativeL2": 0.0041755428351479525
+      },
+      "forces": {
+        "netForceX": 2.0816681711721685e-17,
+        "netForceY": 2.220446049250313e-16,
+        "netForce": 2.2301825219878386e-16,
+        "sumForceMagnitudes": 6.665769856675622,
+        "normalizedNetForce": 3.345723854768793e-17,
+        "torqueAboutCOM": 0.00012370401507792728,
+        "normalizedAbsTorque": 0.00002387876688590041
+      },
+      "stats": {
+        "visited": 3950,
+        "approximated": 1612,
+        "direct": 766,
+        "propagated": 276
+      }
+    },
+    {
+      "name": "translation-reference",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.0030938953383999996,
+        "p50Relative": 0.0007142667757709103,
+        "p90Relative": 0.0026408509238191324,
+        "p95Relative": 0.003115824931825871,
+        "p99Relative": 0.012444281621614607,
+        "maxRelative": 0.026286344900422906,
+        "rmsAbsolute": 0.012696912729046486,
+        "globalRelativeL2": 0.001720789765138038
+      },
+      "forces": {
+        "netForceX": 8.326672684688674e-17,
+        "netForceY": -7.632783294297951e-17,
+        "netForce": 1.1295700899707568e-16,
+        "sumForceMagnitudes": 6.664523614385155,
+        "normalizedNetForce": 1.6948999738445175e-17,
+        "torqueAboutCOM": 0.000017159040136553033,
+        "normalizedAbsTorque": 0.000003312886891104314
+      },
+      "stats": {
+        "visited": 1884,
+        "approximated": 572,
+        "direct": 4310,
+        "propagated": 108
+      }
+    },
+    {
+      "name": "translation-8,-13",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.0030938953384010907,
+        "p50Relative": 0.0007142667757705125,
+        "p90Relative": 0.002640850923819377,
+        "p95Relative": 0.0031158249318259923,
+        "p99Relative": 0.012444281621619774,
+        "maxRelative": 0.02628634490043389,
+        "rmsAbsolute": 0.012696912729048245,
+        "globalRelativeL2": 0.0017207897651382758
+      },
+      "forces": {
+        "netForceX": -6.175615574477433e-16,
+        "netForceY": -1.8735013540549517e-16,
+        "netForce": 6.45354437866309e-16,
+        "sumForceMagnitudes": 6.664523614385162,
+        "normalizedNetForce": 9.683429382309216e-17,
+        "torqueAboutCOM": 0.000017159040136299764,
+        "normalizedAbsTorque": 0.0000033128868910554134
+      },
+      "stats": {
+        "visited": 1884,
+        "approximated": 572,
+        "direct": 4310,
+        "propagated": 108
+      }
+    },
+    {
+      "name": "translation-10000,-20000",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.003093895334950657,
+        "p50Relative": 0.000714266776044223,
+        "p90Relative": 0.002640850923576517,
+        "p95Relative": 0.0031158249314136586,
+        "p99Relative": 0.0124442816182104,
+        "maxRelative": 0.026286344837554217,
+        "rmsAbsolute": 0.012696912729265637,
+        "globalRelativeL2": 0.0017207897651624082
+      },
+      "forces": {
+        "netForceX": 2.341529747873494e-13,
+        "netForceY": 8.996484113232839e-13,
+        "netForce": 9.296208257124373e-13,
+        "sumForceMagnitudes": 6.664523614403283,
+        "normalizedNetForce": 1.3948796335620338e-13,
+        "torqueAboutCOM": 0.000017159039997976383,
+        "normalizedAbsTorque": 0.000003312886864343463
+      },
+      "stats": {
+        "visited": 1884,
+        "approximated": 572,
+        "direct": 4310,
+        "propagated": 108
+      }
+    },
+    {
+      "name": "rotation-1.5707963267948966",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.00309389533839992,
+        "p50Relative": 0.0007142667757707047,
+        "p90Relative": 0.0026408509238190856,
+        "p95Relative": 0.0031158249318261316,
+        "p99Relative": 0.012444281621614489,
+        "maxRelative": 0.02628634490042201,
+        "rmsAbsolute": 0.012696912729046468,
+        "globalRelativeL2": 0.001720789765138035
+      },
+      "forces": {
+        "netForceX": 4.5102810375396984e-17,
+        "netForceY": -8.326672684688674e-17,
+        "netForce": 9.469747252991003e-17,
+        "sumForceMagnitudes": 6.664523614385154,
+        "normalizedNetForce": 1.4209188534572624e-17,
+        "torqueAboutCOM": 0.000017159040136660586,
+        "normalizedAbsTorque": 0.000003312886891125079
+      },
+      "stats": {
+        "visited": 1884,
+        "approximated": 572,
+        "direct": 4310,
+        "propagated": 108
+      }
+    },
+    {
+      "name": "rotation-0.431",
+      "n": 160,
+      "error": {
+        "rmsRelative": 0.0028059321744468126,
+        "p50Relative": 0.0005834361967226572,
+        "p90Relative": 0.0031794288272181826,
+        "p95Relative": 0.004156146655491574,
+        "p99Relative": 0.006685009758486262,
+        "maxRelative": 0.027994791862335843,
+        "rmsAbsolute": 0.010566964026204812,
+        "globalRelativeL2": 0.0014321216450733708
+      },
+      "forces": {
+        "netForceX": 2.706168622523819e-16,
+        "netForceY": 1.9255430583342559e-16,
+        "netForce": 3.32130466579501e-16,
+        "sumForceMagnitudes": 6.664570808167341,
+        "normalizedNetForce": 4.983523712772015e-17,
+        "torqueAboutCOM": -0.000057807380973804584,
+        "normalizedAbsTorque": 0.000011160817682748644
+      },
+      "stats": {
+        "visited": 2040,
+        "approximated": 685,
+        "direct": 3652,
+        "propagated": 112
+      }
+    }
+  ],
+  "pairedPotential": {
+    "maxFiniteDifferenceError": 1.2043910313508377e-10,
+    "netForceX": 3.3306690738754696e-16,
+    "netForceY": -1.734723475976807e-18,
+    "netForce": 3.3307142486596306e-16,
+    "sumForceMagnitudes": 4.51637467246244,
+    "normalizedNetForce": 7.374751853445414e-17,
+    "torqueAboutCOM": 0.0012345857240965569,
+    "normalizedAbsTorque": 0.00022910416472630835
+  },
+  "trajectory": {
+    "coarse": {
+      "method": "mutual",
+      "dt": 0.001,
+      "steps": 16,
+      "duration": 0.016,
+      "forceSolves": 17,
+      "initial": {
+        "mass": 1,
+        "comX": 0.012549912253007979,
+        "comY": 0.03043951887028696,
+        "momentumX": -0.014890705203749275,
+        "momentumY": -0.001972540381236708,
+        "angularMomentum": -0.04819056979799011,
+        "kinetic": 0.048977180988479384,
+        "potential": -1.400964241599197,
+        "energy": -1.3519870606107176
+      },
+      "final": {
+        "mass": 1,
+        "comX": 0.012311660969748173,
+        "comY": 0.03040795822418719,
+        "momentumX": -0.014890705203749327,
+        "momentumY": -0.001972540381236696,
+        "angularMomentum": -0.04818688178758542,
+        "kinetic": 0.05795856615954877,
+        "potential": -1.409942940051891,
+        "energy": -1.3519843738923423
+      },
+      "maxRelativeEnergyDrift": 0.0000019872367521916557,
+      "maxMomentumDrift": 5.343962009278976e-17,
+      "maxCOMBallisticDrift": 2.5248401384514154e-16,
+      "maxAngularMomentumDrift": 0.0000036880104046857487,
+      "maxNormalizedNetForce": 3.5325945657409095e-17,
+      "maxNormalizedAbsTorque": 0.000041335663500345096,
+      "finalForceError": {
+        "rmsRelative": 0.002932028054727046,
+        "p50Relative": 0.0009206453240506219,
+        "p90Relative": 0.004155637315066732,
+        "p95Relative": 0.006780892705726265,
+        "p99Relative": 0.00981082179087746,
+        "maxRelative": 0.013442931943595882,
+        "rmsAbsolute": 0.013863232525819563,
+        "globalRelativeL2": 0.001711660349931821
+      },
+      "checkpoints": [
+        {
+          "step": 0,
+          "time": 0,
+          "relativeEnergyDrift": 0,
+          "momentumDrift": 0,
+          "comBallisticDrift": 0,
+          "angularMomentumDrift": 0,
+          "netForceX": 1.3877787807814457e-16,
+          "netForceY": 1.8735013540549517e-16,
+          "netForce": 2.33150965428689e-16,
+          "sumForceMagnitudes": 7.136244147299744,
+          "normalizedNetForce": 3.267138295946756e-17,
+          "torqueAboutCOM": 0.0002342725026245468,
+          "normalizedAbsTorque": 0.000041335663500345096
+        },
+        {
+          "step": 4,
+          "time": 0.004,
+          "relativeEnergyDrift": 1.7030574277706152e-7,
+          "momentumDrift": 7.57391076790106e-18,
+          "comBallisticDrift": 2.4503229545950363e-16,
+          "angularMomentumDrift": 9.350968591392839e-7,
+          "netForceX": 1.3877787807814457e-17,
+          "netForceY": 9.367506770274758e-17,
+          "netForce": 9.469747252991005e-17,
+          "sumForceMagnitudes": 7.141414909249848,
+          "normalizedNetForce": 1.3260323581991303e-17,
+          "torqueAboutCOM": 0.00023313401226714506,
+          "normalizedAbsTorque": 0.000041136585988185114
+        },
+        {
+          "step": 8,
+          "time": 0.008,
+          "relativeEnergyDrift": 5.605232727404661e-7,
+          "momentumDrift": 1.0842021724855044e-17,
+          "comBallisticDrift": 2.1601928577750793e-16,
+          "angularMomentumDrift": 0.0000018638312562074821,
+          "netForceX": -1.3877787807814457e-17,
+          "netForceY": 5.551115123125783e-17,
+          "netForce": 5.721958498152797e-17,
+          "sumForceMagnitudes": 7.157026990695358,
+          "normalizedNetForce": 7.994881821169248e-18,
+          "torqueAboutCOM": 0.0002310933961632601,
+          "normalizedAbsTorque": 0.00004071814804263899
+        },
+        {
+          "step": 12,
+          "time": 0.012,
+          "relativeEnergyDrift": 0.0000011684631294777286,
+          "momentumDrift": 2.0857299665879863e-17,
+          "comBallisticDrift": 3.463612755914236e-17,
+          "angularMomentumDrift": 0.0000027826288753196593,
+          "netForceX": -8.326672684688674e-17,
+          "netForceY": 7.28583859910259e-17,
+          "netForce": 1.1064218096644412e-16,
+          "sumForceMagnitudes": 7.182372535622656,
+          "normalizedNetForce": 1.5404684234587993e-17,
+          "torqueAboutCOM": 0.00022816933411689243,
+          "normalizedAbsTorque": 0.00004009035792417074
+        },
+        {
+          "step": 16,
+          "time": 0.016,
+          "relativeEnergyDrift": 0.0000019872367521916557,
+          "momentumDrift": 5.343962009278976e-17,
+          "comBallisticDrift": 1.828378074991712e-16,
+          "angularMomentumDrift": 0.0000036880104046857487,
+          "netForceX": 1.3877787807814457e-17,
+          "netForceY": 3.122502256758253e-17,
+          "netForce": 3.4170089680666066e-17,
+          "sumForceMagnitudes": 7.216106590314951,
+          "normalizedNetForce": 4.7352529030720285e-18,
+          "torqueAboutCOM": 0.00022439065085825497,
+          "normalizedAbsTorque": 0.00003926993558314825
+        }
+      ]
+    },
+    "fine": {
+      "method": "mutual",
+      "dt": 0.0005,
+      "steps": 32,
+      "duration": 0.016,
+      "forceSolves": 33,
+      "initial": {
+        "mass": 1,
+        "comX": 0.012549912253007979,
+        "comY": 0.03043951887028696,
+        "momentumX": -0.014890705203749275,
+        "momentumY": -0.001972540381236708,
+        "angularMomentum": -0.04819056979799011,
+        "kinetic": 0.048977180988479384,
+        "potential": -1.400964241599197,
+        "energy": -1.3519870606107176
+      },
+      "final": {
+        "mass": 1,
+        "comX": 0.012311660969748152,
+        "comY": 0.030407958224187175,
+        "momentumX": -0.014890705203749252,
+        "momentumY": -0.001972540381236722,
+        "angularMomentum": -0.04818688173440935,
+        "kinetic": 0.05795849467462195,
+        "potential": -1.4099429941242179,
+        "energy": -1.351984499449596
+      },
+      "maxRelativeEnergyDrift": 0.000001894368072184915,
+      "maxMomentumDrift": 3.686287386450715e-17,
+      "maxCOMBallisticDrift": 4.151695257241571e-16,
+      "maxAngularMomentumDrift": 0.0000036880635807604034,
+      "maxNormalizedNetForce": 4.6042726657198826e-17,
+      "maxNormalizedAbsTorque": 0.000041335663500345096,
+      "finalForceError": {
+        "rmsRelative": 0.002932025606700452,
+        "p50Relative": 0.0009206449381603393,
+        "p90Relative": 0.004155631754643894,
+        "p95Relative": 0.006780825340370879,
+        "p99Relative": 0.009810809458596404,
+        "maxRelative": 0.013442913081321355,
+        "rmsAbsolute": 0.013863222247576405,
+        "globalRelativeL2": 0.0017116585642482816
+      },
+      "checkpoints": [
+        {
+          "step": 0,
+          "time": 0,
+          "relativeEnergyDrift": 0,
+          "momentumDrift": 0,
+          "comBallisticDrift": 0,
+          "angularMomentumDrift": 0,
+          "netForceX": 1.3877787807814457e-16,
+          "netForceY": 1.8735013540549517e-16,
+          "netForce": 2.33150965428689e-16,
+          "sumForceMagnitudes": 7.136244147299744,
+          "normalizedNetForce": 3.267138295946756e-17,
+          "torqueAboutCOM": 0.0002342725026245468,
+          "normalizedAbsTorque": 0.000041335663500345096
+        },
+        {
+          "step": 8,
+          "time": 0.004,
+          "relativeEnergyDrift": 1.6411836876451246e-7,
+          "momentumDrift": 3.029564307160424e-17,
+          "comBallisticDrift": 1.721590007790733e-16,
+          "angularMomentumDrift": 9.351109844443761e-7,
+          "netForceX": -2.7755575615628914e-17,
+          "netForceY": 1.491862189340054e-16,
+          "netForce": 1.517461693011718e-16,
+          "sumForceMagnitudes": 7.1414149512516865,
+          "normalizedNetForce": 2.1248753970608446e-17,
+          "torqueAboutCOM": 0.00023313397715527158,
+          "normalizedAbsTorque": 0.00004113657955602067
+        },
+        {
+          "step": 16,
+          "time": 0.008,
+          "relativeEnergyDrift": 5.351206213067987e-7,
+          "momentumDrift": 1.966923233740024e-17,
+          "comBallisticDrift": 5.542259967722087e-17,
+          "angularMomentumDrift": 0.0000018638591130631932,
+          "netForceX": 9.71445146547012e-17,
+          "netForceY": -5.551115123125783e-17,
+          "netForce": 1.1188630228279524e-16,
+          "sumForceMagnitudes": 7.15702730272719,
+          "normalizedNetForce": 1.5633069087239738e-17,
+          "torqueAboutCOM": 0.00023109330548779644,
+          "normalizedAbsTorque": 0.00004071813024897048
+        },
+        {
+          "step": 24,
+          "time": 0.012,
+          "relativeEnergyDrift": 0.0000011129523901748,
+          "momentumDrift": 5.818439421673296e-18,
+          "comBallisticDrift": 5.8746346063503666e-18,
+          "angularMomentumDrift": 0.000002782669829393125,
+          "netForceX": 9.71445146547012e-17,
+          "netForceY": 8.326672684688674e-17,
+          "netForce": 1.2794688166302258e-16,
+          "sumForceMagnitudes": 7.182373408197411,
+          "normalizedNetForce": 1.7814011384731654e-17,
+          "torqueAboutCOM": 0.00022816916738045614,
+          "normalizedAbsTorque": 0.00004009032361130313
+        },
+        {
+          "step": 32,
+          "time": 0.016,
+          "relativeEnergyDrift": 0.000001894368072184915,
+          "momentumDrift": 2.6479404645468866e-17,
+          "comBallisticDrift": 1.6129639263504412e-16,
+          "angularMomentumDrift": 0.0000036880635807604034,
+          "netForceX": -1.1102230246251565e-16,
+          "netForceY": -2.6020852139652106e-16,
+          "netForce": 2.829035635184578e-16,
+          "sumForceMagnitudes": 7.216108416125827,
+          "normalizedNetForce": 3.920445026660819e-17,
+          "torqueAboutCOM": 0.00022439038759465048,
+          "normalizedAbsTorque": 0.000039269879266164245
+        }
+      ]
+    },
+    "versusDirect": {
+      "rmsPosition": 0.0000018663222050908096,
+      "maxPosition": 0.000005850924079592223,
+      "rmsVelocity": 0.00023119077220359332,
+      "maxVelocity": 0.0007231414724143016
+    },
+    "timestepControl": {
+      "rmsPosition": 2.9692375151256506e-8,
+      "maxPosition": 1.0113724652528447e-7,
+      "rmsVelocity": 0.0000016576552351014967,
+      "maxVelocity": 0.000004389435556821412
+    }
+  }
+}
+
+$ node tests/mutual-gravity-evidence.mjs
+Mutual-gravity evidence verifier checks passed (51 checks; synthetic fixtures only)

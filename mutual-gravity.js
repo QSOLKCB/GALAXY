@@ -27,20 +27,30 @@
     }
   }
   function zero() { return new Float64Array(9); }
+  function positiveScale(value, name) {
+    if (!(value > 0) || !Number.isFinite(value))
+      throw new RangeError(name + " is outside the supported f64 range; nondimensionalize the state");
+    return value;
+  }
 
   // Coefficient order: ax, ay, Jxx, Jxy, Jyy, Kxxx, Kxxy, Kxyy, Kyyy.
   // a(u) = a0 + J u + (1/2) K:uu. Both cells share the SAME derivatives.
   function expansion(a, b, G, epsilon) {
     const x = a.comX - b.comX, y = a.comY - b.comY;
     const s2 = finite(x * x + y * y + epsilon * epsilon, "pair distance squared");
-    const inv = 1 / Math.sqrt(s2), d1 = -G * inv * inv * inv;
-    const d2 = -3 * d1 / s2, d3 = -5 * d2 / s2;
-    const hx = d1 * x, hy = d1 * y;
-    const xx = d1 + d2 * x * x, xy = d2 * x * y, yy = d1 + d2 * y * y;
-    const xxx = 3 * d2 * x + d3 * x * x * x;
-    const xxy = d2 * y + d3 * x * x * y;
-    const xyy = d2 * x + d3 * x * y * y;
-    const yyy = 3 * d2 * y + d3 * y * y * y;
+    const radius = Math.sqrt(s2), ux = x / radius, uy = y / radius;
+    // Normalize displacement before applying inverse powers: forming 1/r^3
+    // first can underflow even when the acceleration 1/r^2 is representable.
+    const forceScale = positiveScale(G / s2, "force kernel");
+    const hessianScale = positiveScale(forceScale / radius, "second derivative");
+    const thirdScale = positiveScale(hessianScale / radius, "third derivative");
+    const hx = -forceScale * ux, hy = -forceScale * uy;
+    const xx = hessianScale * (3 * ux * ux - 1), xy = hessianScale * 3 * ux * uy;
+    const yy = hessianScale * (3 * uy * uy - 1);
+    const xxx = thirdScale * (9 * ux - 15 * ux * ux * ux);
+    const xxy = thirdScale * (3 * uy - 15 * ux * ux * uy);
+    const xyy = thirdScale * (3 * ux - 15 * ux * uy * uy);
+    const yyy = thirdScale * (9 * uy - 15 * uy * uy * uy);
     function coefficients(source, sign) {
       const m = source.mass;
       return new Float64Array([
@@ -131,8 +141,8 @@
     function direct(i, j) {
       const a = bodies[i], b = bodies[j], x = b.x - a.x, y = b.y - a.y;
       const s2 = finite(x * x + y * y + eps2, "direct distance squared");
-      const inv = 1 / Math.sqrt(s2), scale = o.G * inv * inv * inv;
-      const fx = x * scale, fy = y * scale;
+      const radius = Math.sqrt(s2), scale = positiveScale(o.G / s2, "direct force kernel");
+      const fx = (x / radius) * scale, fy = (y / radius) * scale;
       values[i].ax += b.mass * fx; values[i].ay += b.mass * fy;
       values[j].ax -= a.mass * fx; values[j].ay -= a.mass * fy;
       stats.direct++;
@@ -184,9 +194,30 @@
 
   function stepLeapfrog(bodies, dt, options = {}) {
     if (!(finite(dt, "dt") > 0)) throw new RangeError("dt must be positive");
-    for (const b of bodies) { finite(b.vx ?? 0, "body.vx"); finite(b.vy ?? 0, "body.vy"); }
+    if (!Array.isArray(bodies) || bodies.length < 2) throw new RangeError("at least two bodies required");
+    // Preflight every destination before any computation or write. Only own,
+    // writable data fields are supported; absent velocities require extensibility.
+    // Proxy objects are outside this API's ordinary-data-object contract.
+    for (const b of bodies) {
+      if (!b || typeof b !== "object") throw new TypeError("body must be a data object");
+      for (const key of ["x", "y", "vx", "vy"]) {
+        const descriptor = Object.getOwnPropertyDescriptor(b, key);
+        if (descriptor) {
+          if (!("value" in descriptor) || !descriptor.writable)
+            throw new TypeError("body." + key + " must be a writable own data property");
+        } else if (key === "x" || key === "y" || !Object.isExtensible(b)) {
+          throw new TypeError("body requires writable x/y and writable or extensible velocity fields");
+        }
+      }
+      const mass = Object.getOwnPropertyDescriptor(b, "mass");
+      if (!mass || !("value" in mass)) throw new TypeError("body.mass must be an own data property");
+      finite(Object.getOwnPropertyDescriptor(b, "vx")?.value ?? 0, "body.vx");
+      finite(Object.getOwnPropertyDescriptor(b, "vy")?.value ?? 0, "body.vy");
+    }
     // Work on a copy so invalid/overflowing steps leave the caller's state intact.
-    const next = bodies.map(b => ({ ...b }));
+    const next = bodies.map(b => ({ x: b.x, y: b.y,
+      vx: Object.getOwnPropertyDescriptor(b, "vx")?.value ?? 0,
+      vy: Object.getOwnPropertyDescriptor(b, "vy")?.value ?? 0, mass: b.mass }));
     const first = accelerations(next, options);
     for (let i = 0; i < next.length; i++) {
       const b = next[i], a = first.values[i];
@@ -199,7 +230,16 @@
       b.vx = finite(b.vx + 0.5 * dt * a.ax, "updated velocity x");
       b.vy = finite(b.vy + 0.5 * dt * a.ay, "updated velocity y");
     }
-    for (let i = 0; i < bodies.length; i++) Object.assign(bodies[i], next[i]);
+    for (let i = 0; i < bodies.length; i++) {
+      for (const key of ["x", "y", "vx", "vy"]) {
+        // defineProperty avoids inherited setters for previously absent velocities;
+        // keep attributes of existing data properties and all unrelated fields.
+        const descriptor = Object.getOwnPropertyDescriptor(bodies[i], key);
+        Object.defineProperty(bodies[i], key, descriptor
+          ? { ...descriptor, value: next[i][key] }
+          : { value: next[i][key], writable: true, enumerable: true, configurable: true });
+      }
+    }
     return second;
   }
   const api = Object.freeze({ DEFAULTS, accelerations, pairedExpansion, stepLeapfrog });

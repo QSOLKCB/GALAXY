@@ -12,8 +12,9 @@ import { ROOT, BH, MUTUAL, OPTIONS, BUDGET, sha256, errorMetrics, forceDiagnosti
 
 const root = fileURLToPath(ROOT);
 const SOURCE_FILES = ['barnes-hut.js', 'mutual-gravity.js', 'tests/mutual-gravity.mjs',
-  'scripts/bench-mutual-gravity.mjs', 'scripts/lib/mutual-gravity-evidence.mjs'];
-function sourceHashes() {
+  'scripts/bench-mutual-gravity.mjs', 'scripts/lib/mutual-gravity-evidence.mjs',
+  'tests/mutual-gravity-evidence.mjs'];
+export function sourceHashes() {
   return Object.fromEntries(SOURCE_FILES.map(p => [p, sha256(fs.readFileSync(path.join(root, p)))]));
 }
 function sameHashes(a, b) {
@@ -27,7 +28,9 @@ function strictJSON(data) {
   }, 2) + '\n';
 }
 function writeNew(output, name, data) { fs.writeFileSync(path.join(output, name), data, { flag: 'wx' }); }
+function nonnegativeFinite(value) { return Number.isFinite(value) && value >= 0; }
 function qualify(error, force, name) {
+  assert([error.rmsRelative, error.maxRelative, force.normalizedNetForce].every(nonnegativeFinite), `${name}: invalid qualification metric`);
   assert(error.rmsRelative < BUDGET.rmsRelative, `${name}: RMS budget failed`);
   assert(error.maxRelative < BUDGET.maxRelative, `${name}: maximum-relative budget failed`);
   assert(force.normalizedNetForce < BUDGET.normalizedNetForce, `${name}: linear-momentum budget failed`);
@@ -91,7 +94,32 @@ function calibrateBH(bodies, exact, target) {
     tailMatchedWithin25Percent: p99RatioBHToMutual >= .8 && p99RatioBHToMutual <= 1.25,
     candidates };
 }
-function verify(output) {
+function expectedWorkloads() {
+  const forceCases = [], smallNCases = [], trajectoryCases = [];
+  const tuple = (preset, count, seed) => ({ id: `${preset}-${count}-${seed}`, preset, count, seed });
+  for (const count of [128, 512]) for (const seed of [17, 303, 991]) for (const preset of ['disc', 'collision'])
+    forceCases.push(tuple(preset, count, seed));
+  for (const preset of ['disc', 'collision']) forceCases.push(tuple(preset, 2048, 303));
+  for (const count of [8, 32]) for (const preset of ['disc', 'collision']) smallNCases.push(tuple(preset, count, 303));
+  for (const seed of [17, 303, 991]) for (const preset of ['disc', 'collision']) trajectoryCases.push(tuple(preset, 128, seed));
+  return { forceCases, smallNCases, trajectoryCases };
+}
+function verifyWorkloadMatrix(rows, expected, name) {
+  assert(Array.isArray(rows) && rows.length === expected.length, `${name}: incomplete workload matrix`);
+  const tupleKey = row => JSON.stringify([row.id, row.preset, row.count, row.seed]);
+  const wanted = new Set(expected.map(tupleKey)), seen = new Set();
+  for (const row of rows) {
+    assert(row && typeof row === 'object', `${name}: malformed workload identity`);
+    const key = tupleKey(row);
+    assert(wanted.has(key), `${name}: unexpected workload identity ${key}`);
+    assert(!seen.has(key), `${name}: duplicate workload identity ${key}`);
+    seen.add(key);
+    const expectedHash = sha256(JSON.stringify(fixture(row.preset, row.count, row.seed)));
+    assert(row.initialStateSHA256 === expectedHash, `${name}: initial-state hash mismatch for ${row.id}`);
+  }
+  assert(seen.size === wanted.size, `${name}: missing workload identity`);
+}
+export function verify(output, { quiet = false } = {}) {
   const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
   strictJSON(manifest);
   assert(manifest.schema === 'galaxy.mutual-gravity-manifest.v1', 'Wrong manifest schema');
@@ -107,8 +135,8 @@ function verify(output) {
   assert(receipt.status === 'passed', 'Receipt was not successful');
   assert(JSON.stringify(receipt.configuration) === JSON.stringify(OPTIONS), 'Unexpected solver configuration');
   assert(JSON.stringify(receipt.budgets) === JSON.stringify(BUDGET), 'Unexpected qualification budgets');
-  assert(receipt.forceCases.length === 14 && receipt.trajectoryCases.length === 6 && receipt.smallNCases.length === 4, 'Incomplete workload matrix');
-  assert(new Set(receipt.forceCases.map(row => row.id)).size === 14, 'Duplicate force-case identity');
+  for (const [name, expected] of Object.entries(expectedWorkloads()))
+    verifyWorkloadMatrix(receipt[name], expected, name);
   for (const row of receipt.forceCases) {
     qualify(row.mutual.error, row.mutual.force, row.id);
     assert(row.mutual.stats.approximated > 0, `${row.id}: no approximate interaction`);
@@ -121,22 +149,25 @@ function verify(output) {
       assert(d.dt === dt && d.steps === steps && d.forceSolves === steps + 1 && d.duration === .064,
         `${row.id}: malformed trajectory protocol`);
       if (method === 'mutual') {
+        assert([d.maxNormalizedNetForce, d.maxMomentumDrift, d.maxCOMBallisticDrift].every(nonnegativeFinite),
+          `${row.id}: invalid trajectory metric`);
         assert(d.maxNormalizedNetForce < BUDGET.normalizedNetForce && d.maxMomentumDrift < 2e-12 && d.maxCOMBallisticDrift < 2e-12,
           `${row.id}: trajectory conservation gate failed`);
       }
     }
   }
   assert(receipt.tests.exitCode === 0, 'Tests did not pass');
-  console.log(`Verified source hashes and artifact hashes: ${output}`);
+  if (!quiet) console.log(`Verified source hashes, artifact hashes, and exact workload identities: ${output}`);
 }
 
-let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15'), verification = false;
+function main() {
+let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r2'), verification = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === '--output' && process.argv[i + 1]) output = path.resolve(process.argv[++i]);
   else if (arg === '--verify' && process.argv[i + 1]) { output = path.resolve(process.argv[++i]); verification = true; }
   else if (arg === '--help') {
-    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY');
+    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r2 (must not exist)');
     process.exit(0);
   } else throw new Error(`Unknown or incomplete argument: ${arg}`);
 }
@@ -145,11 +176,13 @@ if (fs.existsSync(output)) throw new Error(`Refusing to overwrite existing evide
 fs.mkdirSync(path.dirname(output), { recursive: true }); fs.mkdirSync(output);
 const sourceSHA256 = sourceHashes(), startedAt = new Date().toISOString();
 try {
-  const tested = spawnSync(process.execPath, ['tests/mutual-gravity.mjs'], {
+  const testCommands = ['tests/mutual-gravity.mjs', 'tests/mutual-gravity-evidence.mjs'];
+  const tested = testCommands.map(test => ({ test, ...spawnSync(process.execPath, [test], {
     cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 120000
-  });
-  writeNew(output, 'tests.log', (tested.stdout || '') + (tested.stderr || ''));
-  assert(tested.status === 0 && !tested.error, `Numerical tests failed: ${tested.error || tested.status}`);
+  }) }));
+  writeNew(output, 'tests.log', tested.map(run => `$ node ${run.test}\n${run.stdout || ''}${run.stderr || ''}`).join('\n'));
+  for (const run of tested)
+    assert(run.status === 0 && !run.error, `${run.test} failed: ${run.error || run.status}`);
   const forceCases = [];
   const workloads = [];
   for (const count of [128, 512]) for (const seed of [17, 303, 991]) for (const preset of ['disc', 'collision'])
@@ -205,7 +238,8 @@ try {
       assert(runs.mutual[resolution].diagnostic.maxMomentumDrift < 2e-12, `${id}: trajectory momentum drift`);
       assert(runs.mutual[resolution].diagnostic.maxCOMBallisticDrift < 2e-12, `${id}: trajectory COM drift`);
     }
-    trajectoryCases.push({ id, count: 128, seed, preset, barnesHutTheta: bhTheta, diagnostics });
+    trajectoryCases.push({ id, count: 128, seed, preset, initialStateSHA256: sha256(JSON.stringify(bodies)),
+      barnesHutTheta: bhTheta, diagnostics });
     console.error(`${id}: KDK dt and dt/2 trajectory diagnostics complete`);
   }
   sameHashes(sourceSHA256, sourceHashes());
@@ -229,7 +263,7 @@ try {
       integration: 'Shared-step kick-drift-kick with a fresh force state after every drift and cached boundary acceleration: steps+1 solves. Six N128 states, duration 0.064, dt=.001 and dt/2=.0005. Every step measures exact all-pairs Plummer potential plus kinetic energy, momentum, ballistic COM, angular momentum, and torque.',
       conservationBoundary: 'Linear momentum qualification does not imply angular momentum or energy conservation. Torque and energy are diagnostics, not qualification guarantees; tree switching can affect both.'
     },
-    tests: { command: ['node', 'tests/mutual-gravity.mjs'], exitCode: tested.status, log: 'tests.log' },
+    tests: { commands: testCommands.map(test => ['node', test]), exitCode: 0, log: 'tests.log' },
     summary: {
       forceCases: forceCases.length, trajectoryCases: trajectoryCases.length,
       maxMutualRMSRelative: Math.max(...forceCases.map(row => row.mutual.error.rmsRelative)),
@@ -254,3 +288,6 @@ try {
     startedAt, failedAt: new Date().toISOString(), sourceSHA256, error: String(error) }));
   throw error;
 }
+
+}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
