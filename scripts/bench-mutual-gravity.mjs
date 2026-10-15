@@ -7,6 +7,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { spawnSync } from 'node:child_process';
+import { isDeepStrictEqual, TextDecoder } from 'node:util';
 import { ROOT, BH, MUTUAL, OPTIONS, BUDGET, sha256, errorMetrics, forceDiagnostics,
   fixture, trajectory, stateDifference, quantile } from './lib/mutual-gravity-evidence.mjs';
 
@@ -26,6 +27,44 @@ function strictJSON(data) {
     if (typeof value === 'number' && !Number.isFinite(value)) throw new Error(`Non-finite JSON field ${key}`);
     return value;
   }, 2) + '\n';
+}
+// JSON.parse alone silently keeps the last duplicate key. Scan the validated
+// JSON token stream and compare decoded keys in each object before trusting it.
+export function parseArtifact(bytes, label) {
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  const result = JSON.parse(text);
+  let at = 0;
+  function whitespace() { while (at < text.length && /\s/.test(text[at])) at++; }
+  function string() {
+    const start = at++;
+    while (text[at] !== '"') { if (text[at] === '\\') at++; at++; }
+    at++;
+    return JSON.parse(text.slice(start, at));
+  }
+  function value() {
+    whitespace();
+    if (text[at] === '{') {
+      at++; whitespace(); const keys = new Set();
+      if (text[at] === '}') { at++; return; }
+      while (true) {
+        whitespace(); const key = string();
+        assert(!keys.has(key), `${label}: duplicate JSON object key ${JSON.stringify(key)}`);
+        keys.add(key); whitespace(); at++; value(); whitespace();
+        if (text[at++] === '}') return;
+      }
+    }
+    if (text[at] === '[') {
+      at++; whitespace();
+      if (text[at] === ']') { at++; return; }
+      while (true) { value(); whitespace(); if (text[at++] === ']') return; }
+    }
+    if (text[at] === '"') { string(); return; }
+    while (at < text.length && !/[\s,\]}]/.test(text[at])) at++;
+  }
+  value(); whitespace();
+  assert(at === text.length, `${label}: unconsumed JSON input`);
+  strictJSON(result);
+  return result;
 }
 function writeNew(output, name, data) { fs.writeFileSync(path.join(output, name), data, { flag: 'wx' }); }
 function nonnegativeFinite(value) { return Number.isFinite(value) && value >= 0; }
@@ -119,17 +158,44 @@ function verifyWorkloadMatrix(rows, expected, name) {
   }
   assert(seen.size === wanted.size, `${name}: missing workload identity`);
 }
+export function summarizeCases(forceCases, trajectoryCases) {
+  const baseline = forceCases.filter(row => row.count === 128 || row.count === 512);
+  return {
+    forceCases: forceCases.length, trajectoryCases: trajectoryCases.length,
+    maxMutualRMSRelative: Math.max(...forceCases.map(row => row.mutual.error.rmsRelative)),
+    maxMutualMaxRelative: Math.max(...forceCases.map(row => row.mutual.error.maxRelative)),
+    maxMutualNormalizedNetForce: Math.max(...forceCases.map(row => row.mutual.force.normalizedNetForce)),
+    maxDirectNormalizedNetForce: Math.max(...forceCases.map(row => row.direct.force.normalizedNetForce)),
+    baselineBHNormalizedNetForceRange: [Math.min(...baseline.map(row => row.barnesHutTheta05.force.normalizedNetForce)),
+      Math.max(...baseline.map(row => row.barnesHutTheta05.force.normalizedNetForce))],
+    matchedRMSCases: forceCases.filter(row => row.calibration.matchedRMS).length,
+    matchedRMSAndP99Cases: forceCases.filter(row => row.calibration.matchedRMS && row.calibration.tailMatchedWithin25Percent).length,
+    maxTrajectoryMomentumDrift: Math.max(...trajectoryCases.flatMap(row => ['coarse', 'fine'].map(r => row.diagnostics.mutual[r].maxMomentumDrift))),
+    maxTrajectoryCOMBallisticDrift: Math.max(...trajectoryCases.flatMap(row => ['coarse', 'fine'].map(r => row.diagnostics.mutual[r].maxCOMBallisticDrift)))
+  };
+}
+function validateSummaryInputs(row) {
+  const mutual = row.mutual.error, bh = row.barnesHutMatched.error, c = row.calibration;
+  assert([row.direct.force.normalizedNetForce, row.barnesHutTheta05.force.normalizedNetForce,
+    mutual.p99Relative, bh.rmsRelative, bh.p99Relative].every(nonnegativeFinite), `${row.id}: invalid summary input`);
+  const rmsRatio = bh.rmsRelative / Math.max(mutual.rmsRelative, 1e-30);
+  const tailRatio = bh.p99Relative / Math.max(mutual.p99Relative, 1e-30);
+  const directEquivalent = mutual.rmsRelative < 1e-12;
+  assert(c.targetDirectEquivalent === directEquivalent && c.rmsRatioBHToMutual === rmsRatio && c.p99RatioBHToMutual === tailRatio &&
+    c.matchedRMS === (!directEquivalent && rmsRatio >= .8 && rmsRatio <= 1.25) &&
+    c.tailMatchedWithin25Percent === (tailRatio >= .8 && tailRatio <= 1.25), `${row.id}: inconsistent calibration summary inputs`);
+}
 export function verify(output, { quiet = false } = {}) {
-  const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
-  strictJSON(manifest);
+  const manifestBytes = fs.readFileSync(path.join(output, 'manifest.json'));
+  const manifest = parseArtifact(manifestBytes, 'manifest.json');
   assert(manifest.schema === 'galaxy.mutual-gravity-manifest.v1', 'Wrong manifest schema');
   assert(manifest.status === 'passed', 'Capture was not successful');
   sameHashes(manifest.sourceSHA256, sourceHashes());
   assert(Object.keys(manifest.files).sort().join(',') === 'receipt.json,tests.log', 'Unexpected receipt file set');
-  for (const [name, expected] of Object.entries(manifest.files))
-    assert(sha256(fs.readFileSync(path.join(output, name))) === expected, `${name}: hash mismatch`);
-  const receipt = JSON.parse(fs.readFileSync(path.join(output, 'receipt.json'), 'utf8'));
-  strictJSON(receipt);
+  const receiptBytes = fs.readFileSync(path.join(output, 'receipt.json'));
+  assert(sha256(receiptBytes) === manifest.files['receipt.json'], 'receipt.json: hash mismatch');
+  assert(sha256(fs.readFileSync(path.join(output, 'tests.log'))) === manifest.files['tests.log'], 'tests.log: hash mismatch');
+  const receipt = parseArtifact(receiptBytes, 'receipt.json');
   assert(receipt.schema === 'galaxy.mutual-gravity-receipt.v1', 'Wrong receipt schema');
   sameHashes(receipt.sourceSHA256, manifest.sourceSHA256);
   assert(receipt.status === 'passed', 'Receipt was not successful');
@@ -139,6 +205,7 @@ export function verify(output, { quiet = false } = {}) {
     verifyWorkloadMatrix(receipt[name], expected, name);
   for (const row of receipt.forceCases) {
     qualify(row.mutual.error, row.mutual.force, row.id);
+    validateSummaryInputs(row);
     assert(row.mutual.stats.approximated > 0, `${row.id}: no approximate interaction`);
     assert(row.mutual.stats.direct > 0, `${row.id}: no direct interaction`);
   }
@@ -156,18 +223,20 @@ export function verify(output, { quiet = false } = {}) {
       }
     }
   }
+  assert(isDeepStrictEqual(receipt.summary, summarizeCases(receipt.forceCases, receipt.trajectoryCases)),
+    'Receipt summary does not exactly match validated cases');
   assert(receipt.tests.exitCode === 0, 'Tests did not pass');
   if (!quiet) console.log(`Verified source hashes, artifact hashes, and exact workload identities: ${output}`);
 }
 
 function main() {
-let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r3'), verification = false;
+let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r4'), verification = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === '--output' && process.argv[i + 1]) output = path.resolve(process.argv[++i]);
   else if (arg === '--verify' && process.argv[i + 1]) { output = path.resolve(process.argv[++i]); verification = true; }
   else if (arg === '--help') {
-    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r3 (must not exist)');
+    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r4 (must not exist)');
     process.exit(0);
   } else throw new Error(`Unknown or incomplete argument: ${arg}`);
 }
@@ -264,19 +333,7 @@ try {
       conservationBoundary: 'Linear momentum qualification does not imply angular momentum or energy conservation. Torque and energy are diagnostics, not qualification guarantees; tree switching can affect both.'
     },
     tests: { commands: testCommands.map(test => ['node', test]), exitCode: 0, log: 'tests.log' },
-    summary: {
-      forceCases: forceCases.length, trajectoryCases: trajectoryCases.length,
-      maxMutualRMSRelative: Math.max(...forceCases.map(row => row.mutual.error.rmsRelative)),
-      maxMutualMaxRelative: Math.max(...forceCases.map(row => row.mutual.error.maxRelative)),
-      maxMutualNormalizedNetForce: Math.max(...forceCases.map(row => row.mutual.force.normalizedNetForce)),
-      maxDirectNormalizedNetForce: Math.max(...forceCases.map(row => row.direct.force.normalizedNetForce)),
-      baselineBHNormalizedNetForceRange: [Math.min(...forceCases.slice(0, 12).map(row => row.barnesHutTheta05.force.normalizedNetForce)),
-        Math.max(...forceCases.slice(0, 12).map(row => row.barnesHutTheta05.force.normalizedNetForce))],
-      matchedRMSCases: forceCases.filter(row => row.calibration.matchedRMS).length,
-      matchedRMSAndP99Cases: forceCases.filter(row => row.calibration.matchedRMS && row.calibration.tailMatchedWithin25Percent).length,
-      maxTrajectoryMomentumDrift: Math.max(...trajectoryCases.flatMap(row => ['coarse', 'fine'].map(r => row.diagnostics.mutual[r].maxMomentumDrift))),
-      maxTrajectoryCOMBallisticDrift: Math.max(...trajectoryCases.flatMap(row => ['coarse', 'fine'].map(r => row.diagnostics.mutual[r].maxCOMBallisticDrift)))
-    }, forceCases, smallNCases, trajectoryCases
+    summary: summarizeCases(forceCases, trajectoryCases), forceCases, smallNCases, trajectoryCases
   };
   writeNew(output, 'receipt.json', strictJSON(receipt));
   writeNew(output, 'manifest.json', strictJSON({ schema: 'galaxy.mutual-gravity-manifest.v1', status: 'passed',

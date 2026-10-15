@@ -213,6 +213,16 @@
   function stepLeapfrog(bodies, dt, options = {}) {
     if (!(finite(dt, "dt") > 0)) throw new RangeError("dt must be positive");
     if (!Array.isArray(bodies) || bodies.length < 2) throw new RangeError("at least two bodies required");
+    // Resolve caller-controlled option accessors before preflighting destinations.
+    const normalizedOptions = optionsFor(options);
+    // Snapshot own array elements without invoking accessors or custom iterators.
+    const destinations = [];
+    for (let i = 0; i < bodies.length; i++) {
+      const entry = Object.getOwnPropertyDescriptor(bodies, String(i));
+      if (!entry || !("value" in entry)) throw new TypeError("bodies must have own data elements");
+      destinations.push(entry.value);
+    }
+    bodies = destinations;
     // Preflight every destination before any computation or write. Only own,
     // writable data fields are supported; absent velocities require extensibility.
     // Proxy objects are outside this API's ordinary-data-object contract.
@@ -236,13 +246,13 @@
     const next = bodies.map(b => ({ x: b.x, y: b.y,
       vx: Object.getOwnPropertyDescriptor(b, "vx")?.value ?? 0,
       vy: Object.getOwnPropertyDescriptor(b, "vy")?.value ?? 0, mass: b.mass }));
-    const first = accelerations(next, options);
+    const first = accelerations(next, normalizedOptions);
     for (let i = 0; i < next.length; i++) {
       const b = next[i], a = first.values[i];
       b.vx = (b.vx ?? 0) + 0.5 * dt * a.ax; b.vy = (b.vy ?? 0) + 0.5 * dt * a.ay;
       b.x += dt * b.vx; b.y += dt * b.vy;
     }
-    const second = accelerations(next, options);
+    const second = accelerations(next, normalizedOptions);
     for (let i = 0; i < next.length; i++) {
       const b = next[i], a = second.values[i];
       b.vx = finite(b.vx + 0.5 * dt * a.ax, "updated velocity x");

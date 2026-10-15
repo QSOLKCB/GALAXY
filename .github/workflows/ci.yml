@@ -40,7 +40,7 @@ jobs:
           node tests/barnes-hut.mjs
           node tests/mutual-gravity.mjs
           node tests/mutual-gravity-evidence.mjs
-          node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r3
+          node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r4
           node tests/nbody-view.mjs
           cargo test --manifest-path nbody/Cargo.toml --locked --offline
           cargo run --manifest-path nbody/Cargo.toml --locked --offline -- verify

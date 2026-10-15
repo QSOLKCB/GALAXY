@@ -114,7 +114,7 @@ initialized to zero, without invoking inherited getters/setters. Every destinati
 is preflighted before computation, and only x/y/vx/vy are committed after the
 complete numerical step succeeds. Frozen bodies, accessor-backed state fields,
 and sealed bodies missing velocities are rejected without changing other bodies.
-Unrelated fields are preserved. Proxy objects and objects that mutate themselves
+Options are normalized once before destination preflight. Body arrays must have own data elements; array element accessors are rejected without invocation. User code in option accessors runs before the transaction boundary and its own side effects cannot be rolled back. Unrelated fields are preserved. Proxy objects and objects that mutate themselves
 through traps are unsupported; the transactional guarantee is for ordinary data
 objects. Its returned forces/tree are at the final state.
 A positive finite dt is required. Integration timestep selection remains the caller's
@@ -157,7 +157,7 @@ Run from the repository root:
 ```
 node tests/mutual-gravity.mjs
 node tests/mutual-gravity-evidence.mjs
-node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r3
+node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r4
 # New captures refuse to overwrite any existing evidence directory:
 node scripts/bench-mutual-gravity.mjs --output runs/my-mutual-capture
 ```

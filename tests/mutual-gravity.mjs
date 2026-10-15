@@ -189,6 +189,22 @@ for (const kind of ['frozen', 'sealed-missing-velocity', 'readonly-x', 'setter-x
   assert.throws(() => MUTUAL.stepLeapfrog(state, .01), TypeError, kind);
   assert.deepEqual(state.map(body => Object.getOwnPropertyDescriptors(body)), saved, kind);
 }
+// Resolve options exactly once before preflight, including side-effecting getters.
+const optionsState = [{ x: 0, y: 0, mass: 1 }, { x: 1, y: 0, mass: 2 }];
+const optionsBefore = structuredClone(optionsState);
+let thetaReads = 0;
+assert.throws(() => MUTUAL.stepLeapfrog(optionsState, .01, {
+  get theta() { thetaReads++; Object.freeze(optionsState[1]); return .3; }
+}), TypeError);
+assert.deepEqual(optionsState, optionsBefore);
+assert.equal(thetaReads, 1);
+const onceState = clone(valid);
+let onceReads = 0;
+MUTUAL.stepLeapfrog(onceState, .001, { get theta() { onceReads++; return .3; } });
+assert.equal(onceReads, 1);
+const accessorArray = [{ x: 0, y: 0, mass: 1 }, { x: 1, y: 0, mass: 1 }];
+Object.defineProperty(accessorArray, '1', { get() { throw new Error('array getter invoked'); } });
+assert.throws(() => MUTUAL.stepLeapfrog(accessorArray, .001), /own data elements/);
 const ordinary = [{ x: 0, y: 0, vx: 0, vy: 0, mass: 1 }, { x: 1, y: 0, vx: 0, vy: 0, mass: 1 }];
 Object.defineProperty(ordinary[0], 'annotation', { value: 'preserve', writable: false });
 Object.seal(ordinary[1]);
