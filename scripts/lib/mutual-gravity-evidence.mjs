@@ -1,16 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Independent diagnostics shared by tests and the bounded evidence runner.
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import { compileFunction } from 'node:vm';
+import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = new URL('../../', import.meta.url);
-const require = createRequire(import.meta.url);
-// Both timed implementations use the same native realm; vm is only used by
-// the separate browser-global conformance test, never asymmetrically in timing.
-require(fileURLToPath(new URL('barnes-hut.js', ROOT)));
-export const BH = globalThis.GalaxyBarnesHut;
-export const MUTUAL = require(fileURLToPath(new URL('mutual-gravity.js', ROOT)));
+// Read and hash both solver byte strings before evaluating either. Compile
+// those exact UTF-8 bytes in the current native realm, never through require's
+// mutable cache or an asymmetric vm context. These retained identities bind
+// the executable functions to the later capture source-hash checks.
+const solverBytes = Object.fromEntries(['barnes-hut.js', 'mutual-gravity.js'].map(name =>
+  [name, fs.readFileSync(new URL(name, ROOT))]));
+export const LOADED_SOURCE_SHA256 = Object.freeze(Object.fromEntries(
+  Object.entries(solverBytes).map(([name, bytes]) => [name, sha256(bytes)])));
+function evaluate(name, globalName) {
+  const source = new TextDecoder('utf-8', { fatal: true }).decode(solverBytes[name]);
+  const module = { exports: {} }, namespace = Object.create(null);
+  // Export names are private to this evaluation; existing real-global getters
+  // or setters cannot substitute an old API. Intrinsics remain native-realm.
+  compileFunction(source, ['module', 'exports', 'globalThis'], { filename: fileURLToPath(new URL(name, ROOT)) })(module, module.exports, namespace);
+  const api = namespace[globalName];
+  if (!api || typeof api.accelerations !== 'function' || (name === 'mutual-gravity.js' && module.exports !== api))
+    throw new Error(`Solver did not publish its freshly evaluated API: ${name}`);
+  return api;
+}
+export const BH = evaluate('barnes-hut.js', 'GalaxyBarnesHut');
+export const MUTUAL = evaluate('mutual-gravity.js', 'GalaxyMutualGravity');
 export const OPTIONS = Object.freeze({ G: 1, softening: 0.03, theta: 0.3, bucket: 4, maxDepth: 40 });
 export const BUDGET = Object.freeze({ rmsRelative: 0.03, maxRelative: 0.25, normalizedNetForce: 5e-13 });
 export function sha256(value) { return createHash('sha256').update(value).digest('hex'); }

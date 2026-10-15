@@ -27,21 +27,22 @@
     }
   }
   function zero() { return new Float64Array(9); }
+  const MIN_NORMAL = 2 ** -1022;
   function positiveScale(value, name) {
-    if (!(value > 0) || !Number.isFinite(value))
+    if (!(value >= MIN_NORMAL) || !Number.isFinite(value))
       throw new RangeError(name + " is outside the supported f64 range; nondimensionalize the state");
     return value;
   }
 
   function product(a, b) {
     const value = a * b;
-    if (!Number.isFinite(value) || (value === 0 && a !== 0 && b !== 0))
+    if (!Number.isFinite(value) || (a !== 0 && b !== 0 && Math.abs(value) < MIN_NORMAL))
       throw new RangeError("kernel product is outside the supported f64 range; nondimensionalize the state");
     return value;
   }
   function direction(value, radius) {
     const result = value / radius;
-    if (result === 0 && value !== 0)
+    if (value !== 0 && Math.abs(result) < MIN_NORMAL)
       throw new RangeError("normalized displacement is outside the supported f64 range; nondimensionalize the state");
     return result;
   }
@@ -70,8 +71,8 @@
     function coefficients(source, sign) {
       const m = source.mass;
       return new Float64Array([
-        product(sign * m, hx + 0.5 * (product(xxx, source.qxx) + 2 * product(xxy, source.qxy) + product(xyy, source.qyy))),
-        product(sign * m, hy + 0.5 * (product(xxy, source.qxx) + 2 * product(xyy, source.qxy) + product(yyy, source.qyy))),
+        product(sign * m, hx + product(0.5, product(xxx, source.qxx) + 2 * product(xxy, source.qxy) + product(xyy, source.qyy))),
+        product(sign * m, hy + product(0.5, product(xxy, source.qxx) + 2 * product(xyy, source.qxy) + product(yyy, source.qyy))),
         product(m, xx), product(m, xy), product(m, yy),
         product(sign * m, xxx), product(sign * m, xxy), product(sign * m, xyy), product(sign * m, yyy)
       ]);

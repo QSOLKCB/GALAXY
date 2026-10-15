@@ -127,7 +127,7 @@ rejected, not silently presented as a result. Extreme scales can overflow even i
 individual inputs are finite; nondimensionalize such states. Kernel derivatives
 use normalized displacement before inverse powers, so a two-body acceleration at
 separation 1e108 is retained as about 1e-216 rather than lost through an underflowed
-inverse cube. Accepted expansions additionally require representable positive
+inverse cube. The conservative domain excludes subnormal nonzero kernel scales, checked directional/moment/mass products, and half-scaled moment contractions (absolute magnitude below 2^-1022), even where a subsequent large mass could recover a normal result. Such states throw rather than silently lose contributions. Ordinary floating-point cancellation remains subject to roundoff. Accepted expansions additionally require representable positive
 second/third derivative scales; `pairedExpansion` at that separation deliberately
 throws because its required higher coefficients cannot be represented. This lane
 fails closed outside that coefficient range rather than returning an all-zero
@@ -157,7 +157,7 @@ Run from the repository root:
 ```
 node tests/mutual-gravity.mjs
 node tests/mutual-gravity-evidence.mjs
-node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r4
+node scripts/bench-mutual-gravity.mjs --verify evidence/mutual-gravity-2026-10-15-r5
 # New captures refuse to overwrite any existing evidence directory:
 node scripts/bench-mutual-gravity.mjs --output runs/my-mutual-capture
 ```

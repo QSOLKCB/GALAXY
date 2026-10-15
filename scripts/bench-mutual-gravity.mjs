@@ -9,14 +9,17 @@ import { performance } from 'node:perf_hooks';
 import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual, TextDecoder } from 'node:util';
 import { ROOT, BH, MUTUAL, OPTIONS, BUDGET, sha256, errorMetrics, forceDiagnostics,
-  fixture, trajectory, stateDifference, quantile } from './lib/mutual-gravity-evidence.mjs';
+  fixture, trajectory, stateDifference, quantile, LOADED_SOURCE_SHA256 } from './lib/mutual-gravity-evidence.mjs';
 
 const root = fileURLToPath(ROOT);
 const SOURCE_FILES = ['barnes-hut.js', 'mutual-gravity.js', 'tests/mutual-gravity.mjs',
   'scripts/bench-mutual-gravity.mjs', 'scripts/lib/mutual-gravity-evidence.mjs',
   'tests/mutual-gravity-evidence.mjs'];
 export function sourceHashes() {
-  return Object.fromEntries(SOURCE_FILES.map(p => [p, sha256(fs.readFileSync(path.join(root, p)))]));
+  const hashes = Object.fromEntries(SOURCE_FILES.map(p => [p, sha256(fs.readFileSync(path.join(root, p)))]));
+  for (const [name, loadedHash] of Object.entries(LOADED_SOURCE_SHA256))
+    assert(hashes[name] === loadedHash, `Loaded solver source differs from capture source: ${name}`);
+  return hashes;
 }
 function sameHashes(a, b) {
   if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error('Source changed during capture or does not match receipt');
@@ -118,11 +121,14 @@ function calibrateBH(bodies, exact, target) {
     const error = errorMetrics(result.values, exact);
     candidates.push({ theta, error });
   }
+  return selectCalibration(candidates, target);
+}
+function selectCalibration(candidates, target) {
   // Choose closest achieved RMS among candidates that meet the inherited
   // RMS/worst gates. Matching is declared only within an explicit 25% band.
   const qualified = candidates.filter(c => c.error.rmsRelative < BUDGET.rmsRelative && c.error.maxRelative < BUDGET.maxRelative);
-  qualified.sort((a, b) => Math.abs(Math.log(Math.max(a.error.rmsRelative, 1e-30) / target.rmsRelative)) -
-    Math.abs(Math.log(Math.max(b.error.rmsRelative, 1e-30) / target.rmsRelative)));
+  qualified.sort((a, b) => Math.abs(Math.log(Math.max(a.error.rmsRelative, 1e-30) / Math.max(target.rmsRelative, 1e-30))) -
+    Math.abs(Math.log(Math.max(b.error.rmsRelative, 1e-30) / Math.max(target.rmsRelative, 1e-30))));
   const selected = qualified[0];
   assert(selected, 'No BH calibration point satisfies baseline budgets');
   const targetDirectEquivalent = target.rmsRelative < 1e-12;
@@ -174,16 +180,58 @@ export function summarizeCases(forceCases, trajectoryCases) {
     maxTrajectoryCOMBallisticDrift: Math.max(...trajectoryCases.flatMap(row => ['coarse', 'fine'].map(r => row.diagnostics.mutual[r].maxCOMBallisticDrift)))
   };
 }
+const ERROR_FIELDS = ['rmsRelative', 'p50Relative', 'p90Relative', 'p95Relative', 'p99Relative',
+  'maxRelative', 'rmsAbsolute', 'globalRelativeL2'];
+function validateErrors(error, label) {
+  assert(error && isDeepStrictEqual(Object.keys(error).sort(), [...ERROR_FIELDS].sort()) &&
+    ERROR_FIELDS.every(key => nonnegativeFinite(error[key])), `${label}: invalid force-error record`);
+  assert(error.p50Relative <= error.p90Relative && error.p90Relative <= error.p95Relative &&
+    error.p95Relative <= error.p99Relative && error.p99Relative <= error.maxRelative &&
+    error.rmsRelative <= error.maxRelative, `${label}: inconsistent force-error record`);
+}
+function validateCalibration(row) {
+  validateErrors(row.mutual.error, row.id);
+  const candidates = row.calibration?.candidates;
+  assert(Array.isArray(candidates) && candidates.length === 41, `${row.id}: invalid calibration grid`);
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    assert(candidate && isDeepStrictEqual(Object.keys(candidate).sort(), ['error', 'theta']) && candidate.theta === i / 40,
+      `${row.id}: invalid calibration grid`);
+    validateErrors(candidate.error, `${row.id} candidate ${i}`);
+  }
+  const selected = selectCalibration(candidates, row.mutual.error);
+  assert(isDeepStrictEqual(row.calibration, selected), `${row.id}: inconsistent calibration selection`);
+  const selectedError = candidates.find(candidate => candidate.theta === selected.theta).error;
+  assert(isDeepStrictEqual(row.barnesHutMatched.error, selectedError), `${row.id}: matched error differs from selected calibration candidate`);
+}
 function validateSummaryInputs(row) {
-  const mutual = row.mutual.error, bh = row.barnesHutMatched.error, c = row.calibration;
-  assert([row.direct.force.normalizedNetForce, row.barnesHutTheta05.force.normalizedNetForce,
-    mutual.p99Relative, bh.rmsRelative, bh.p99Relative].every(nonnegativeFinite), `${row.id}: invalid summary input`);
-  const rmsRatio = bh.rmsRelative / Math.max(mutual.rmsRelative, 1e-30);
-  const tailRatio = bh.p99Relative / Math.max(mutual.p99Relative, 1e-30);
-  const directEquivalent = mutual.rmsRelative < 1e-12;
-  assert(c.targetDirectEquivalent === directEquivalent && c.rmsRatioBHToMutual === rmsRatio && c.p99RatioBHToMutual === tailRatio &&
-    c.matchedRMS === (!directEquivalent && rmsRatio >= .8 && rmsRatio <= 1.25) &&
-    c.tailMatchedWithin25Percent === (tailRatio >= .8 && tailRatio <= 1.25), `${row.id}: inconsistent calibration summary inputs`);
+  assert([row.direct.force.normalizedNetForce, row.barnesHutTheta05.force.normalizedNetForce].every(nonnegativeFinite),
+    `${row.id}: invalid summary input`);
+}
+const TEST_COMMANDS = Object.freeze([['node', 'tests/mutual-gravity.mjs'], ['node', 'tests/mutual-gravity-evidence.mjs']].map(Object.freeze));
+function commandOutcome(run) {
+  return { command: run.command, exitCode: run.exitCode, signal: run.signal, error: run.error,
+    stdoutSHA256: sha256(run.stdout), stderrSHA256: sha256(run.stderr) };
+}
+function validateTestEvidence(tests, log) {
+  assert(tests && tests.exitCode === 0 && tests.log === 'tests.log' && isDeepStrictEqual(tests.commands, TEST_COMMANDS),
+    'Tests require the exact successful command set');
+  assert(log.schema === 'galaxy.mutual-gravity-test-log.v1' && Array.isArray(log.runs) && log.runs.length === TEST_COMMANDS.length,
+    'Malformed structured test log');
+  for (let i = 0; i < log.runs.length; i++) {
+    const run = log.runs[i];
+    assert(isDeepStrictEqual(run.command, TEST_COMMANDS[i]) && run.exitCode === 0 && run.signal === null && run.error === null &&
+      typeof run.stdout === 'string' && typeof run.stderr === 'string', 'Test command did not complete successfully');
+    if (i === 0) {
+      const marker = 'Mutual-gravity CPU/f64 checks passed\n';
+      assert(run.stdout.startsWith(marker), 'Numerical test log lacks its completion marker');
+      const summary = parseArtifact(Buffer.from(run.stdout.slice(marker.length)), 'numerical test output');
+      assert(summary && Array.isArray(summary.cases) && summary.cases.length >= 27 && summary.pairedPotential && summary.trajectory,
+        'Numerical test output is incomplete');
+    } else assert(/^Mutual-gravity evidence verifier checks passed \([1-9][0-9]* checks; synthetic fixtures only\)\n$/.test(run.stdout),
+      'Verifier test log lacks its completion marker');
+  }
+  assert(isDeepStrictEqual(tests.outcomes, log.runs.map(commandOutcome)), 'Test outcomes disagree with structured log');
 }
 export function verify(output, { quiet = false } = {}) {
   const manifestBytes = fs.readFileSync(path.join(output, 'manifest.json'));
@@ -194,7 +242,9 @@ export function verify(output, { quiet = false } = {}) {
   assert(Object.keys(manifest.files).sort().join(',') === 'receipt.json,tests.log', 'Unexpected receipt file set');
   const receiptBytes = fs.readFileSync(path.join(output, 'receipt.json'));
   assert(sha256(receiptBytes) === manifest.files['receipt.json'], 'receipt.json: hash mismatch');
-  assert(sha256(fs.readFileSync(path.join(output, 'tests.log'))) === manifest.files['tests.log'], 'tests.log: hash mismatch');
+  const testLogBytes = fs.readFileSync(path.join(output, 'tests.log'));
+  assert(sha256(testLogBytes) === manifest.files['tests.log'], 'tests.log: hash mismatch');
+  const testLog = parseArtifact(testLogBytes, 'tests.log');
   const receipt = parseArtifact(receiptBytes, 'receipt.json');
   assert(receipt.schema === 'galaxy.mutual-gravity-receipt.v1', 'Wrong receipt schema');
   sameHashes(receipt.sourceSHA256, manifest.sourceSHA256);
@@ -205,11 +255,14 @@ export function verify(output, { quiet = false } = {}) {
     verifyWorkloadMatrix(receipt[name], expected, name);
   for (const row of receipt.forceCases) {
     qualify(row.mutual.error, row.mutual.force, row.id);
+    validateCalibration(row);
     validateSummaryInputs(row);
     assert(row.mutual.stats.approximated > 0, `${row.id}: no approximate interaction`);
     assert(row.mutual.stats.direct > 0, `${row.id}: no direct interaction`);
   }
-  for (const row of receipt.smallNCases) qualify(row.mutual.error, row.mutual.force, row.id);
+  for (const row of receipt.smallNCases) {
+    qualify(row.mutual.error, row.mutual.force, row.id); validateCalibration(row);
+  }
   for (const row of receipt.trajectoryCases) for (const method of ['direct', 'mutual', 'barnes-hut']) {
     for (const [resolution, dt, steps] of [['coarse', .001, 64], ['fine', .0005, 128]]) {
       const d = row.diagnostics[method][resolution];
@@ -225,18 +278,18 @@ export function verify(output, { quiet = false } = {}) {
   }
   assert(isDeepStrictEqual(receipt.summary, summarizeCases(receipt.forceCases, receipt.trajectoryCases)),
     'Receipt summary does not exactly match validated cases');
-  assert(receipt.tests.exitCode === 0, 'Tests did not pass');
+  validateTestEvidence(receipt.tests, testLog);
   if (!quiet) console.log(`Verified source hashes, artifact hashes, and exact workload identities: ${output}`);
 }
 
 function main() {
-let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r4'), verification = false;
+let output = path.join(root, 'evidence', 'mutual-gravity-2026-10-15-r5'), verification = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === '--output' && process.argv[i + 1]) output = path.resolve(process.argv[++i]);
   else if (arg === '--verify' && process.argv[i + 1]) { output = path.resolve(process.argv[++i]); verification = true; }
   else if (arg === '--help') {
-    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r4 (must not exist)');
+    console.log('Usage: node scripts/bench-mutual-gravity.mjs [--output NEW_DIRECTORY]\n       node scripts/bench-mutual-gravity.mjs --verify DIRECTORY\nDefault capture directory: evidence/mutual-gravity-2026-10-15-r5 (must not exist)');
     process.exit(0);
   } else throw new Error(`Unknown or incomplete argument: ${arg}`);
 }
@@ -245,13 +298,15 @@ if (fs.existsSync(output)) throw new Error(`Refusing to overwrite existing evide
 fs.mkdirSync(path.dirname(output), { recursive: true }); fs.mkdirSync(output);
 const sourceSHA256 = sourceHashes(), startedAt = new Date().toISOString();
 try {
-  const testCommands = ['tests/mutual-gravity.mjs', 'tests/mutual-gravity-evidence.mjs'];
-  const tested = testCommands.map(test => ({ test, ...spawnSync(process.execPath, [test], {
-    cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 120000
-  }) }));
-  writeNew(output, 'tests.log', tested.map(run => `$ node ${run.test}\n${run.stdout || ''}${run.stderr || ''}`).join('\n'));
-  for (const run of tested)
-    assert(run.status === 0 && !run.error, `${run.test} failed: ${run.error || run.status}`);
+  const testRuns = TEST_COMMANDS.map(command => {
+    const run = spawnSync(process.execPath, command.slice(1), { cwd: root, encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024, timeout: 120000 });
+    return { command, exitCode: run.status, signal: run.signal ?? null, error: run.error ? String(run.error) : null,
+      stdout: run.stdout || '', stderr: run.stderr || '' };
+  });
+  writeNew(output, 'tests.log', strictJSON({ schema: 'galaxy.mutual-gravity-test-log.v1', runs: testRuns }));
+  for (const run of testRuns)
+    assert(run.exitCode === 0 && run.error === null && run.signal === null, `${run.command.join(' ')} failed: ${run.error || run.exitCode}`);
   const forceCases = [];
   const workloads = [];
   for (const count of [128, 512]) for (const seed of [17, 303, 991]) for (const preset of ['disc', 'collision'])
@@ -328,11 +383,11 @@ try {
       accuracy: 'Per-body relative errors use max(|direct acceleration|, 1e-30); p50/p90/p95/p99 use linear interpolation. The inherited browser BH gates are RMS < 0.03 and max < 0.25.',
       balance: 'Normalized internal force is |sum m*a| / max(sum m*|a|,1e-30). No mean-force subtraction or post-hoc balancing.',
       matching: 'BH theta grid 0:0.025:1; choose closest achieved RMS among inherited-budget-passing candidates. RMS match means BH/mutual ratio in [0.8,1.25]. p99 and maximum are separately reported; matching is per state, not a portable theta equivalence.',
-      timing: 'Both implementations execute in the same native Node realm (no asymmetric vm wrapper). Two warmup solves and nine measured solves, alternating method order. Timed whole calls include validation, allocations, fresh tree construction, moments, traversal, and propagation. Diagnostics, direct oracle comparison, and calibration are outside the timed call. No forced GC; JIT/GC/scheduling noise remains. Raw wall times only.',
+      timing: 'Both implementations are compiled from retained source-hashed byte buffers in the same native Node realm, bypassing the CommonJS cache (no asymmetric vm context). Two warmup solves and nine measured solves, alternating method order. Timed whole calls include validation, allocations, fresh tree construction, moments, traversal, and propagation. Diagnostics, direct oracle comparison, and calibration are outside the timed call. No forced GC; JIT/GC/scheduling noise remains. Raw wall times only.',
       integration: 'Shared-step kick-drift-kick with a fresh force state after every drift and cached boundary acceleration: steps+1 solves. Six N128 states, duration 0.064, dt=.001 and dt/2=.0005. Every step measures exact all-pairs Plummer potential plus kinetic energy, momentum, ballistic COM, angular momentum, and torque.',
       conservationBoundary: 'Linear momentum qualification does not imply angular momentum or energy conservation. Torque and energy are diagnostics, not qualification guarantees; tree switching can affect both.'
     },
-    tests: { commands: testCommands.map(test => ['node', test]), exitCode: 0, log: 'tests.log' },
+    tests: { commands: TEST_COMMANDS, exitCode: 0, log: 'tests.log', outcomes: testRuns.map(commandOutcome) },
     summary: summarizeCases(forceCases, trajectoryCases), forceCases, smallNCases, trajectoryCases
   };
   writeNew(output, 'receipt.json', strictJSON(receipt));

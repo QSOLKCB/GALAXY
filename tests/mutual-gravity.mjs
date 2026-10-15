@@ -256,5 +256,12 @@ const shared = trajectory(initial, 'mutual', OPTIONS, dt, 1);
 assert.ok(stateDifference(oneStep, shared.bodies).maxVelocity < 2e-15);
 summary.trajectory = { coarse: coarse.diagnostic, fine: fine.diagnostic,
   versusDirect: stateDifference(coarse.bodies, direct.bodies), timestepControl: stateDifference(coarse.bodies, fine.bodies) };
+// Subnormal kernel/moment terms are outside the conservative supported domain:
+// a later large mass must not amplify terms lost by contraction/half scaling.
+assert.throws(() => MUTUAL.pairedExpansion(
+  { mass: 1, comX: 0, comY: 0, qxx: 0, qxy: 0, qyy: 0 },
+  { mass: 1e308, comX: 1, comY: 0, qxx: 5e-17, qxy: 0, qyy: 0.6672666666666666 },
+  1e-308, .03), RangeError);
+
 console.log('Mutual-gravity CPU/f64 checks passed');
 console.log(JSON.stringify(summary, null, 2));
