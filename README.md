@@ -36,6 +36,10 @@ The v0.4.0 native-CPU evidence baseline remains archived at Zenodo as:
 
 ## Project status
 
+A separate opt-in [CPU/f64 mutual-gravity research lane](docs/MUTUAL-GRAVITY.md)
+adds symmetric cell-cell forces with direct-oracle conformance tests. Existing
+browser/native/GPU defaults are unchanged; no speed or GPU conservation claim is made.
+
 | Layer | Current state |
 | --- | --- |
 | Browser N-body home page | 128–2,048 interacting bodies (768 default); planar Barnes–Hut gravity, leapfrog integration, glow/trails and orbit/zoom controls |

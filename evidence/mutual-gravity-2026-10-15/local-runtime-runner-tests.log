@@ -1,0 +1,39 @@
+.Remote run directory: /workspace/galaxy-01cb7e1c614a4bc4
+remote job log
+....{
+  "remote_directory": "/workspace/galaxy-e6d1f3cf179246a5",
+  "ssh": [
+    "ssh",
+    "-p",
+    "12345",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    "ConnectTimeout=20",
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "ServerAliveCountMax=3",
+    "root@example.test"
+  ],
+  "upload": "mkdir -p /workspace/galaxy-e6d1f3cf179246a5 && tar -xzf - -C /workspace/galaxy-e6d1f3cf179246a5",
+  "run": "cd /workspace/galaxy-e6d1f3cf179246a5/source && env CARGO_TARGET_DIR=/workspace/galaxy-build-cache bash scripts/run-gpu.sh run --job /workspace/galaxy-e6d1f3cf179246a5/job.json --output /workspace/galaxy-e6d1f3cf179246a5/results",
+  "download": "tar -czf - -C /workspace/galaxy-e6d1f3cf179246a5 results"
+}
+Remote run directory: /workspace/galaxy-3df4fe967a2d4c9b
+.Remote run directory: /workspace/galaxy-b9c64d1070584e15
+remote job log
+.Remote run directory: /workspace/galaxy-cd232b48ab10441a
+remote job log
+..Remote run directory: /workspace/galaxy-9edbb85f94cc4145
+remote job log
+...............Remote run directory: /workspace/galaxy-62c1ac0590634f68
+remote job log
+.
+----------------------------------------------------------------------
+Ran 25 tests in 0.431s
+
+OK
+Results: /tmp/tmpyrayg4es/output/results
